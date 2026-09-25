@@ -1,6 +1,6 @@
 # StitchHub
 
-The community server for [StitchBench](https://github.com/bwattendorf/stitchbench) repair shops.
+The community server for **StitchBench**, a repair-shop app for sewing, embroidery and quilting machine technicians.
 
 StitchBench runs in each shop, on the shop's own PC, and its customers, machines, tickets and prices stay there.
 StitchHub is the one small shared server that the shops sync with. It holds only what they choose to share:
