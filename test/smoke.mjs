@@ -239,6 +239,62 @@ assert.equal((await get(`/v1/orders?since=${sellerOrders.next}`, installKey)).or
 await send(`/v1/orders/${third.id}/decline`, installKey, { reason: "smoke test" });
 console.log("orders: ok");
 
+// Parts usage: two shops send monthly counts; re-sending a month replaces it; the top list adds them up.
+const ym = (back) => {
+  const d = new Date();
+  d.setUTCDate(1);
+  d.setUTCMonth(d.getUTCMonth() - back);
+  return d.toISOString().slice(0, 7);
+};
+const nk = (s) => s.toUpperCase().replace(/[^A-Z0-9]/g, "");
+const UB = `SmokeBrand${RUN}`;
+const u1 = `U1-${RUN}`;
+const u2 = `U2-${RUN}`;
+assert.deepEqual(await send("/v1/usage", installKey, { month: ym(0), items: [{ number: u1, brand: UB, qty: 99, tickets: 9 }] }), { ok: true, items: 1 });
+assert.deepEqual(
+  await send("/v1/usage", installKey, {
+    month: ym(0),
+    items: [
+      { number: u1, brand: UB, qty: 4, tickets: 3 },
+      { number: nA, brand: "Brother", qty: 2, tickets: 2 },
+    ],
+  }),
+  { ok: true, items: 2 },
+); // replaces the 99
+await send("/v1/usage", installKey, { month: ym(1), items: [{ number: u2, brand: UB, qty: 1, tickets: 1 }] });
+await send("/v1/usage", buyerKey, {
+  month: ym(2),
+  items: [
+    { number: u1.toLowerCase(), brand: UB.toLowerCase(), qty: 6, tickets: 2 },
+    { number: nA, brand: "Brother", qty: 1, tickets: 1 },
+  ],
+});
+for (const month of ["2026-13", "last month", ym(-1), ym(25)]) {
+  assert.equal((await call("/v1/usage", { key: installKey, method: "POST", json: { month, items: [] } })).status, 400, `month ${month}`);
+}
+assert.equal((await call("/v1/usage", { key: installKey, method: "POST", json: { month: ym(0), items: [{ number: u1, qty: -1 }] } })).status, 400);
+const top = await get(`/v1/usage/top?months=12&brand=${UB.toUpperCase()}`, buyerKey);
+assert.equal(top.to, ym(0));
+assert.equal(top.from, ym(11));
+assert.equal(top.shops, 2);
+assert.deepEqual(
+  top.items.map((i) => [i.numberKey, i.number, i.qty, i.tickets, i.shops]),
+  [
+    [nk(u1), u1.toLowerCase(), 10, 5, 2], // one row per spelling: the one with more used wins
+    [nk(u2), u2, 1, 1, 1],
+  ],
+);
+const thisMonth = await get(`/v1/usage/top?months=1&brand=${UB}`, installKey);
+assert.deepEqual(
+  thisMonth.items.map((i) => [i.numberKey, i.qty, i.shops]),
+  [[nk(u1), 4, 1]],
+);
+const brotherTop = await get("/v1/usage/top?months=12&brand=brother&limit=1000", installKey);
+const screw = brotherTop.items.find((i) => i.numberKey === nk(nA));
+assert.deepEqual([screw.qty, screw.shops, screw.xpartId, screw.name], [3, 2, part.id, "Smoke screw"]);
+assert.equal(top.items[0].xpartId, null);
+console.log("usage: ok");
+
 // Changes: everything above comes back, in order, with a cursor (orders never do).
 let since = "0";
 const seen = { links: new Map(), posts: new Map(), figures: new Set(), xparts: new Map(), listings: new Map() };
@@ -282,7 +338,7 @@ const exp = Buffer.from(await (await ok(await call("/v1/admin/export", { key: AD
 const lines = zlib.gunzipSync(exp).toString("utf8").trim().split("\n").map((l) => JSON.parse(l));
 assert.equal(lines[0].format, "stitchhub-export");
 assert.ok(lines.some((l) => l.t === "photo" && l.data));
-for (const t of ["xpart", "xpart_number", "xpart_fit", "xpart_source", "xpart_revision", "listing", "listing_photo", "order", "order_event", "order_rating"]) {
+for (const t of ["xpart", "xpart_number", "xpart_fit", "xpart_source", "xpart_revision", "listing", "listing_photo", "order", "order_event", "order_rating", "usage"]) {
   assert.ok(lines.some((l) => l.t === t), `export has ${t}`);
 }
 assert.ok(lines.some((l) => l.t === "xpart_revision" && l.snapshot?.id === part.id));

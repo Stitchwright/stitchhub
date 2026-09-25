@@ -142,3 +142,31 @@ Admin `POST /v1/admin/xparts/sources/import` with a JSON array of
   - `unmatched` counts rows whose number isn't on the hub, and rows missing a vendor or a valid http(s) link.
   - `unchanged` counts rows identical to what's already there; those parts aren't bumped.
 - **Speed:** 20,000 rows take about 5 seconds.
+
+## Parts usage
+
+"Most used parts": each StitchBench sends how many of each part number it used per month, and every member can see
+the community's totals. Only counts are stored: no customers, ticket ids or prices.
+
+`POST /v1/usage` (member), body `{ month: "YYYY-MM", items: [{ number, brand, qty, tickets }] }`:
+- `month` must be the current month (UTC) or up to 24 months back; anything else → 400.
+- Up to 5,000 items. `qty` and `tickets` are whole numbers ≥ 0 (default 0); a missing number, or a negative or
+  non-integer count → 400.
+- Replaces everything this install sent for that month (delete + insert in one transaction). The same number sent
+  twice in one request (matched by number key) is added up.
+- Answer `{ ok: true, items }`, where `items` is the number of rows stored.
+
+`GET /v1/usage/top?months=12&brand=<optional>&limit=200` (member):
+```
+{ from: "YYYY-MM", to: "YYYY-MM", shops,
+  items: [{ numberKey, number, brand, qty, tickets, shops, xpartId, name }] }
+```
+- The window is the last `months` months including this one (1–36, default 12); `limit` 1–1000 (default 200).
+- Grouped by number key; ordered by `shops` desc, then `qty` desc.
+- `number` / `brand`: the spelling reported most often (by rows; ties go to the one with more used).
+- `xpartId` / `name`: the cross-reference part that owns that number key (any brand), or null.
+- `brand` filters case-insensitively on the reported brand; it applies to `shops` too.
+- `shops` (top level): distinct installs with any usage in the window (and brand, if given).
+- Blocked installs are left out of everything.
+
+Export/import carries `part_usage`; the admin summary counts its rows (`usage`).

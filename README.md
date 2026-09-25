@@ -102,11 +102,16 @@ buyer and the seller. The full contract is in [docs/parts-and-marketplace.md](do
 - Each row names a part number, the vendor, the link and optionally a price.
 - A link already on the part is updated rather than copied. Sources added this way show as "StitchHub scan".
 
+**Most used parts.** Each StitchBench sends how many of each part number it used per month: counts only, no
+customers, tickets or prices. Sending a month again replaces it. Every member can see the community's top parts over
+the last 1–36 months (optionally for one brand): quantity used, on how many tickets, and by how many shops, with the
+cross-reference part when there is one. That's the list to stock from.
+
 ## Checking a hub
 ```
 HUB_URL=https://your-hub ADMIN_TOKEN=... JOIN_KEY=... npm test
 ```
-This creates throwaway members, a link, a note, parts, buying links, a listing, orders and ratings, and checks
+This creates throwaway members, a link, a note, parts, buying links, a listing, orders, ratings and parts usage, and checks
 every part of the API. It then removes the note, link, listing and parts and blocks the test members.
 
 ## API (for StitchBench)
@@ -131,6 +136,8 @@ Members send `Authorization: Bearer <install key>`.
 | `POST /v1/orders/:id/accept`, `decline`, `buyer-paid`, `paid`, `ship`, `received`, `cancel`, `message` | move an order along (409 for the wrong side or status) |
 | `POST /v1/orders/:id/rate` | `{ stars, comment }`: rate the other side of the order |
 | `GET /v1/reputation/:installId` | a shop's ratings as seller and as buyer, and its last 10 |
+| `POST /v1/usage` | `{ month, items: [{ number, brand, qty, tickets }] }`: this shop's parts used that month (replaces it) |
+| `GET /v1/usage/top?months=12&brand=&limit=200` | the community's most used parts, by shops then quantity |
 
 The admin API is under `/v1/admin` and uses `Authorization: Bearer <ADMIN_TOKEN>`. It includes
 `POST /v1/admin/xparts/import` (load parts in bulk) and `POST /v1/admin/xparts/sources/import` (buying links in

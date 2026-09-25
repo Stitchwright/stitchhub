@@ -11,6 +11,7 @@ import { startChecker } from "./checker.mjs";
 import { exportStream, importStream } from "./transfer.mjs";
 import { registerParts, partsByIds } from "./parts.mjs";
 import { registerMarket, listingsByIds } from "./market.mjs";
+import { registerUsage } from "./usage.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const HUB_NAME = process.env.HUB_NAME ?? "StitchHub";
@@ -456,7 +457,7 @@ admin.get("/summary", async (c) => {
     (SELECT count(*) FROM links WHERE status='ok' AND NOT deleted) ok, (SELECT count(*) FROM posts WHERE NOT deleted) posts,
     (SELECT count(*) FROM figures) figures, (SELECT count(*) FROM installs) installs,
     (SELECT count(*) FROM xparts WHERE NOT deleted) parts, (SELECT count(*) FROM listings WHERE status = 'ACTIVE') listings,
-    (SELECT count(*) FROM orders) orders, (SELECT count(*) FROM order_ratings) ratings`);
+    (SELECT count(*) FROM orders) orders, (SELECT count(*) FROM order_ratings) ratings, (SELECT count(*) FROM part_usage) usage`);
   const installs = (await q(`SELECT id, name, contact, blocked, created_at, last_seen_at FROM installs ORDER BY created_at`)).rows;
   const datasets = (await q(`SELECT name, version, length(data) AS size, updated_at FROM datasets ORDER BY name`)).rows;
   return c.json({
@@ -560,9 +561,10 @@ admin.get("/export", (c) =>
 
 admin.post("/import", async (c) => c.json(await importStream(c.req.raw.body)));
 
-// Parts cross-reference and marketplace (src/parts.mjs, src/market.mjs; docs/parts-and-marketplace.md).
+// Parts cross-reference, marketplace and parts usage (src/parts.mjs, src/market.mjs, src/usage.mjs; docs/parts-and-marketplace.md).
 registerParts({ member, admin, fail, newId, writeLimit, validUrl });
 registerMarket({ member, fail, newId, writeLimit, notify });
+registerUsage({ member, fail, writeLimit });
 
 // Admin first: the member routes below would otherwise answer /v1/admin/* with their key check.
 app.route("/v1/admin", admin);
