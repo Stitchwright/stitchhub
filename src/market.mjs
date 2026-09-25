@@ -4,7 +4,7 @@
 import { pool, one, tx } from "./db.mjs";
 
 const IMAGE = new Set(["image/jpeg", "image/png", "image/webp"]);
-const KINDS = new Set(["PART", "ACCESSORY", "SUPPLY"]);
+const KINDS = new Set(["PART", "ACCESSORY", "SUPPLY", "NOTION", "FABRIC", "THREAD", "PATTERN"]);
 const CONDITIONS = new Set(["NEW", "USED", "REFURB"]);
 const OPEN = ["REQUESTED", "ACCEPTED", "PAID"];
 

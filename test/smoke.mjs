@@ -328,6 +328,61 @@ const seenByBuyer = buyerView.listings.find((l) => l.id === listing.id);
 if (seenByBuyer) assert.equal(seenByBuyer.mine, false);
 console.log("changes: ok");
 
+// Partner links: a repair shop's code gets a sewing shop (not a community member) onto the partner channel only.
+const pInv = await send("/v1/partners/invites", installKey, { shopRef: "shopA", shopName: "Smoke Repair", side: "repair", terms: { repairCommissionPct: 15 } });
+assert.match(pInv.code, /^[2-9A-Z]{4}-[2-9A-Z]{4}-[2-9A-Z]{4}$/);
+assert.equal((await call("/v1/partners/join", { method: "POST", json: { code: "AAAA-BBBB-CCCC", shopRef: "x", shopName: "Nope" } })).status, 404);
+const pJoined = await send("/v1/partners/join", undefined, { code: pInv.code.toLowerCase().replace(/-/g, " "), shopRef: "retail1", shopName: "Smoke Quilt Shop" });
+assert.equal(pJoined.scope, "partner");
+assert.equal(pJoined.side, "retail");
+assert.equal(pJoined.link.terms.repairCommissionPct, 15);
+const retailKey = pJoined.installKey;
+assert.equal((await call("/v1/changes", { key: retailKey })).status, 403, "partner-only installs can't read the community");
+assert.equal((await get("/v1/me", retailKey)).scope, "partner");
+assert.equal((await call("/v1/partners/join", { method: "POST", json: { code: pInv.code, shopRef: "y", shopName: "Again" } })).status, 404, "a code works once");
+const L = pJoined.link.id;
+const repairCursor0 = (await get("/v1/partners/messages?since=0&limit=500", installKey)).messages.filter((m) => m.linkId !== L).at(-1)?.seq ?? "0";
+await send(`/v1/partners/links/${L}/messages`, retailKey, { id: "m1", shopRef: "retail1", type: "job.new", data: { tag: "101" } });
+assert.equal((await send(`/v1/partners/links/${L}/messages`, retailKey, { id: "m1", shopRef: "retail1", type: "job.new", data: { tag: "101" } })).duplicate, true);
+assert.equal((await call(`/v1/partners/links/${L}/messages`, { key: retailKey, method: "POST", json: { id: "m2", shopRef: "wrong", type: "job.new", data: {} } })).status, 404);
+assert.equal((await call(`/v1/partners/links/${L}/messages`, { key: buyerKey, method: "POST", json: { id: "m3", shopRef: "retail1", type: "job.new", data: {} } })).status, 404, "outsiders can't post");
+assert.equal((await call(`/v1/partners/links/${L}/messages`, { key: retailKey, method: "POST", json: { id: "m4", shopRef: "retail1", type: "Bad Type", data: {} } })).status, 400);
+const repairIn = (await get(`/v1/partners/messages?since=${repairCursor0}`, installKey)).messages.filter((m) => m.linkId === L);
+assert.deepEqual(repairIn.map((m) => m.type), ["link.created", "job.new"]);
+assert.equal(repairIn[1].toShopRef, "shopA");
+assert.equal(repairIn[1].fromSide, "retail");
+await send(`/v1/partners/links/${L}/messages`, installKey, { id: "r1", shopRef: "shopA", type: "job.update", data: { tag: "101", status: "ON_BENCH" } });
+const retailIn = await get("/v1/partners/messages?since=0", retailKey);
+assert.deepEqual(retailIn.messages.map((m) => m.type), ["link.created", "job.update"], "a side never gets its own messages back");
+assert.equal((await get(`/v1/partners/messages?since=${retailIn.next}`, retailKey)).messages.length, 0);
+assert.equal((await call("/v1/partners/messages?since=0", { key: buyerKey })).status, 200);
+assert.equal((await get("/v1/partners/messages?since=0", buyerKey)).messages.filter((m) => m.linkId === L).length, 0, "other members see nothing");
+const pLinks = await get("/v1/partners/links", retailKey);
+assert.equal(pLinks.length, 1);
+assert.equal(pLinks[0].side, "retail");
+assert.equal(pLinks[0].repair.name, "Smoke Repair");
+// Both shops in one install (a hosted install with several companies): each gets its own copy of hub messages.
+const inv2 = await send("/v1/partners/invites", installKey, { shopRef: "shopA", shopName: "Smoke Repair", side: "repair" });
+assert.equal((await call("/v1/partners/redeem", { key: installKey, method: "POST", json: { code: inv2.code, shopRef: "shopA", shopName: "Smoke Repair" } })).status, 400);
+const beforeSame = (await get(`/v1/partners/messages?since=${repairCursor0}&limit=500`, installKey)).next;
+const sameInstall = await send("/v1/partners/redeem", installKey, { code: inv2.code, shopRef: "shopB", shopName: "Smoke Hosted Quilt" });
+const both = (await get(`/v1/partners/messages?since=${beforeSame}`, installKey)).messages.filter((m) => m.linkId === sameInstall.link.id);
+assert.deepEqual(both.map((m) => `${m.type}>${m.toShopRef}`).sort(), ["link.created>shopA", "link.created>shopB"]);
+await send(`/v1/partners/links/${sameInstall.link.id}/messages`, installKey, { id: "h1", shopRef: "shopB", type: "order.new", data: { lines: [] } });
+const toA = (await get(`/v1/partners/messages?since=${both.at(-1).seq}`, installKey)).messages;
+assert.deepEqual(toA.map((m) => `${m.type}>${m.toShopRef}`), ["order.new>shopA"]);
+// Ending: both sides hear it.
+await send(`/v1/partners/links/${L}/end`, installKey, { shopRef: "shopA", note: "smoke test" });
+const endMsg = (await get(`/v1/partners/messages?since=${retailIn.next}`, retailKey)).messages;
+assert.equal(endMsg[0].type, "link.ended");
+assert.equal(endMsg[0].data.endedBy, "repair");
+assert.equal((await get("/v1/partners/links", retailKey))[0].status, "ENDED");
+// The sewing shop later joins the community with the join key: same key, now a full member.
+assert.equal((await call("/v1/upgrade", { key: retailKey, method: "POST", json: { joinKey: "wrong" } })).status, 403);
+assert.equal((await send("/v1/upgrade", retailKey, { joinKey: JOIN })).scope, "member");
+assert.equal((await call("/v1/changes?since=0&limit=1", { key: retailKey })).status, 200);
+console.log("partners: ok");
+
 // Admin: wrong token refused; summary, export (valid gzip, new tables included), block.
 assert.equal((await call("/v1/admin/summary", { key: "wrong-token" })).status, 401);
 const summary = await (await ok(await call("/v1/admin/summary", { key: ADMIN }))).json();
@@ -338,7 +393,7 @@ const exp = Buffer.from(await (await ok(await call("/v1/admin/export", { key: AD
 const lines = zlib.gunzipSync(exp).toString("utf8").trim().split("\n").map((l) => JSON.parse(l));
 assert.equal(lines[0].format, "stitchhub-export");
 assert.ok(lines.some((l) => l.t === "photo" && l.data));
-for (const t of ["xpart", "xpart_number", "xpart_fit", "xpart_source", "xpart_revision", "listing", "listing_photo", "order", "order_event", "order_rating", "usage"]) {
+for (const t of ["xpart", "xpart_number", "xpart_fit", "xpart_source", "xpart_revision", "listing", "listing_photo", "order", "order_event", "order_rating", "usage", "partner_link", "partner_message"]) {
   assert.ok(lines.some((l) => l.t === t), `export has ${t}`);
 }
 assert.ok(lines.some((l) => l.t === "xpart_revision" && l.snapshot?.id === part.id));
@@ -352,7 +407,7 @@ await ok(await call(`/v1/xparts/${part.id}`, { key: installKey, method: "DELETE"
 const importedPart = [...seen.xparts.values()].find((x) => x.numbers.some((n) => n.number === `IMP${RUN}`));
 if (importedPart) await ok(await call(`/v1/xparts/${importedPart.id}`, { key: installKey, method: "DELETE", json: { byName: "Tester", note: "smoke test" } }));
 const all = (await (await ok(await call("/v1/admin/summary", { key: ADMIN }))).json()).installs;
-for (const name of ["Smoke Buyer Shop", "Smoke Third Shop"]) {
+for (const name of ["Smoke Buyer Shop", "Smoke Third Shop", "Smoke Quilt Shop"]) {
   for (const i of all.filter((x) => x.name === name && !x.blocked)) await ok(await call(`/v1/admin/installs/${i.id}/block`, { key: ADMIN, method: "POST", json: { blocked: true } }));
 }
 await ok(await call(`/v1/admin/installs/${me.id}/block`, { key: ADMIN, method: "POST", json: { blocked: true } }));

@@ -1,6 +1,7 @@
 // Moving a hub: export everything to one file (gzipped JSON lines) and import it on a new server.
 // Keeps members working: installs (their hashed keys), the join key, links with history, notes, photos, figures,
-// data sets, the parts cross-reference with its history, marketplace listings, orders and ratings, and parts usage.
+// data sets, the parts cross-reference with its history, marketplace listings, orders and ratings, parts usage, and the
+// partner links between repair shops and sewing shops with their messages.
 import zlib from "node:zlib";
 import readline from "node:readline";
 import { Readable } from "node:stream";
@@ -9,7 +10,7 @@ import { pool, q } from "./db.mjs";
 // In import order (parents before children). `key` pages the export; `conflict` is the primary key.
 const TABLES = [
   { t: "setting", table: "settings", cols: ["key", "value"], key: "key" },
-  { t: "install", table: "installs", cols: ["id", "name", "contact", "key_hash", "blocked", "created_at", "last_seen_at"] },
+  { t: "install", table: "installs", cols: ["id", "name", "contact", "key_hash", "scope", "blocked", "created_at", "last_seen_at"] },
   {
     t: "link",
     table: "links",
@@ -67,14 +68,28 @@ const TABLES = [
     key: "install_id || '|' || month || '|' || number_key",
     conflict: ["install_id", "month", "number_key"],
   },
+  {
+    t: "partner_link",
+    table: "partner_links",
+    cols: ["id", "repair_install_id", "repair_shop_ref", "repair_name", "retail_install_id", "retail_shop_ref", "retail_name", "terms", "status", "created_at", "ended_at"],
+  },
+  {
+    // In the order they were sent; the new hub numbers them again.
+    t: "partner_message",
+    table: "partner_messages",
+    cols: ["id", "link_id", "from_side", "type", "data", "created_at"],
+    key: "lpad(seq::text, 20, '0')",
+    conflict: ["link_id", "from_side", "id"],
+    json: ["data"],
+  },
 ];
 const BINARY = new Set(["data"]);
-const JSONB = new Set(["snapshot", "item", "buyer_contact", "seller_contact"]);
+const JSONB = new Set(["snapshot", "item", "buyer_contact", "seller_contact", "terms"]);
 const WITH_SEQ = new Set(["links", "posts", "figures", "xparts", "listings", "orders"]);
 
 async function* lines() {
   yield JSON.stringify({ t: "meta", format: "stitchhub-export", version: 2, exportedAt: new Date().toISOString() }) + "\n";
-  for (const { t, table, cols, key = "id" } of TABLES) {
+  for (const { t, table, cols, key = "id", json = [] } of TABLES) {
     let after = "";
     for (;;) {
       const { rows } = await q(`SELECT ${cols.join(", ")}, (${key}) AS _k FROM ${table} WHERE (${key}) > $1 ORDER BY (${key}) LIMIT 200`, [after]);
@@ -82,7 +97,7 @@ async function* lines() {
       after = rows[rows.length - 1]._k;
       for (const r of rows) {
         delete r._k;
-        for (const c of cols) if (BINARY.has(c) && r[c]) r[c] = r[c].toString("base64");
+        for (const c of cols) if (BINARY.has(c) && !json.includes(c) && r[c]) r[c] = r[c].toString("base64");
         yield JSON.stringify({ t, ...r }) + "\n";
       }
     }
@@ -119,8 +134,8 @@ export async function importStream(webStream) {
       const vals = cols.map((c) => {
         const v = row[c] ?? null;
         if (v == null) return null;
+        if (JSONB.has(c) || spec.json?.includes(c)) return JSON.stringify(v);
         if (BINARY.has(c)) return Buffer.from(v, "base64");
-        if (JSONB.has(c)) return JSON.stringify(v);
         return v;
       });
       const colList = WITH_SEQ.has(table) ? [...cols, "seq"] : cols;

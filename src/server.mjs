@@ -12,6 +12,7 @@ import { exportStream, importStream } from "./transfer.mjs";
 import { registerParts, partsByIds } from "./parts.mjs";
 import { registerMarket, listingsByIds } from "./market.mjs";
 import { registerUsage } from "./usage.mjs";
+import { registerPartners } from "./partners.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const HUB_NAME = process.env.HUB_NAME ?? "StitchHub";
@@ -127,12 +128,18 @@ app.post("/v1/register", async (c) => {
   if (!expected || !joinKey || !same(sha(String(joinKey)), sha(expected))) throw fail(403, "That join key isn't right. Ask the hub admin for the current one.");
   const shop = String(name ?? "").trim().slice(0, 120);
   if (!shop) throw fail(400, "Give your shop's name.");
+  const { id, key } = await createInstall(pool, shop, String(contact ?? "").slice(0, 200) || null, "member");
+  notify(`👋 ${shop} joined ${HUB_NAME}.`);
+  return c.json({ installId: id, installKey: key, hubName: HUB_NAME, scope: "member" });
+});
+
+/** A new install with its own key (returned once; only the hash is kept). */
+async function createInstall(db, name, contact, scope) {
   const id = newId();
   const key = `shk_${crypto.randomBytes(24).toString("base64url")}`;
-  await q(`INSERT INTO installs (id, name, contact, key_hash, last_seen_at) VALUES ($1, $2, $3, $4, now())`, [id, shop, String(contact ?? "").slice(0, 200) || null, sha(key)]);
-  notify(`👋 ${shop} joined ${HUB_NAME}.`);
-  return c.json({ installId: id, installKey: key, hubName: HUB_NAME });
-});
+  await db.query(`INSERT INTO installs (id, name, contact, key_hash, scope, last_seen_at) VALUES ($1, $2, $3, $4, $5, now())`, [id, name, contact, sha(key), scope]);
+  return { id, key };
+}
 
 // ---------- installs (Authorization: Bearer <install key>) ----------
 
@@ -141,9 +148,11 @@ member.use("*", async (c, next) => {
   const h = c.req.header("authorization") ?? "";
   const key = h.startsWith("Bearer ") ? h.slice(7) : "";
   if (!key) throw fail(401, "Join the hub first (Settings → Community hub).");
-  const inst = await one(`SELECT id, name, blocked, last_seen_at FROM installs WHERE key_hash = $1`, [sha(key)]);
+  const inst = await one(`SELECT id, name, scope, blocked, last_seen_at FROM installs WHERE key_hash = $1`, [sha(key)]);
   if (!inst) throw fail(401, "This install isn't known to the hub. Join again with the current join key.");
   if (inst.blocked) throw fail(403, "The hub admin has blocked this install.");
+  // Joined with a partner code only: the partner channel, nothing of the community's.
+  if (inst.scope === "partner" && !/^\/v1\/(partners\/|me$|upgrade$)/.test(c.req.path)) throw fail(403, "This shop is connected to its partner shops only. Join the community with a join key to use this.");
   if (!inst.last_seen_at || Date.now() - inst.last_seen_at.getTime() > 300_000) q(`UPDATE installs SET last_seen_at = now() WHERE id = $1`, [inst.id]).catch(() => {});
   c.set("install", inst);
   await next();
@@ -154,8 +163,27 @@ function writeLimit(c) {
 }
 
 member.get("/me", async (c) =>
-  c.json({ installId: c.get("install").id, name: c.get("install").name, hubName: HUB_NAME, discordInvite: await getSetting("discord_invite") }),
+  c.json({
+    installId: c.get("install").id,
+    name: c.get("install").name,
+    scope: c.get("install").scope,
+    hubName: HUB_NAME,
+    discordInvite: c.get("install").scope === "member" ? await getSetting("discord_invite") : null,
+  }),
 );
+
+// A shop that joined with a partner code only, now with the community's join key: same key and partner links, full member.
+member.post("/upgrade", async (c) => {
+  if (!allow(`upgrade:${c.get("install").id}`, 10)) throw fail(429, "Too many tries. Wait an hour.");
+  const { joinKey } = await c.req.json().catch(() => ({}));
+  const expected = (await getSetting("join_key")) ?? process.env.JOIN_KEY ?? "";
+  if (!expected || !joinKey || !same(sha(String(joinKey)), sha(expected))) throw fail(403, "That join key isn't right. Ask the hub admin for the current one.");
+  if (c.get("install").scope !== "member") {
+    await q(`UPDATE installs SET scope = 'member' WHERE id = $1`, [c.get("install").id]);
+    notify(`👋 ${c.get("install").name} joined ${HUB_NAME}.`);
+  }
+  return c.json({ installId: c.get("install").id, hubName: HUB_NAME, scope: "member" });
+});
 
 const linkOut = (l) => ({
   id: l.id,
@@ -457,8 +485,9 @@ admin.get("/summary", async (c) => {
     (SELECT count(*) FROM links WHERE status='ok' AND NOT deleted) ok, (SELECT count(*) FROM posts WHERE NOT deleted) posts,
     (SELECT count(*) FROM figures) figures, (SELECT count(*) FROM installs) installs,
     (SELECT count(*) FROM xparts WHERE NOT deleted) parts, (SELECT count(*) FROM listings WHERE status = 'ACTIVE') listings,
-    (SELECT count(*) FROM orders) orders, (SELECT count(*) FROM order_ratings) ratings, (SELECT count(*) FROM part_usage) usage`);
-  const installs = (await q(`SELECT id, name, contact, blocked, created_at, last_seen_at FROM installs ORDER BY created_at`)).rows;
+    (SELECT count(*) FROM orders) orders, (SELECT count(*) FROM order_ratings) ratings, (SELECT count(*) FROM part_usage) usage,
+    (SELECT count(*) FROM partner_links WHERE status = 'ACTIVE') partner_links, (SELECT count(*) FROM partner_messages) partner_messages`);
+  const installs = (await q(`SELECT id, name, contact, scope, blocked, created_at, last_seen_at FROM installs ORDER BY created_at`)).rows;
   const datasets = (await q(`SELECT name, version, length(data) AS size, updated_at FROM datasets ORDER BY name`)).rows;
   return c.json({
     hubName: HUB_NAME,
@@ -565,6 +594,7 @@ admin.post("/import", async (c) => c.json(await importStream(c.req.raw.body)));
 registerParts({ member, admin, fail, newId, writeLimit, validUrl });
 registerMarket({ member, fail, newId, writeLimit, notify });
 registerUsage({ member, fail, writeLimit });
+registerPartners({ app, member, fail, newId, allow, sha, hubName: HUB_NAME, createInstall });
 
 // Admin first: the member routes below would otherwise answer /v1/admin/* with their key check.
 app.route("/v1/admin", admin);

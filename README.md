@@ -16,6 +16,10 @@ StitchHub is the one small shared server that the shops sync with. It holds only
   it fits and how that's known, and where to buy it. Anyone can fix an entry; every change can be rolled back.
 - **Marketplace.** Shops list parts and accessories for other shops. Orders are private to the buyer and seller.
 - **Data sets.** Files the hub admin publishes to every shop, for example updated factory specs.
+- **Partner links.** A private channel between one repair shop and one sewing or quilt shop that works with it
+  (StitchShop): machines taken in for repair and their status, estimates and approvals, parts orders, consignment
+  stock and sales, and monthly settlements. Only those two shops receive them. See
+  [docs/partners.md](docs/partners.md).
 
 This repository is the server code only. Every hub's data lives in its own PostgreSQL database and is never part
 of this repository.
@@ -107,6 +111,19 @@ customers, tickets or prices. Sending a month again replaces it. Every member ca
 the last 1–36 months (optionally for one brand): quantity used, on how many tickets, and by how many shops, with the
 cross-reference part when there is one. That's the list to stock from.
 
+## Partner shops (StitchShop)
+A repair shop and a sewing or quilt shop connect with a one-time **partner code** (12 letters and digits, good for 14
+days). The shop that makes the code offers its terms (commission on repairs, consignment split and so on); the other
+shop enters the code in StitchBench → Partner shops. A sewing shop that isn't a community member joins with the
+partner code alone: its install can then use the partner channel and nothing else (it can join the community later
+with the join key, keeping its partner links).
+
+What goes through the hub is only what the two shops need: the sewing shop's tag number, the customer's first name
+and last initial, the machine and the problem, intake photos, the repair bill and status, orders, consignment counts
+and sales, and settlements. Customer phone numbers and addresses stay in the sewing shop. Messages are kept for a
+year so a shop that was offline catches up. The hub admin can see them in the database, like everything else on the
+hub.
+
 ## Checking a hub
 ```
 HUB_URL=https://your-hub ADMIN_TOKEN=... JOIN_KEY=... npm test
@@ -138,6 +155,14 @@ Members send `Authorization: Bearer <install key>`.
 | `GET /v1/reputation/:installId` | a shop's ratings as seller and as buyer, and its last 10 |
 | `POST /v1/usage` | `{ month, items: [{ number, brand, qty, tickets }] }`: this shop's parts used that month (replaces it) |
 | `GET /v1/usage/top?months=12&brand=&limit=200` | the community's most used parts, by shops then quantity |
+| `POST /v1/partners/invites` | `{ shopRef, shopName, side, terms }` → `{ code, expiresAt }`: a partner code |
+| `POST /v1/partners/redeem` | `{ code, shopRef, shopName }` → `{ link, side }` |
+| `POST /v1/partners/join` (no key) | `{ code, shopRef, shopName, contact }` → an install key for the partner channel only, and the link |
+| `GET /v1/partners/links` | every link this install's shops are on |
+| `POST /v1/partners/links/:id/messages` | `{ id, shopRef, type, data }`: send to the other shop (a repeated `id` is stored once) |
+| `GET /v1/partners/messages?since=N` | messages for this install's shops after `N` |
+| `POST /v1/partners/links/:id/end` | end a partnership (both shops are told) |
+| `POST /v1/upgrade` | `{ joinKey }`: a partner-only install becomes a member |
 
 The admin API is under `/v1/admin` and uses `Authorization: Bearer <ADMIN_TOKEN>`. It includes
 `POST /v1/admin/xparts/import` (load parts in bulk) and `POST /v1/admin/xparts/sources/import` (buying links in
