@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StitchHub Admin</title>
+<style>
+  :root { --bg: #f4f2ee; --card: #fff; --ink: #1c2430; --muted: #5b6573; --line: #ddd8cf; --accent: #1f3a5f; --bad: #b3261e; --ok: #1e7a3c; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #15181d; --card: #1e232a; --ink: #e8ebef; --muted: #a3acb8; --line: #333a44; --accent: #8fb3e0; --bad: #ff8a80; --ok: #7dd3a0; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 system-ui, "Segoe UI", sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { margin: 0 0 4px; font-size: 26px; } h2 { font-size: 18px; margin: 0 0 10px; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin: 16px 0; }
+  .muted { color: var(--muted); } .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  input, button { font: inherit; padding: 7px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--ink); }
+  input { min-width: 260px; } button { background: var(--accent); color: #fff; border-color: var(--accent); cursor: pointer; }
+  button.plain { background: var(--card); color: var(--ink); border-color: var(--line); }
+  table { width: 100%; border-collapse: collapse; } td, th { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 12px; text-transform: uppercase; color: var(--muted); }
+  .stat { font-size: 22px; font-weight: 600; } .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
+  .bad { color: var(--bad); } .ok { color: var(--ok); } #msg { min-height: 1.5em; }
+  .scroll { overflow-x: auto; }
+</style>
+</head>
+<body>
+<main>
+  <h1>StitchHub admin</h1>
+  <p class="muted">Members, the join key, the Discord hook, data sets, and moving the hub. The admin token is kept only in this tab.</p>
+  <p id="msg" role="status"></p>
+
+  <section id="login">
+    <h2>Sign in</h2>
+    <form class="row" id="loginForm"><label for="tok" class="muted">Admin token</label><input id="tok" type="password" autocomplete="off" required><button>Open</button></form>
+  </section>
+
+  <div id="app" hidden>
+    <section><h2>Hub</h2><div class="grid" id="stats"></div></section>
+
+    <section>
+      <h2>Join key</h2>
+      <p class="muted">Email this to members (for example after they pay). Changing it stops new people joining with the old one; shops already joined keep working.</p>
+      <form class="row" id="joinForm"><label for="join" class="muted">Current key</label><input id="join" required minlength="8"><button>Save join key</button><button type="button" class="plain" id="genJoin">Make a new one</button></form>
+    </section>
+
+    <section>
+      <h2>Discord</h2>
+      <p class="muted">Paste a channel webhook (Discord → channel settings → Integrations → Webhooks) and the hub posts new notes, link fixes and new members there.</p>
+      <form class="row" id="hookForm"><label for="hook" class="muted">Webhook URL</label><input id="hook" placeholder="https://discord.com/api/webhooks/..."><button>Save</button><span id="hookState" class="muted"></span></form>
+    </section>
+
+    <section>
+      <h2>Members</h2>
+      <div class="scroll"><table><thead><tr><th>Shop</th><th>Contact</th><th>Joined</th><th>Last seen</th><th></th></tr></thead><tbody id="installs"></tbody></table></div>
+    </section>
+
+    <section>
+      <h2>Data sets</h2>
+      <p class="muted">Files every install downloads when they change, e.g. <code>specs</code> (factory tension and timing values, made by StitchBench's <code>scripts/hub/publish-specs</code>).</p>
+      <div id="datasets" class="muted"></div>
+    </section>
+
+    <section>
+      <h2>Moving the hub</h2>
+      <p class="muted">Export everything (members, join key, links with history, notes, photos, figures, data sets) to one file; import it on a new StitchHub server. Keep an export somewhere safe now and then.</p>
+      <div class="row"><button id="export">Download export</button>
+        <label class="muted" for="importFile">Import an export:</label><input id="importFile" type="file" accept=".gz"><button id="import" class="plain">Import</button></div>
+    </section>
+
+    <section>
+      <h2>Add links in bulk</h2>
+      <p class="muted">A JSON array of links (brand, models, docType, title, url, fileName, category). Links already on the hub are skipped.</p>
+      <div class="row"><label class="muted" for="linksFile">JSON file:</label><input id="linksFile" type="file" accept=".json"><button id="importLinks" class="plain">Add links</button></div>
+    </section>
+  </div>
+</main>
+<script>
+  let token = "";
+  try { token = sessionStorage.getItem("hubAdmin") || ""; } catch {}
+  const $ = (id) => document.getElementById(id);
+  const say = (t, bad) => { $("msg").textContent = t; $("msg").className = bad ? "bad" : "ok"; };
+  async function api(path, opts = {}) {
+    const r = await fetch("/v1/admin" + path, { ...opts, headers: { Authorization: "Bearer " + token, ...(opts.headers || {}) } });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+    return r;
+  }
+  const when = (d) => (d ? new Date(d).toLocaleString() : "never");
+  function td(text) { const c = document.createElement("td"); c.textContent = text ?? ""; return c; }
+
+  async function load() {
+    const s = await (await api("/summary")).json();
+    $("login").hidden = true; $("app").hidden = false;
+    const stats = [["Manual links", s.counts.links], ["Working", s.counts.ok], ["Dead", s.counts.dead], ["Notes", s.counts.posts], ["Figures", s.counts.figures], ["Members", s.counts.installs]];
+    $("stats").replaceChildren(...stats.map(([k, v]) => { const d = document.createElement("div"); d.innerHTML = '<div class="muted"></div><div class="stat"></div>'; d.children[0].textContent = k; d.children[1].textContent = v; return d; }));
+    $("join").value = s.joinKey || "";
+    $("hookState").textContent = s.discordWebhook ? "connected" : "not connected";
+    $("installs").replaceChildren(...s.installs.map((i) => {
+      const tr = document.createElement("tr");
+      tr.append(td(i.name + (i.blocked ? " (blocked)" : "")), td(i.contact), td(when(i.created_at)), td(when(i.last_seen_at)));
+      const b = document.createElement("button"); b.className = "plain"; b.textContent = i.blocked ? "Unblock" : "Block";
+      b.onclick = async () => { await api(`/installs/${i.id}/block`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ blocked: !i.blocked }) }); load(); };
+      const c = document.createElement("td"); c.append(b); tr.append(c); return tr;
+    }));
+    $("datasets").textContent = s.datasets.length ? s.datasets.map((d) => `${d.name}: version ${d.version}, ${(d.size / 1e6).toFixed(1)} MB`).join(" · ") : "None yet.";
+  }
+
+  $("loginForm").onsubmit = async (e) => { e.preventDefault(); token = $("tok").value; try { await load(); try { sessionStorage.setItem("hubAdmin", token); } catch {} say(""); } catch (err) { say(err.message, true); } };
+  $("joinForm").onsubmit = async (e) => { e.preventDefault(); try { await api("/join-key", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ joinKey: $("join").value }) }); say("Join key saved."); } catch (err) { say(err.message, true); } };
+  $("genJoin").onclick = () => { const a = new Uint8Array(12); crypto.getRandomValues(a); $("join").value = "join-" + Array.from(a, (x) => x.toString(36).padStart(2, "0")).join("").slice(0, 16); say("New key made. Press Save to use it."); };
+  $("hookForm").onsubmit = async (e) => { e.preventDefault(); try { await api("/discord-webhook", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: $("hook").value.trim() }) }); $("hook").value = ""; say("Discord setting saved."); load(); } catch (err) { say(err.message, true); } };
+  $("export").onclick = async () => { try { say("Preparing export..."); const b = await (await api("/export")).blob(); const a = document.createElement("a"); a.href = URL.createObjectURL(b); a.download = `stitchhub-export-${new Date().toISOString().slice(0, 10)}.ndjson.gz`; a.click(); say("Export downloaded."); } catch (err) { say(err.message, true); } };
+  $("import").onclick = async () => { const f = $("importFile").files[0]; if (!f) return say("Pick an export file first.", true); if (!confirm("Import this export? Rows with the same id are replaced.")) return; try { say("Importing..."); const r = await (await api("/import", { method: "POST", body: f })).json(); say("Imported: " + Object.entries(r).map(([k, v]) => `${k} ${v}`).join(", ")); load(); } catch (err) { say(err.message, true); } };
+  $("importLinks").onclick = async () => { const f = $("linksFile").files[0]; if (!f) return say("Pick a JSON file first.", true); try { const r = await (await api("/links/import", { method: "POST", headers: { "Content-Type": "application/json" }, body: await f.text() })).json(); say(`Added ${r.added} links, skipped ${r.skipped}.`); load(); } catch (err) { say(err.message, true); } };
+  if (token) load().catch(() => { token = ""; });
+</script>
+</body>
+</html>

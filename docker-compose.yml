@@ -1,0 +1,26 @@
+# Run your own StitchHub on any PC, NAS or server with Docker:
+#   1. Copy .env.example to .env and set ADMIN_TOKEN and JOIN_KEY.
+#   2. docker compose up -d
+#   3. Open http://<this machine>:8080/admin
+services:
+  hub:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://stitchhub:stitchhub@db:5432/stitchhub
+    ports:
+      - "8080:8080"
+    depends_on:
+      - db
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: stitchhub
+      POSTGRES_PASSWORD: stitchhub
+      POSTGRES_DB: stitchhub
+    volumes:
+      - hubdata:/var/lib/postgresql/data
+volumes:
+  hubdata:

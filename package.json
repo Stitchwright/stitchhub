@@ -1,0 +1,22 @@
+{
+  "name": "stitchhub",
+  "version": "1.0.0",
+  "description": "StitchHub: the community server for StitchBench. Shares manual links (never the PDFs), tech notes and photos, manual figure snapshots and spec updates between repair shops.",
+  "license": "AGPL-3.0-only",
+  "private": true,
+  "type": "module",
+  "main": "src/server.mjs",
+  "scripts": {
+    "start": "node src/server.mjs",
+    "check": "node --check src/server.mjs && node --check src/db.mjs && node --check src/checker.mjs && node --check src/transfer.mjs",
+    "test": "node test/smoke.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.1",
+    "hono": "^4.13.9",
+    "pg": "^8.23.0"
+  }
+}
