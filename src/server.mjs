@@ -9,6 +9,8 @@ import { serve } from "@hono/node-server";
 import { pool, q, one, tx, migrate, getSetting, setSetting } from "./db.mjs";
 import { startChecker } from "./checker.mjs";
 import { exportStream, importStream } from "./transfer.mjs";
+import { registerParts, partsByIds } from "./parts.mjs";
+import { registerMarket, listingsByIds } from "./market.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const HUB_NAME = process.env.HUB_NAME ?? "StitchHub";
@@ -84,7 +86,10 @@ const app = new Hono();
 
 app.onError((e, c) => {
   console.error(e);
-  return c.json({ error: e.expose ? e.message : "Something went wrong on the hub.", ...(e.linkId ? { linkId: e.linkId } : {}) }, e.status ?? 500);
+  return c.json(
+    { error: e.expose ? e.message : "Something went wrong on the hub.", ...(e.linkId ? { linkId: e.linkId } : {}), ...(e.partId ? { partId: e.partId } : {}) },
+    e.status ?? 500,
+  );
 });
 
 function fail(status, message) {
@@ -178,6 +183,8 @@ member.get("/changes", async (c) => {
        SELECT 'link' t, id, seq FROM links WHERE seq > $1
        UNION ALL SELECT 'post', id, seq FROM posts WHERE seq > $1
        UNION ALL SELECT 'figure', id, seq FROM figures WHERE seq > $1
+       UNION ALL SELECT 'xpart', id, seq FROM xparts WHERE seq > $1
+       UNION ALL SELECT 'listing', id, seq FROM listings WHERE seq > $1
      ) x ORDER BY seq LIMIT $2`,
     [since.toString(), limit],
   );
@@ -207,6 +214,8 @@ member.get("/changes", async (c) => {
     links,
     posts,
     figures: ids("figure"),
+    xparts: await partsByIds(ids("xpart")),
+    listings: await listingsByIds(ids("listing"), c.get("install").id),
     next: rows.length ? rows[rows.length - 1].seq : since.toString(),
     more: rows.length === limit,
   });
@@ -445,7 +454,9 @@ admin.use("*", async (c, next) => {
 admin.get("/summary", async (c) => {
   const counts = await one(`SELECT (SELECT count(*) FROM links WHERE NOT deleted) links, (SELECT count(*) FROM links WHERE status='dead' AND NOT deleted) dead,
     (SELECT count(*) FROM links WHERE status='ok' AND NOT deleted) ok, (SELECT count(*) FROM posts WHERE NOT deleted) posts,
-    (SELECT count(*) FROM figures) figures, (SELECT count(*) FROM installs) installs`);
+    (SELECT count(*) FROM figures) figures, (SELECT count(*) FROM installs) installs,
+    (SELECT count(*) FROM xparts WHERE NOT deleted) parts, (SELECT count(*) FROM listings WHERE status = 'ACTIVE') listings,
+    (SELECT count(*) FROM orders) orders`);
   const installs = (await q(`SELECT id, name, contact, blocked, created_at, last_seen_at FROM installs ORDER BY created_at`)).rows;
   const datasets = (await q(`SELECT name, version, length(data) AS size, updated_at FROM datasets ORDER BY name`)).rows;
   return c.json({
@@ -548,6 +559,10 @@ admin.get("/export", (c) =>
 );
 
 admin.post("/import", async (c) => c.json(await importStream(c.req.raw.body)));
+
+// Parts cross-reference and marketplace (src/parts.mjs, src/market.mjs; docs/parts-and-marketplace.md).
+registerParts({ member, admin, fail, newId, writeLimit, validUrl });
+registerMarket({ member, fail, newId, writeLimit, notify });
 
 // Admin first: the member routes below would otherwise answer /v1/admin/* with their key check.
 app.route("/v1/admin", admin);

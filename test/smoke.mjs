@@ -1,4 +1,4 @@
-// End-to-end check of a StitchHub server. Uses a throwaway member and link, and cleans up what it can.
+// End-to-end check of a StitchHub server. Uses throwaway members, links, parts and listings, and cleans up what it can.
 // usage: HUB_URL=http://localhost:8080 ADMIN_TOKEN=... JOIN_KEY=... node test/smoke.mjs
 import assert from "node:assert/strict";
 import zlib from "node:zlib";
@@ -6,7 +6,7 @@ import zlib from "node:zlib";
 const HUB = (process.env.HUB_URL ?? "http://localhost:8080").replace(/\/$/, "");
 const ADMIN = process.env.ADMIN_TOKEN;
 const JOIN = process.env.JOIN_KEY;
-const RUN = Date.now().toString(36); // fresh URLs each run
+const RUN = Date.now().toString(36); // fresh URLs and part numbers each run
 assert.ok(ADMIN && JOIN, "set ADMIN_TOKEN and JOIN_KEY");
 
 async function call(path, { key, method = "GET", json, body, headers = {} } = {}) {
@@ -21,10 +21,13 @@ const ok = async (r) => {
   if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
   return r;
 };
+const get = async (path, key) => (await ok(await call(path, { key }))).json();
+const send = async (path, key, json, method = "POST") => (await ok(await call(path, { key, method, json }))).json();
 
 // Joining needs the right key.
 assert.equal((await call("/v1/register", { method: "POST", json: { joinKey: "wrong", name: "Nope" } })).status, 403);
-const { installKey } = await (await ok(await call("/v1/register", { method: "POST", json: { joinKey: JOIN, name: "Smoke Test Shop" } }))).json();
+const register = async (name) => (await (await ok(await call("/v1/register", { method: "POST", json: { joinKey: JOIN, name } }))).json()).installKey;
+const installKey = await register("Smoke Test Shop");
 assert.match(installKey, /^shk_/);
 assert.equal((await call("/v1/changes")).status, 401);
 console.log("join: ok");
@@ -62,14 +65,141 @@ await ok(await call(`/v1/figures/${figId}?w=1&h=1`, { key: installKey, method: "
 assert.equal((await ok(await call(`/v1/figures/${figId}`, { key: installKey }))).headers.get("content-type"), "image/png");
 console.log("figures: ok");
 
-// Changes: everything above comes back, in order, with a cursor.
+// Parts cross-reference: add, duplicate number refused, edit, history, revert, merge.
+const nA = `XA${RUN}1`;
+const part = await send("/v1/xparts", installKey, {
+  name: "Smoke screw",
+  kind: "PART",
+  category: "Screw",
+  specs: "M3 x 6 mm",
+  numbers: [
+    { brand: "Brother", number: nA },
+    { brand: "Baby Lock", number: `BL-${RUN}` },
+  ],
+  fits: [{ brand: "Brother", model: "PR-655", evidence: "tested" }],
+  sources: [{ vendor: "Test Supply", url: "https://example.com/p", priceCents: 199 }],
+  byName: "Tester",
+});
+assert.equal(part.numbers.length, 2);
+assert.equal(part.fits[0].modelKey, "PR655");
+assert.equal(part.sources[0].byShop, "Smoke Test Shop");
+const dupPart = await call("/v1/xparts", { key: installKey, method: "POST", json: { name: "Same", numbers: [{ brand: "brother", number: nA.toLowerCase().replace(/^xa/, "xa-") }] } });
+assert.equal(dupPart.status, 409);
+assert.equal((await dupPart.json()).partId, part.id);
+const partEdited = await send(
+  `/v1/xparts/${part.id}`,
+  installKey,
+  { ...part, name: "Smoke screw M3x6", fits: [...part.fits, { brand: "Baby Lock", model: "BMP9" }], byName: "Tester", note: "fits the BMP9 too" },
+  "PUT",
+);
+assert.equal(partEdited.name, "Smoke screw M3x6");
+assert.equal(partEdited.fits.length, 2);
+assert.equal(partEdited.fits.find((f) => f.modelKey === "BMP9").evidence, "tested");
+assert.equal(partEdited.sources[0].id, part.sources[0].id); // unchanged source keeps its id
+const partHistory = await get(`/v1/xparts/${part.id}/history`, installKey);
+assert.deepEqual(partHistory.map((h) => h.action), ["edited", "added"]);
+assert.equal(partHistory[1].snapshot.name, "Smoke screw");
+const partReverted = await send(`/v1/xparts/${part.id}/revert`, installKey, { revisionId: partHistory[1].id, byName: "Tester" });
+assert.equal(partReverted.name, "Smoke screw");
+assert.equal(partReverted.fits.length, 1);
+const other = await send("/v1/xparts", installKey, { name: "Same screw, Singer number", numbers: [{ brand: "Singer", number: `S${RUN}` }], fits: [{ brand: "Singer", model: "4423" }], byName: "Tester" });
+const mergedPart = await send(`/v1/xparts/${other.id}/merge`, installKey, { intoId: part.id, byName: "Tester" });
+assert.equal(mergedPart.numbers.length, 3);
+assert.ok(mergedPart.fits.some((f) => f.modelKey === "4423"));
+assert.equal((await get(`/v1/xparts/${other.id}/history`, installKey))[0].action, "merged");
+console.log("parts: ok");
+
+// Admin bulk import: a new part, and an entry whose number is already on the hub (merged into that part).
+const imported = await send("/v1/admin/xparts/import", ADMIN, [
+  { name: "Imported part", numbers: [{ brand: "Janome", number: `IMP${RUN}` }], fits: [{ brand: "Janome", model: "MC6700P" }] },
+  { numbers: [{ brand: "Brother", number: nA }], fits: [{ brand: "Brother", model: "PR1050X" }] },
+  { name: "nothing to add" },
+]);
+assert.deepEqual(imported, { added: 1, merged: 1, skipped: 1 });
+console.log("parts import: ok");
+
+// Marketplace: list with a photo, update, and a second shop's view.
+const buyerKey = await register("Smoke Buyer Shop");
+const listingForm = new FormData();
+listingForm.set(
+  "listing",
+  JSON.stringify({ title: `Smoke bobbin case ${RUN}`, kind: "PART", condition: "USED", brand: "Brother", partNumber: nA, xpartId: part.id, priceCents: 1500, qty: 3, shippingCents: 500, shipsFrom: "Testville, TS" }),
+);
+listingForm.append("photo", new Blob([png], { type: "image/png" }), "l.png");
+const listing = await (await ok(await call("/v1/listings", { key: installKey, method: "POST", body: listingForm }))).json();
+assert.ok(listing.mine && listing.photos.length === 1 && listing.status === "ACTIVE");
+const repriced = await send(`/v1/listings/${listing.id}`, installKey, { priceCents: 1400 }, "PUT");
+assert.equal(repriced.priceCents, 1400);
+assert.equal((await call(`/v1/listings/${listing.id}`, { key: buyerKey, method: "PUT", json: { priceCents: 1 } })).status, 403);
+assert.equal((await ok(await call(`/v1/listing-photos/${listing.photos[0].id}`, { key: buyerKey }))).headers.get("content-type"), "image/png");
+console.log("listings: ok");
+
+// Orders: request, accept (stock goes down), paid, shipped with tracking, received.
+const ship = { shipTo: "Smoke Buyer Shop, 1 Test Road, Testville TS 00000", buyerContact: { name: "Buyer", email: "buyer@example.com" } };
+assert.equal((await call("/v1/orders", { key: installKey, method: "POST", json: { listingId: listing.id, qty: 1, ...ship } })).status, 409); // own listing
+assert.equal((await call("/v1/orders", { key: buyerKey, method: "POST", json: { listingId: listing.id, qty: 9, ...ship } })).status, 409); // more than listed
+let order = await send("/v1/orders", buyerKey, { listingId: listing.id, qty: 2, buyerNote: "for a PR655", ...ship });
+assert.equal(order.status, "REQUESTED");
+assert.equal(order.role, "buyer");
+assert.equal(order.totalCents, 2 * 1400 + 500);
+assert.match(order.number, /^SH-\d{6}$/);
+assert.equal((await call(`/v1/orders/${order.id}/accept`, { key: buyerKey, method: "POST", json: {} })).status, 409); // wrong role
+order = await send(`/v1/orders/${order.id}/accept`, installKey, {
+  sellerContact: { name: "Smoke Test Shop", address: "2 Test St, Testville", email: "seller@example.com" },
+  payInstructions: "PayPal seller@example.com",
+});
+assert.equal(order.status, "ACCEPTED");
+assert.equal(order.role, "seller");
+assert.equal((await send(`/v1/listings/${listing.id}`, installKey, {}, "PUT")).qty, 1);
+order = await send(`/v1/orders/${order.id}/buyer-paid`, buyerKey, { note: "sent by PayPal" });
+assert.equal(order.buyerPaidNote, "sent by PayPal");
+assert.equal((await call(`/v1/orders/${order.id}/received`, { key: buyerKey, method: "POST", json: {} })).status, 409); // not shipped yet
+order = await send(`/v1/orders/${order.id}/paid`, installKey, {});
+assert.equal(order.status, "PAID");
+order = await send(`/v1/orders/${order.id}/ship`, installKey, { carrier: "USPS", tracking: "9400 1000 0000 0000 0000 00" });
+assert.equal(order.status, "SHIPPED");
+assert.match(order.trackingUrl, /usps\.com.*9400100000000000000000/);
+await send(`/v1/orders/${order.id}/message`, buyerKey, { text: "Thanks!" });
+order = await send(`/v1/orders/${order.id}/received`, buyerKey, {});
+assert.equal(order.status, "RECEIVED");
+assert.deepEqual(order.events.map((e) => e.action), ["requested", "accepted", "buyer-paid", "paid", "shipped", "message", "received"]);
+
+// A cancelled order puts the stock back (the last one sells out the listing first).
+let second = await send("/v1/orders", buyerKey, { listingId: listing.id, qty: 1, ...ship });
+second = await send(`/v1/orders/${second.id}/accept`, installKey, { payInstructions: "Zelle" });
+let listingNow = await send(`/v1/listings/${listing.id}`, installKey, {}, "PUT");
+assert.equal(listingNow.qty, 0);
+assert.equal(listingNow.status, "SOLD_OUT");
+assert.equal((await call("/v1/orders", { key: buyerKey, method: "POST", json: { listingId: listing.id, qty: 1, ...ship } })).status, 409); // sold out
+second = await send(`/v1/orders/${second.id}/cancel`, buyerKey, { reason: "found one locally" });
+assert.equal(second.status, "CANCELLED");
+listingNow = await send(`/v1/listings/${listing.id}`, installKey, {}, "PUT");
+assert.equal(listingNow.qty, 1);
+assert.equal(listingNow.status, "ACTIVE");
+
+// Orders are private: a third shop can't see or touch them.
+const thirdKey = await register("Smoke Third Shop");
+const third = await send("/v1/orders", thirdKey, { listingId: listing.id, qty: 1, ...ship });
+const buyerOrders = (await get("/v1/orders?since=0", buyerKey)).orders.map((o) => o.id);
+assert.ok(buyerOrders.includes(order.id) && buyerOrders.includes(second.id) && !buyerOrders.includes(third.id));
+assert.equal((await call(`/v1/orders/${third.id}/cancel`, { key: buyerKey, method: "POST", json: {} })).status, 404);
+const sellerOrders = await get("/v1/orders?since=0", installKey);
+assert.ok([order.id, second.id, third.id].every((id) => sellerOrders.orders.some((o) => o.id === id)));
+assert.equal((await get(`/v1/orders?since=${sellerOrders.next}`, installKey)).orders.length, 0);
+await send(`/v1/orders/${third.id}/decline`, installKey, { reason: "smoke test" });
+console.log("orders: ok");
+
+// Changes: everything above comes back, in order, with a cursor (orders never do).
 let since = "0";
-const seen = { links: new Map(), posts: new Map(), figures: new Set() };
+const seen = { links: new Map(), posts: new Map(), figures: new Set(), xparts: new Map(), listings: new Map() };
 for (;;) {
   const ch = await (await ok(await call(`/v1/changes?since=${since}&limit=500`, { key: installKey }))).json();
   ch.links.forEach((l) => seen.links.set(l.id, l));
   ch.posts.forEach((p) => seen.posts.set(p.id, p));
   ch.figures.forEach((f) => seen.figures.add(f));
+  ch.xparts.forEach((x) => seen.xparts.set(x.id, x));
+  ch.listings.forEach((x) => seen.listings.set(x.id, x));
+  assert.equal(ch.orders, undefined);
   since = ch.next;
   if (!ch.more) break;
 }
@@ -77,13 +207,20 @@ assert.equal(seen.links.get(link.id).url, `https://example.com/${RUN}/a.pdf`);
 const post = seen.posts.get(postId);
 assert.ok(post.mine && post.photos.length === 1 && post.photos[0].kind === "WIRING");
 assert.ok(seen.figures.has(figId));
+assert.equal(seen.xparts.get(part.id).numbers.length, 3);
+assert.ok(seen.xparts.get(part.id).fits.some((f) => f.modelKey === "PR1050X")); // from the import
+assert.equal(seen.xparts.get(other.id).deleted, true);
+assert.equal(seen.listings.get(listing.id).mine, true);
 const photo = await ok(await call(`/v1/photos/${post.photos[0].id}`, { key: installKey }));
 assert.equal(Buffer.from(await photo.arrayBuffer()).length, png.length);
 const again = await (await ok(await call(`/v1/changes?since=${since}`, { key: installKey }))).json();
-assert.equal(again.links.length + again.posts.length + again.figures.length, 0);
+assert.equal(again.links.length + again.posts.length + again.figures.length + again.xparts.length + again.listings.length, 0);
+const buyerView = await get(`/v1/changes?since=${Number(since) - 50 > 0 ? Number(since) - 50 : 0}&limit=2000`, buyerKey);
+const seenByBuyer = buyerView.listings.find((l) => l.id === listing.id);
+if (seenByBuyer) assert.equal(seenByBuyer.mine, false);
 console.log("changes: ok");
 
-// Admin: wrong token refused; summary, export (valid gzip), block.
+// Admin: wrong token refused; summary, export (valid gzip, new tables included), block.
 assert.equal((await call("/v1/admin/summary", { key: "wrong-token" })).status, 401);
 const summary = await (await ok(await call("/v1/admin/summary", { key: ADMIN }))).json();
 const { installId } = await (await ok(await call("/v1/me", { key: installKey }))).json();
@@ -93,11 +230,24 @@ const exp = Buffer.from(await (await ok(await call("/v1/admin/export", { key: AD
 const lines = zlib.gunzipSync(exp).toString("utf8").trim().split("\n").map((l) => JSON.parse(l));
 assert.equal(lines[0].format, "stitchhub-export");
 assert.ok(lines.some((l) => l.t === "photo" && l.data));
+for (const t of ["xpart", "xpart_number", "xpart_fit", "xpart_source", "xpart_revision", "listing", "listing_photo", "order", "order_event"]) {
+  assert.ok(lines.some((l) => l.t === t), `export has ${t}`);
+}
+assert.ok(lines.some((l) => l.t === "xpart_revision" && l.snapshot?.id === part.id));
 console.log(`export: ok (${lines.length} rows)`);
 
-// Clean up: remove the note and link, block the test member (blocked installs are refused).
+// Clean up: remove the note, link, listing and part; block the test members (blocked installs are refused).
 await ok(await call(`/v1/posts/${postId}`, { key: installKey, method: "DELETE" }));
 await ok(await call(`/v1/links/${link.id}`, { key: installKey, method: "DELETE", json: { byName: "Tester", note: "smoke test" } }));
+await ok(await call(`/v1/listings/${listing.id}`, { key: installKey, method: "DELETE" }));
+await ok(await call(`/v1/xparts/${part.id}`, { key: installKey, method: "DELETE", json: { byName: "Tester", note: "smoke test" } }));
+const importedPart = [...seen.xparts.values()].find((x) => x.numbers.some((n) => n.number === `IMP${RUN}`));
+if (importedPart) await ok(await call(`/v1/xparts/${importedPart.id}`, { key: installKey, method: "DELETE", json: { byName: "Tester", note: "smoke test" } }));
+const all = (await (await ok(await call("/v1/admin/summary", { key: ADMIN }))).json()).installs;
+for (const name of ["Smoke Buyer Shop", "Smoke Third Shop"]) {
+  for (const i of all.filter((x) => x.name === name && !x.blocked)) await ok(await call(`/v1/admin/installs/${i.id}/block`, { key: ADMIN, method: "POST", json: { blocked: true } }));
+}
 await ok(await call(`/v1/admin/installs/${me.id}/block`, { key: ADMIN, method: "POST", json: { blocked: true } }));
 assert.equal((await call("/v1/me", { key: installKey })).status, 403);
+assert.equal((await call("/v1/me", { key: buyerKey })).status, 403);
 console.log("all checks passed");

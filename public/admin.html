@@ -101,7 +101,7 @@
   async function load() {
     const s = await (await api("/summary")).json();
     $("login").hidden = true; $("app").hidden = false;
-    const stats = [["Manual links", s.counts.links], ["Working", s.counts.ok], ["Dead", s.counts.dead], ["Notes", s.counts.posts], ["Figures", s.counts.figures], ["Members", s.counts.installs]];
+    const stats = [["Manual links", s.counts.links], ["Working", s.counts.ok], ["Dead", s.counts.dead], ["Notes", s.counts.posts], ["Figures", s.counts.figures], ["Members", s.counts.installs], ["Parts", s.counts.parts], ["Listings", s.counts.listings], ["Orders", s.counts.orders]];
     $("stats").replaceChildren(...stats.map(([k, v]) => { const d = document.createElement("div"); d.innerHTML = '<div class="muted"></div><div class="stat"></div>'; d.children[0].textContent = k; d.children[1].textContent = v; return d; }));
     $("join").value = s.joinKey || "";
     $("dInvite").value = s.discordInvite || "";

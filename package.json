@@ -8,7 +8,7 @@
   "main": "src/server.mjs",
   "scripts": {
     "start": "node src/server.mjs",
-    "check": "node --check src/server.mjs && node --check src/db.mjs && node --check src/checker.mjs && node --check src/transfer.mjs",
+    "check": "node --check src/server.mjs && node --check src/db.mjs && node --check src/checker.mjs && node --check src/transfer.mjs && node --check src/parts.mjs && node --check src/market.mjs",
     "test": "node test/smoke.mjs"
   },
   "engines": {
