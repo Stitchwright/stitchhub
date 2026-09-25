@@ -1,6 +1,6 @@
 // Moving a hub: export everything to one file (gzipped JSON lines) and import it on a new server.
 // Keeps members working: installs (their hashed keys), the join key, links with history, notes, photos, figures,
-// data sets, the parts cross-reference with its history, and marketplace listings and orders.
+// data sets, the parts cross-reference with its history, and marketplace listings, orders and ratings.
 import zlib from "node:zlib";
 import readline from "node:readline";
 import { Readable } from "node:stream";
@@ -53,6 +53,13 @@ const TABLES = [
     ],
   },
   { t: "order_event", table: "order_events", cols: ["id", "order_id", "by_role", "action", "note", "created_at"] },
+  {
+    t: "order_rating",
+    table: "order_ratings",
+    cols: ["order_id", "by_role", "rater_install_id", "rated_install_id", "stars", "comment", "created_at", "updated_at"],
+    key: "order_id || '|' || by_role",
+    conflict: ["order_id", "by_role"],
+  },
 ];
 const BINARY = new Set(["data"]);
 const JSONB = new Set(["snapshot", "item", "buyer_contact", "seller_contact"]);

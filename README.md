@@ -94,7 +94,7 @@ buyer and the seller. The full contract is in [docs/parts-and-marketplace.md](do
 ```
 HUB_URL=https://your-hub ADMIN_TOKEN=... JOIN_KEY=... npm test
 ```
-This creates throwaway members, a link, a note, parts, a listing and orders, and checks every part of the API. It
+This creates throwaway members, a link, a note, parts, buying links, a listing, orders and ratings, and checks every part of the API. It
 then removes the note, link, listing and parts and blocks the test members.
 
 ## API (for StitchBench)

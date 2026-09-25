@@ -464,4 +464,123 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
     }
     return c.json({ added, merged, skipped });
   });
+
+  // Where to buy, in bulk (from a supplier scan): [{ number, brand?, vendor, url, priceCents?, currency?, note? }].
+  // Each row goes on the part that owns that number (that brand's number when a brand is given), keyed by
+  // (part, url): a link already on the part gets its vendor, price and note updated instead of a second copy.
+  // Rows whose number isn't on the hub (or that are missing a vendor or a valid link) count as unmatched.
+  admin.post("/xparts/sources/import", async (c) => {
+    const list = await c.req.json();
+    if (!Array.isArray(list)) throw fail(400, "Send a JSON array of sources.");
+    let attached = 0;
+    let updated = 0;
+    let unchanged = 0;
+    let unmatched = 0;
+    const SCAN = "StitchHub scan";
+    for (let start = 0; start < list.length; start += 5000) {
+      const rows = [];
+      for (const raw of list.slice(start, start + 5000)) {
+        const numberKey = key(raw?.number);
+        const vendor = str(raw?.vendor, 120);
+        const url = str(raw?.url, 1000);
+        const price = raw?.priceCents == null || raw.priceCents === "" ? null : Number(raw.priceCents);
+        if (!numberKey || !vendor || !url || !validUrl(url) || (price != null && (!Number.isInteger(price) || price < 0))) {
+          unmatched++;
+          continue;
+        }
+        rows.push({
+          numberKey,
+          brandKey: raw.brand ? key(raw.brand) : null,
+          vendor,
+          url,
+          priceCents: price,
+          currency: /^[A-Z]{3}$/.test(String(raw.currency ?? "")) ? raw.currency : "USD",
+          note: str(raw.note, 300),
+        });
+      }
+      if (!rows.length) continue;
+      await tx(async (client) => {
+        // Which live parts own these numbers (by brand, for rows that name one).
+        const { rows: owners } = await client.query(
+          `SELECT n.number_key, n.brand_key, n.xpart_id FROM xpart_numbers n JOIN xparts p ON p.id = n.xpart_id AND NOT p.deleted
+           WHERE n.number_key = ANY($1) ORDER BY n.number_key, n.brand_key`,
+          [[...new Set(rows.map((r) => r.numberKey))]],
+        );
+        const byNumber = new Map();
+        for (const o of owners) byNumber.set(o.number_key, [...(byNumber.get(o.number_key) ?? []), o]);
+        // The last row for a (part, link) wins.
+        const wanted = new Map();
+        for (const r of rows) {
+          const cands = byNumber.get(r.numberKey);
+          if (!cands) {
+            unmatched++;
+            continue;
+          }
+          const part = (r.brandKey && cands.find((o) => o.brand_key === r.brandKey)) || cands[0];
+          wanted.set(`${part.xpart_id}|${r.url}`, { ...r, partId: part.xpart_id });
+        }
+        if (!wanted.size) return;
+        const partIds = [...new Set([...wanted.values()].map((w) => w.partId))];
+        const { rows: existing } = await client.query(
+          `SELECT id, xpart_id, url, vendor, price_cents, currency, note FROM xpart_sources WHERE xpart_id = ANY($1) AND url IS NOT NULL`,
+          [partIds],
+        );
+        const have = new Map(existing.map((s) => [`${s.xpart_id}|${s.url}`, s]));
+        const inserts = [];
+        const updates = [];
+        const touched = new Set();
+        for (const [k, w] of wanted) {
+          const s = have.get(k);
+          if (!s) {
+            inserts.push({ ...w, id: newId() });
+            touched.add(w.partId);
+            attached++;
+          } else if (s.vendor !== w.vendor || (s.price_cents ?? null) !== w.priceCents || s.currency !== w.currency || (s.note ?? null) !== w.note) {
+            updates.push({ ...w, id: s.id });
+            touched.add(w.partId);
+            updated++;
+          } else unchanged++;
+        }
+        if (inserts.length) {
+          await client.query(
+            `INSERT INTO xpart_sources (id, xpart_id, vendor, url, price_cents, currency, note, by_shop, updated_at)
+             SELECT u.id, u.part, u.vendor, u.url, u.price, u.currency, u.note, $8, now()
+             FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::int[], $6::text[], $7::text[]) AS u(id, part, vendor, url, price, currency, note)`,
+            [
+              inserts.map((w) => w.id),
+              inserts.map((w) => w.partId),
+              inserts.map((w) => w.vendor),
+              inserts.map((w) => w.url),
+              inserts.map((w) => w.priceCents),
+              inserts.map((w) => w.currency),
+              inserts.map((w) => w.note),
+              SCAN,
+            ],
+          );
+        }
+        if (updates.length) {
+          await client.query(
+            `UPDATE xpart_sources s SET vendor = u.vendor, price_cents = u.price, currency = u.currency, note = u.note, by_shop = $6, updated_at = now()
+             FROM unnest($1::text[], $2::text[], $3::int[], $4::text[], $5::text[]) AS u(id, vendor, price, currency, note)
+             WHERE s.id = u.id`,
+            [updates.map((w) => w.id), updates.map((w) => w.vendor), updates.map((w) => w.priceCents), updates.map((w) => w.currency), updates.map((w) => w.note), SCAN],
+          );
+        }
+        if (!touched.size) return;
+        const ids = [...touched];
+        await client.query(`UPDATE xparts SET updated_at = now(), seq = nextval('change_seq') WHERE id = ANY($1)`, [ids]);
+        // One revision per part whose sources changed, holding the whole entry.
+        for (let i = 0; i < ids.length; i += 1000) {
+          const snaps = await partsByIds(ids.slice(i, i + 1000), client);
+          await client.query(
+            `INSERT INTO xpart_revisions (id, xpart_id, action, snapshot, by_name, by_shop, note)
+             SELECT u.id, u.part, 'sources', u.snap::jsonb, 'scan', $4, 'where to buy updated by the supplier scan'
+             FROM unnest($1::text[], $2::text[], $3::text[]) AS u(id, part, snap)`,
+            [snaps.map(() => newId()), snaps.map((s) => s.id), snaps.map((s) => JSON.stringify(s)), SCAN],
+          );
+        }
+      });
+    }
+    return c.json({ attached, updated, unmatched, unchanged });
+  });
 }

@@ -456,7 +456,7 @@ admin.get("/summary", async (c) => {
     (SELECT count(*) FROM links WHERE status='ok' AND NOT deleted) ok, (SELECT count(*) FROM posts WHERE NOT deleted) posts,
     (SELECT count(*) FROM figures) figures, (SELECT count(*) FROM installs) installs,
     (SELECT count(*) FROM xparts WHERE NOT deleted) parts, (SELECT count(*) FROM listings WHERE status = 'ACTIVE') listings,
-    (SELECT count(*) FROM orders) orders`);
+    (SELECT count(*) FROM orders) orders, (SELECT count(*) FROM order_ratings) ratings`);
   const installs = (await q(`SELECT id, name, contact, blocked, created_at, last_seen_at FROM installs ORDER BY created_at`)).rows;
   const datasets = (await q(`SELECT name, version, length(data) AS size, updated_at FROM datasets ORDER BY name`)).rows;
   return c.json({

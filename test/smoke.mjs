@@ -118,6 +118,30 @@ const imported = await send("/v1/admin/xparts/import", ADMIN, [
 assert.deepEqual(imported, { added: 1, merged: 1, skipped: 1 });
 console.log("parts import: ok");
 
+// Bulk "where to buy" (supplier scan): attach, update on re-import, nothing new on an identical re-import.
+const srcUrl = `https://example.com/${RUN}/src`;
+const scan = (priceCents) => [
+  { number: nA.toLowerCase(), brand: "Brother", vendor: "Smoke Supply", url: srcUrl, priceCents },
+  { number: `NOPE${RUN}`, vendor: "Nowhere", url: "https://example.com/none" },
+  { number: nA, vendor: "Bad link", url: "ftp://example.com/x" },
+];
+assert.deepEqual(await send("/v1/admin/xparts/sources/import", ADMIN, scan(199)), { attached: 1, updated: 0, unmatched: 2, unchanged: 0 });
+assert.deepEqual(await send("/v1/admin/xparts/sources/import", ADMIN, scan(249)), { attached: 0, updated: 1, unmatched: 2, unchanged: 0 });
+assert.deepEqual(await send("/v1/admin/xparts/sources/import", ADMIN, scan(249)), { attached: 0, updated: 0, unmatched: 2, unchanged: 1 });
+// By the Baby Lock number, with no brand: same part, same link, so still one copy.
+assert.deepEqual(await send("/v1/admin/xparts/sources/import", ADMIN, [{ number: `BL-${RUN}`, vendor: "Smoke Supply", url: srcUrl, priceCents: 249, note: "in stock" }]), {
+  attached: 0,
+  updated: 1,
+  unmatched: 0,
+  unchanged: 0,
+});
+const [scanned] = (await get(`/v1/xparts/${part.id}/history`, installKey)).slice(0, 1);
+assert.equal(scanned.action, "sources");
+const scannedSources = scanned.snapshot.sources.filter((s) => s.url === srcUrl);
+assert.equal(scannedSources.length, 1);
+assert.deepEqual([scannedSources[0].priceCents, scannedSources[0].note, scannedSources[0].byShop], [249, "in stock", "StitchHub scan"]);
+console.log("sources import: ok");
+
 // Marketplace: list with a photo, update, and a second shop's view.
 const buyerKey = await register("Smoke Buyer Shop");
 const listingForm = new FormData();
@@ -150,19 +174,45 @@ order = await send(`/v1/orders/${order.id}/accept`, installKey, {
 });
 assert.equal(order.status, "ACCEPTED");
 assert.equal(order.role, "seller");
+assert.equal((await call(`/v1/orders/${order.id}/rate`, { key: installKey, method: "POST", json: { stars: 4 } })).status, 409); // seller: not paid yet
+assert.equal((await call(`/v1/orders/${order.id}/rate`, { key: buyerKey, method: "POST", json: { stars: 5 } })).status, 409); // buyer: not shipped yet
 assert.equal((await send(`/v1/listings/${listing.id}`, installKey, {}, "PUT")).qty, 1);
 order = await send(`/v1/orders/${order.id}/buyer-paid`, buyerKey, { note: "sent by PayPal" });
 assert.equal(order.buyerPaidNote, "sent by PayPal");
 assert.equal((await call(`/v1/orders/${order.id}/received`, { key: buyerKey, method: "POST", json: {} })).status, 409); // not shipped yet
 order = await send(`/v1/orders/${order.id}/paid`, installKey, {});
 assert.equal(order.status, "PAID");
+assert.equal((await call(`/v1/orders/${order.id}/rate`, { key: installKey, method: "POST", json: { stars: 9 } })).status, 400);
+order = await send(`/v1/orders/${order.id}/rate`, installKey, { stars: 4, comment: "paid quickly" }); // the seller rates the buyer
+assert.deepEqual([order.ratings.seller.stars, order.ratings.seller.comment, order.ratings.buyer], [4, "paid quickly", null]);
+assert.deepEqual(order.buyerReputation, { avg: 4, count: 1 });
 order = await send(`/v1/orders/${order.id}/ship`, installKey, { carrier: "USPS", tracking: "9400 1000 0000 0000 0000 00" });
 assert.equal(order.status, "SHIPPED");
 assert.match(order.trackingUrl, /usps\.com.*9400100000000000000000/);
 await send(`/v1/orders/${order.id}/message`, buyerKey, { text: "Thanks!" });
 order = await send(`/v1/orders/${order.id}/received`, buyerKey, {});
 assert.equal(order.status, "RECEIVED");
-assert.deepEqual(order.events.map((e) => e.action), ["requested", "accepted", "buyer-paid", "paid", "shipped", "message", "received"]);
+assert.deepEqual(order.events.map((e) => e.action), ["requested", "accepted", "buyer-paid", "paid", "rated", "shipped", "message", "received"]);
+
+// Ratings: the buyer rates the seller (again replaces it); reputations add up.
+order = await send(`/v1/orders/${order.id}/rate`, buyerKey, { stars: 5, comment: "fast shipping" });
+assert.equal(order.ratings.buyer.stars, 5);
+order = await send(`/v1/orders/${order.id}/rate`, buyerKey, { stars: 3, comment: "fine" });
+assert.deepEqual([order.ratings.buyer.stars, order.ratings.buyer.comment, order.ratings.seller.stars], [3, "fine", 4]);
+assert.deepEqual(order.sellerReputation, { avg: 3, count: 1 });
+assert.equal(order.events.filter((e) => e.action === "rated").length, 3);
+const sellerId = (await get("/v1/me", installKey)).installId;
+const buyerId = (await get("/v1/me", buyerKey)).installId;
+const rep = await get(`/v1/reputation/${sellerId}`, buyerKey);
+assert.deepEqual(rep.asSeller, { avg: 3, count: 1 });
+assert.deepEqual(rep.asBuyer, { avg: null, count: 0 });
+assert.deepEqual(
+  rep.recent.map((r) => [r.stars, r.comment, r.role]),
+  [[3, "fine", "seller"]],
+);
+assert.deepEqual((await get(`/v1/reputation/${buyerId}`, installKey)).asBuyer, { avg: 4, count: 1 });
+assert.equal((await call("/v1/reputation/nope", { key: buyerKey })).status, 404);
+console.log("ratings: ok");
 
 // A cancelled order puts the stock back (the last one sells out the listing first).
 let second = await send("/v1/orders", buyerKey, { listingId: listing.id, qty: 1, ...ship });
@@ -211,6 +261,8 @@ assert.equal(seen.xparts.get(part.id).numbers.length, 3);
 assert.ok(seen.xparts.get(part.id).fits.some((f) => f.modelKey === "PR1050X")); // from the import
 assert.equal(seen.xparts.get(other.id).deleted, true);
 assert.equal(seen.listings.get(listing.id).mine, true);
+assert.equal(seen.listings.get(listing.id).sellerId, sellerId);
+assert.deepEqual(seen.listings.get(listing.id).sellerRating, { avg: 3, count: 1 });
 const photo = await ok(await call(`/v1/photos/${post.photos[0].id}`, { key: installKey }));
 assert.equal(Buffer.from(await photo.arrayBuffer()).length, png.length);
 const again = await (await ok(await call(`/v1/changes?since=${since}`, { key: installKey }))).json();
@@ -230,7 +282,7 @@ const exp = Buffer.from(await (await ok(await call("/v1/admin/export", { key: AD
 const lines = zlib.gunzipSync(exp).toString("utf8").trim().split("\n").map((l) => JSON.parse(l));
 assert.equal(lines[0].format, "stitchhub-export");
 assert.ok(lines.some((l) => l.t === "photo" && l.data));
-for (const t of ["xpart", "xpart_number", "xpart_fit", "xpart_source", "xpart_revision", "listing", "listing_photo", "order", "order_event"]) {
+for (const t of ["xpart", "xpart_number", "xpart_fit", "xpart_source", "xpart_revision", "listing", "listing_photo", "order", "order_event", "order_rating"]) {
   assert.ok(lines.some((l) => l.t === t), `export has ${t}`);
 }
 assert.ok(lines.some((l) => l.t === "xpart_revision" && l.snapshot?.id === part.id));

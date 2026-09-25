@@ -33,10 +33,36 @@ export function trackingUrl(carrier, tracking) {
   return null;
 }
 
-function listingOut(l, photos, installId) {
+const NO_RATING = { avg: null, count: 0 };
+
+/**
+ * Ratings each install has received: as a seller (from buyers, by_role 'buyer') and as a buyer (from sellers,
+ * by_role 'seller'). Map installId -> { asSeller: {avg, count}, asBuyer: {avg, count} }.
+ */
+export async function reputations(installIds, db = pool) {
+  const ids = [...new Set(installIds.filter(Boolean))];
+  const out = new Map(ids.map((id) => [id, { asSeller: NO_RATING, asBuyer: NO_RATING }]));
+  if (!ids.length) return out;
+  const { rows } = await db.query(
+    `SELECT rated_install_id AS id, by_role, round(avg(stars)::numeric, 1) AS avg, count(*)::int AS n
+     FROM order_ratings WHERE rated_install_id = ANY($1) GROUP BY 1, 2`,
+    [ids],
+  );
+  for (const r of rows) {
+    const rep = out.get(r.id);
+    const v = { avg: Number(r.avg), count: r.n };
+    if (r.by_role === "buyer") rep.asSeller = v;
+    else rep.asBuyer = v;
+  }
+  return out;
+}
+
+function listingOut(l, photos, installId, rep) {
   return {
     id: l.id,
     shopName: l.shop_name,
+    sellerId: l.install_id,
+    sellerRating: rep?.asSeller ?? NO_RATING,
     mine: l.install_id === installId,
     title: l.title,
     description: l.description,
@@ -64,11 +90,17 @@ export async function listingsByIds(ids, installId, db = pool) {
   if (!ids.length) return [];
   const rows = (await db.query(`SELECT * FROM listings WHERE id = ANY($1)`, [ids])).rows;
   const photos = (await db.query(`SELECT id, listing_id, sort_order FROM listing_photos WHERE listing_id = ANY($1) ORDER BY sort_order`, [ids])).rows;
-  const byId = new Map(rows.map((l) => [l.id, listingOut(l, photos.filter((p) => p.listing_id === l.id), installId)]));
+  const reps = await reputations(
+    rows.map((l) => l.install_id),
+    db,
+  );
+  const byId = new Map(rows.map((l) => [l.id, listingOut(l, photos.filter((p) => p.listing_id === l.id), installId, reps.get(l.install_id))]));
   return ids.map((id) => byId.get(id)).filter(Boolean);
 }
 
-function orderOut(o, events, installId) {
+const ratingOut = (r) => (r ? { stars: r.stars, comment: r.comment, at: r.updated_at } : null);
+
+function orderOut(o, events, installId, ratings, reps) {
   const shipping = o.shipping_cents;
   return {
     id: o.id,
@@ -100,6 +132,13 @@ function orderOut(o, events, installId) {
     createdAt: o.created_at,
     updatedAt: o.updated_at,
     events: events.map((e) => ({ at: e.created_at, by: e.by_role, action: e.action, note: e.note })),
+    // buyer = the buyer's rating of the seller; seller = the seller's rating of the buyer
+    ratings: {
+      buyer: ratingOut(ratings.find((r) => r.by_role === "buyer")),
+      seller: ratingOut(ratings.find((r) => r.by_role === "seller")),
+    },
+    sellerReputation: reps.get(o.seller_install_id)?.asSeller ?? NO_RATING,
+    buyerReputation: reps.get(o.buyer_install_id)?.asBuyer ?? NO_RATING,
   };
 }
 
@@ -107,7 +146,23 @@ async function ordersByIds(ids, installId, db = pool) {
   if (!ids.length) return [];
   const rows = (await db.query(`SELECT * FROM orders WHERE id = ANY($1)`, [ids])).rows;
   const events = (await db.query(`SELECT * FROM order_events WHERE order_id = ANY($1) ORDER BY created_at, id`, [ids])).rows;
-  const byId = new Map(rows.map((o) => [o.id, orderOut(o, events.filter((e) => e.order_id === o.id), installId)]));
+  const ratings = (await db.query(`SELECT * FROM order_ratings WHERE order_id = ANY($1)`, [ids])).rows;
+  const reps = await reputations(
+    rows.flatMap((o) => [o.seller_install_id, o.buyer_install_id]),
+    db,
+  );
+  const byId = new Map(
+    rows.map((o) => [
+      o.id,
+      orderOut(
+        o,
+        events.filter((e) => e.order_id === o.id),
+        installId,
+        ratings.filter((r) => r.order_id === o.id),
+        reps,
+      ),
+    ]),
+  );
   return ids.map((id) => byId.get(id)).filter(Boolean);
 }
 
@@ -427,4 +482,60 @@ export function registerMarket({ member, fail, newId, writeLimit, notify }) {
       return { action: "message", note: text };
     }),
   );
+
+  // ---------- ratings ----------
+
+  // The buyer rates the seller once it has shipped; the seller rates the buyer once they've paid. Rating again
+  // replaces the earlier one.
+  const RATE_FROM = { buyer: ["SHIPPED", "RECEIVED"], seller: ["PAID", "SHIPPED", "RECEIVED"] };
+
+  member.post("/orders/:id/rate", async (c) => {
+    writeLimit(c);
+    const me = c.get("install").id;
+    const body = await c.req.json().catch(() => ({}));
+    const stars = Number(body.stars);
+    if (!Number.isInteger(stars) || stars < 1 || stars > 5) throw fail(400, "Give 1 to 5 stars.");
+    const comment = str(body.comment, 1000);
+    const id = c.req.param("id");
+    await tx(async (client) => {
+      const o = (await client.query(`SELECT * FROM orders WHERE id = $1 FOR UPDATE`, [id])).rows[0];
+      if (!o || (o.buyer_install_id !== me && o.seller_install_id !== me)) throw fail(404, "No such order.");
+      const mine = o.buyer_install_id === me ? "buyer" : "seller";
+      if (!RATE_FROM[mine].includes(o.status)) {
+        throw fail(409, mine === "buyer" ? "You can rate the seller once the order has shipped." : "You can rate the buyer once they've paid.");
+      }
+      const rated = mine === "buyer" ? o.seller_install_id : o.buyer_install_id;
+      await client.query(
+        `INSERT INTO order_ratings (order_id, by_role, rater_install_id, rated_install_id, stars, comment)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (order_id, by_role) DO UPDATE SET stars = EXCLUDED.stars, comment = EXCLUDED.comment,
+           rater_install_id = EXCLUDED.rater_install_id, rated_install_id = EXCLUDED.rated_install_id, updated_at = now()`,
+        [id, mine, me, rated, stars, comment],
+      );
+      await client.query(`UPDATE orders SET updated_at = now(), seq = nextval('change_seq') WHERE id = $1`, [id]);
+      await addEvent(client, id, mine, "rated", `${stars} star${stars === 1 ? "" : "s"}`);
+      // A new seller rating travels with that seller's listings to every member.
+      if (mine === "buyer" && rated) {
+        await client.query(`UPDATE listings SET seq = nextval('change_seq') WHERE install_id = $1 AND status <> 'REMOVED'`, [rated]);
+      }
+    });
+    return c.json((await ordersByIds([id], me))[0]);
+  });
+
+  // A shop's standing on the marketplace. `role` in recent is the rated shop's side of that order.
+  member.get("/reputation/:installId", async (c) => {
+    const id = c.req.param("installId");
+    const inst = await one(`SELECT id FROM installs WHERE id = $1`, [id]);
+    if (!inst) throw fail(404, "No such shop on the hub.");
+    const rep = (await reputations([id])).get(id);
+    const { rows } = await pool.query(
+      `SELECT stars, comment, by_role, updated_at FROM order_ratings WHERE rated_install_id = $1 ORDER BY updated_at DESC LIMIT 10`,
+      [id],
+    );
+    return c.json({
+      asSeller: rep.asSeller,
+      asBuyer: rep.asBuyer,
+      recent: rows.map((r) => ({ stars: r.stars, comment: r.comment, role: r.by_role === "buyer" ? "seller" : "buyer", at: r.updated_at })),
+    });
+  });
 }

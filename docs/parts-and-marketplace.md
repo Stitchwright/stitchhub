@@ -92,3 +92,53 @@ Order {
 
 Every order action adds an event and bumps the order's `seq`. Wrong role or wrong status → 409 with a plain
 message.
+
+## Ratings
+
+After an order, each side rates the other with 1–5 stars and an optional comment.
+
+- The **buyer rates the seller** once the order is SHIPPED or RECEIVED. The **seller rates the buyer** once it is
+  PAID, SHIPPED or RECEIVED. Rating again replaces the earlier rating (one per side per order).
+- Wrong status (or not your order) → 409 / 404 with a plain message; stars outside 1..5 → 400.
+- Each rating adds an order event (`action: "rated"`, `note: "4 stars"`) and bumps the order's `seq`. When the
+  buyer rates the seller, every non-REMOVED listing of that seller is bumped too, so the new seller rating reaches
+  every member through `/v1/changes`.
+
+| Call | Who | Body | Answer |
+|---|---|---|---|
+| `POST /v1/orders/:id/rate` | buyer or seller | `{ stars, comment }` | `Order` |
+| `GET /v1/reputation/:installId` | any member | | `{ asSeller: {avg, count}, asBuyer: {avg, count}, recent: [{ stars, comment, role, at }] }` |
+
+- `avg` has one decimal, or is `null` with `count: 0`.
+- `recent` is the last 10 ratings the shop **received**, without the raters' names. `role` is the rated shop's side
+  of that order: `"seller"` means a buyer rated it as a seller.
+- 404 for an unknown install.
+
+Order gains:
+```
+ratings: { buyer: { stars, comment, at } | null,    // the buyer's rating of the seller
+           seller: { stars, comment, at } | null },  // the seller's rating of the buyer
+sellerReputation: { avg, count },                    // ratings the seller has received as a seller
+buyerReputation:  { avg, count }                     // ratings the buyer has received as a buyer
+```
+
+Listing gains `sellerId` (the seller's install id, for `/v1/reputation`) and `sellerRating: { avg, count }`.
+
+## Bulk sources
+
+For a supplier scan: attach "where to buy" links to parts in bulk.
+
+Admin `POST /v1/admin/xparts/sources/import` with a JSON array of
+`{ number, brand?, vendor, url, priceCents?, currency?, note? }`.
+
+- **Matching:** each row goes on the live (not removed) part owning that number, by number key. When `brand` is
+  given, that brand's number is preferred; otherwise any brand's.
+- **Keyed by (part, url):** a link already on the part gets its vendor, price, currency and note updated. No second
+  copy is made.
+- **Shop label:** sources written this way have `byShop: "StitchHub scan"`.
+- **History:** each part whose sources changed gets its `seq` bumped and one revision (`action: "sources"`) holding
+  the whole entry.
+- **Answer:** `{ attached, updated, unmatched, unchanged }`.
+  - `unmatched` counts rows whose number isn't on the hub, and rows missing a vendor or a valid http(s) link.
+  - `unchanged` counts rows identical to what's already there; those parts aren't bumped.
+- **Speed:** 20,000 rows take about 5 seconds.
