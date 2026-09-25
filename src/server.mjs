@@ -147,7 +147,9 @@ function writeLimit(c) {
   if (!allow(`write:${c.get("install").id}`, 300)) throw fail(429, "Too many changes in the last hour. Try again later.");
 }
 
-member.get("/me", (c) => c.json({ installId: c.get("install").id, name: c.get("install").name, hubName: HUB_NAME }));
+member.get("/me", async (c) =>
+  c.json({ installId: c.get("install").id, name: c.get("install").name, hubName: HUB_NAME, discordInvite: await getSetting("discord_invite") }),
+);
 
 const linkOut = (l) => ({
   id: l.id,
@@ -451,6 +453,7 @@ admin.get("/summary", async (c) => {
     counts,
     joinKey: (await getSetting("join_key")) ?? process.env.JOIN_KEY ?? null,
     discordWebhook: Boolean(await getSetting("discord_webhook")),
+    discordInvite: await getSetting("discord_invite"),
     installs,
     datasets,
   });
@@ -460,6 +463,15 @@ admin.put("/join-key", async (c) => {
   const { joinKey } = await c.req.json();
   if (!joinKey || String(joinKey).length < 8) throw fail(400, "Use a join key of 8+ characters.");
   await setSetting("join_key", String(joinKey));
+  return c.json({ ok: true });
+});
+
+// The community's Discord invite link (goes into member invites and shows in StitchBench as "Community chat").
+admin.put("/discord-invite", async (c) => {
+  const { url } = await c.req.json();
+  if (url && !/^https:\/\/(discord\.gg|discord\.com\/invite)\/[\w-]+$/.test(url)) throw fail(400, "Use a Discord invite link like https://discord.gg/abc123");
+  if (url) await setSetting("discord_invite", url);
+  else await q(`DELETE FROM settings WHERE key = 'discord_invite'`);
   return c.json({ ok: true });
 });
 
@@ -499,15 +511,17 @@ admin.post("/links/import", async (c) => {
     }
     const id = newId();
     const status = ["ok", "dead", "blocked"].includes(raw.status) ? raw.status : "unchecked";
+    const when = raw.checked ? new Date(raw.checked) : null;
+    const checked = when && !Number.isNaN(when.getTime()) && when.getFullYear() >= 2000 && when <= new Date() ? when : null;
     const ins = await tx(async (client) => {
       const r = await client.query(
         `INSERT INTO links (id, category, brand, models, model_keys, doc_type, title, file_name, url, source, status, checked_at)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT DO NOTHING`,
-        [id, f.category, f.brand, f.models, modelKeys(f.models, f.fileName), f.docType, f.title, f.fileName, f.url, hostOf(f.url), status, raw.checked || null],
+        [id, f.category, f.brand, f.models, modelKeys(f.models, f.fileName), f.docType, f.title, f.fileName, f.url, hostOf(f.url), status, checked],
       );
       if (r.rowCount) await saveRevision(client, id, "added", f, c, raw.from ? `imported from ${raw.from}` : "imported");
       return r.rowCount;
-    });
+    }).catch(() => 0);
     if (ins) added++;
     else skipped++;
   }

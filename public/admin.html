@@ -44,8 +44,19 @@
     </section>
 
     <section>
+      <h2>Member invite</h2>
+      <p class="muted">One invite holds this hub's address, the join key and your Discord link. Pin it in your members-only Discord channel or email it.
+        In StitchBench, members paste the code (or open the file) under Settings → Community hub.</p>
+      <p><label for="inviteCode" class="muted">Invite code</label></p>
+      <textarea id="inviteCode" readonly rows="3" style="width:100%;font:13px ui-monospace,monospace;padding:8px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--ink)"></textarea>
+      <div class="row"><button type="button" id="copyInvite">Copy code</button><button type="button" class="plain" id="saveInvite">Download invite file</button></div>
+    </section>
+
+    <section>
       <h2>Discord</h2>
-      <p class="muted">Paste a channel webhook (Discord → channel settings → Integrations → Webhooks) and the hub posts new notes, link fixes and new members there.</p>
+      <p class="muted"><strong>Invite link</strong>: goes into the member invite, and shows in StitchBench as "Community chat".</p>
+      <form class="row" id="inviteForm"><label for="dInvite" class="muted">Invite link</label><input id="dInvite" placeholder="https://discord.gg/..."><button>Save</button></form>
+      <p class="muted"><strong>Channel webhook</strong> (Discord → channel settings → Integrations → Webhooks): the hub posts new notes, link fixes and new members there.</p>
       <form class="row" id="hookForm"><label for="hook" class="muted">Webhook URL</label><input id="hook" placeholder="https://discord.com/api/webhooks/..."><button>Save</button><span id="hookState" class="muted"></span></form>
     </section>
 
@@ -93,6 +104,11 @@
     const stats = [["Manual links", s.counts.links], ["Working", s.counts.ok], ["Dead", s.counts.dead], ["Notes", s.counts.posts], ["Figures", s.counts.figures], ["Members", s.counts.installs]];
     $("stats").replaceChildren(...stats.map(([k, v]) => { const d = document.createElement("div"); d.innerHTML = '<div class="muted"></div><div class="stat"></div>'; d.children[0].textContent = k; d.children[1].textContent = v; return d; }));
     $("join").value = s.joinKey || "";
+    $("dInvite").value = s.discordInvite || "";
+    const invite = { v: 1, url: location.origin, joinKey: s.joinKey || "", name: s.hubName, discord: s.discordInvite || null };
+    const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(invite)))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    $("inviteCode").value = "stitchhub:" + b64;
+    window.hubInvite = invite;
     $("hookState").textContent = s.discordWebhook ? "connected" : "not connected";
     $("installs").replaceChildren(...s.installs.map((i) => {
       const tr = document.createElement("tr");
@@ -107,6 +123,9 @@
   $("loginForm").onsubmit = async (e) => { e.preventDefault(); token = $("tok").value; try { await load(); try { sessionStorage.setItem("hubAdmin", token); } catch {} say(""); } catch (err) { say(err.message, true); } };
   $("joinForm").onsubmit = async (e) => { e.preventDefault(); try { await api("/join-key", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ joinKey: $("join").value }) }); say("Join key saved."); } catch (err) { say(err.message, true); } };
   $("genJoin").onclick = () => { const a = new Uint8Array(12); crypto.getRandomValues(a); $("join").value = "join-" + Array.from(a, (x) => x.toString(36).padStart(2, "0")).join("").slice(0, 16); say("New key made. Press Save to use it."); };
+  $("inviteForm").onsubmit = async (e) => { e.preventDefault(); try { await api("/discord-invite", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: $("dInvite").value.trim() }) }); say("Discord invite link saved."); load(); } catch (err) { say(err.message, true); } };
+  $("copyInvite").onclick = async () => { try { await navigator.clipboard.writeText($("inviteCode").value); say("Invite code copied."); } catch { $("inviteCode").select(); say("Select the code and copy it.", true); } };
+  $("saveInvite").onclick = () => { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([JSON.stringify(window.hubInvite, null, 2)], { type: "application/json" })); a.download = (window.hubInvite.name || "StitchHub").replace(/[^\w-]+/g, "-") + ".stitchhub"; a.click(); };
   $("hookForm").onsubmit = async (e) => { e.preventDefault(); try { await api("/discord-webhook", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: $("hook").value.trim() }) }); $("hook").value = ""; say("Discord setting saved."); load(); } catch (err) { say(err.message, true); } };
   $("export").onclick = async () => { try { say("Preparing export..."); const b = await (await api("/export")).blob(); const a = document.createElement("a"); a.href = URL.createObjectURL(b); a.download = `stitchhub-export-${new Date().toISOString().slice(0, 10)}.ndjson.gz`; a.click(); say("Export downloaded."); } catch (err) { say(err.message, true); } };
   $("import").onclick = async () => { const f = $("importFile").files[0]; if (!f) return say("Pick an export file first.", true); if (!confirm("Import this export? Rows with the same id are replaced.")) return; try { say("Importing..."); const r = await (await api("/import", { method: "POST", body: f })).json(); say("Imported: " + Object.entries(r).map(([k, v]) => `${k} ${v}`).join(", ")); load(); } catch (err) { say(err.message, true); } };
