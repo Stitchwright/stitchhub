@@ -90,12 +90,24 @@ flat rate, or quoted per order). Another shop orders it:
 Either side can cancel before it ships, and the quantity goes back on the listing. Orders are visible only to the
 buyer and the seller. The full contract is in [docs/parts-and-marketplace.md](docs/parts-and-marketplace.md).
 
+**Ratings.** After an order each side rates the other, 1–5 stars with an optional comment:
+- The buyer rates the seller once it has shipped; the seller rates the buyer once they've paid. Rating again
+  replaces the earlier one.
+- Every listing shows its seller's average, and orders show both shops' reputations.
+- `GET /v1/reputation/:installId` gives a shop's averages as seller and as buyer, and its last 10 ratings (without
+  the raters' names).
+
+**Where to buy, in bulk.** A supplier scan can attach buying links to parts with
+`POST /v1/admin/xparts/sources/import`:
+- Each row names a part number, the vendor, the link and optionally a price.
+- A link already on the part is updated rather than copied. Sources added this way show as "StitchHub scan".
+
 ## Checking a hub
 ```
 HUB_URL=https://your-hub ADMIN_TOKEN=... JOIN_KEY=... npm test
 ```
-This creates throwaway members, a link, a note, parts, buying links, a listing, orders and ratings, and checks every part of the API. It
-then removes the note, link, listing and parts and blocks the test members.
+This creates throwaway members, a link, a note, parts, buying links, a listing, orders and ratings, and checks
+every part of the API. It then removes the note, link, listing and parts and blocks the test members.
 
 ## API (for StitchBench)
 Members send `Authorization: Bearer <install key>`.
@@ -117,9 +129,12 @@ Members send `Authorization: Bearer <install key>`.
 | `GET /v1/listing-photos/:id` | a listing photo |
 | `POST /v1/orders`, `GET /v1/orders?since=N` | order from a listing; your orders changed after `N` |
 | `POST /v1/orders/:id/accept`, `decline`, `buyer-paid`, `paid`, `ship`, `received`, `cancel`, `message` | move an order along (409 for the wrong side or status) |
+| `POST /v1/orders/:id/rate` | `{ stars, comment }`: rate the other side of the order |
+| `GET /v1/reputation/:installId` | a shop's ratings as seller and as buyer, and its last 10 |
 
 The admin API is under `/v1/admin` and uses `Authorization: Bearer <ADMIN_TOKEN>`. It includes
-`POST /v1/admin/xparts/import` for loading parts in bulk.
+`POST /v1/admin/xparts/import` (load parts in bulk) and `POST /v1/admin/xparts/sources/import` (buying links in
+bulk).
 
 ## License
 
