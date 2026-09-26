@@ -1,7 +1,7 @@
 // Marketplace: shops list parts and accessories; another shop orders. The buyer pays the seller directly (the
 // seller's payment instructions are on the invoice) and the seller enters the carrier and tracking.
 // Orders are private to the buyer and the seller.
-import { pool, one, tx } from "./db.mjs";
+import { pool, one, tx, feedLimit } from "./db.mjs";
 
 const IMAGE = new Set(["image/jpeg", "image/png", "image/webp"]);
 const KINDS = new Set(["PART", "ACCESSORY", "SUPPLY", "NOTION", "FABRIC", "THREAD", "PATTERN"]);
@@ -353,8 +353,8 @@ export function registerMarket({ member, fail, newId, writeLimit, notify }) {
     const since = BigInt(c.req.query("since") || "0");
     const limit = Math.min(1000, Number(c.req.query("limit") || 500));
     const { rows } = await pool.query(
-      `SELECT id, seq FROM orders WHERE (buyer_install_id = $1 OR seller_install_id = $1) AND seq > $2 ORDER BY seq LIMIT $3`,
-      [me, since.toString(), limit],
+      `SELECT id, seq FROM orders WHERE (buyer_install_id = $1 OR seller_install_id = $1) AND seq > $2 AND seq <= $4 ORDER BY seq LIMIT $3`,
+      [me, since.toString(), limit, (await feedLimit()).change],
     );
     return c.json({
       orders: await ordersByIds(

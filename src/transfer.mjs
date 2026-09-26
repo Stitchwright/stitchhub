@@ -1,11 +1,13 @@
 // Moving a hub: export everything to one file (gzipped JSON lines) and import it on a new server.
 // Keeps members working: installs (their hashed keys), the join key, links with history, notes, photos, figures,
 // data sets, the parts cross-reference with its history, marketplace listings, orders and ratings, parts usage, and the
-// partner links between repair shops and sewing shops with their messages.
+// partner links between repair shops and sewing shops with their messages and open invitations.
+// Every row keeps its change number (seq) and the sequences carry on past the old hub's, so installs keep their
+// place in the change, order and partner-message feeds after a move.
 import zlib from "node:zlib";
 import readline from "node:readline";
 import { Readable } from "node:stream";
-import { pool, q } from "./db.mjs";
+import { pool, q, holdFeeds } from "./db.mjs";
 
 // In import order (parents before children). `key` pages the export; `conflict` is the primary key.
 const TABLES = [
@@ -74,22 +76,34 @@ const TABLES = [
     cols: ["id", "repair_install_id", "repair_shop_ref", "repair_name", "retail_install_id", "retail_shop_ref", "retail_name", "terms", "status", "created_at", "ended_at"],
   },
   {
-    // In the order they were sent; the new hub numbers them again.
+    t: "partner_invite",
+    table: "partner_invites",
+    cols: ["code_hash", "install_id", "shop_ref", "shop_name", "side", "terms", "expires_at", "used_at", "link_id", "created_at"],
+    key: "code_hash",
+  },
+  {
+    // In the order they were sent, with their numbers (an export from before version 3 has none: numbered again).
     t: "partner_message",
     table: "partner_messages",
     cols: ["id", "link_id", "from_side", "type", "data", "created_at"],
     key: "lpad(seq::text, 20, '0')",
     conflict: ["link_id", "from_side", "id"],
     json: ["data"],
+    seq: "own",
   },
 ];
 const BINARY = new Set(["data"]);
 const JSONB = new Set(["snapshot", "item", "buyer_contact", "seller_contact", "terms"]);
+// Tables whose rows carry a number from change_seq (the change feed); partner_messages has its own sequence.
 const WITH_SEQ = new Set(["links", "posts", "figures", "xparts", "listings", "orders"]);
+const hasSeq = (spec) => WITH_SEQ.has(spec.table) || spec.seq === "own";
 
 async function* lines() {
-  yield JSON.stringify({ t: "meta", format: "stitchhub-export", version: 2, exportedAt: new Date().toISOString() }) + "\n";
-  for (const { t, table, cols, key = "id", json = [] } of TABLES) {
+  const seqs = (await q(`SELECT (SELECT last_value FROM change_seq) AS change, (SELECT last_value FROM partner_messages_seq_seq) AS partner`)).rows[0];
+  yield JSON.stringify({ t: "meta", format: "stitchhub-export", version: 3, exportedAt: new Date().toISOString(), changeSeq: seqs.change, partnerSeq: seqs.partner }) + "\n";
+  for (const spec of TABLES) {
+    const { t, table, key = "id", json = [] } = spec;
+    const cols = hasSeq(spec) ? [...spec.cols, "seq"] : spec.cols;
     let after = "";
     for (;;) {
       const { rows } = await q(`SELECT ${cols.join(", ")}, (${key}) AS _k FROM ${table} WHERE (${key}) > $1 ORDER BY (${key}) LIMIT 200`, [after]);
@@ -113,7 +127,9 @@ export function exportStream() {
 export async function importStream(webStream) {
   const byType = Object.fromEntries(TABLES.map((s) => [s.t, s]));
   const counts = {};
+  const meta = {};
   const client = await pool.connect();
+  const release = holdFeeds(); // members' feeds wait until the import has committed
   try {
     await client.query("BEGIN");
     // Start reading only now: readline drops lines that arrive before its iterator is being consumed,
@@ -125,6 +141,7 @@ export async function importStream(webStream) {
       const row = JSON.parse(line);
       if (row.t === "meta") {
         if (row.format !== "stitchhub-export") throw new Error("Not a StitchHub export file.");
+        Object.assign(meta, row);
         continue;
       }
       const spec = byType[row.t];
@@ -138,10 +155,15 @@ export async function importStream(webStream) {
         if (BINARY.has(c)) return Buffer.from(v, "base64");
         return v;
       });
-      const colList = WITH_SEQ.has(table) ? [...cols, "seq"] : cols;
+      // The row's own change number when the export has it (version 3); a new one otherwise.
+      const kept = hasSeq(spec) && row.seq != null;
+      const colList = kept || WITH_SEQ.has(table) ? [...cols, "seq"] : cols;
       const params = cols.map((_, i) => `$${i + 1}`);
-      if (WITH_SEQ.has(table)) params.push("nextval('change_seq')");
-      const updates = colList.filter((c) => !conflict.includes(c)).map((c) => `${c} = EXCLUDED.${c}`);
+      if (kept) {
+        vals.push(String(row.seq));
+        params.push(`$${vals.length}`);
+      } else if (WITH_SEQ.has(table)) params.push("nextval('change_seq')");
+      const updates = colList.filter((c) => !conflict.includes(c) && !(spec.seq === "own" && c === "seq")).map((c) => `${c} = EXCLUDED.${c}`);
       await client.query(
         `INSERT INTO ${table} (${colList.join(", ")}) VALUES (${params.join(", ")})
          ON CONFLICT (${conflict.join(", ")}) ${updates.length ? `DO UPDATE SET ${updates.join(", ")}` : "DO NOTHING"}`,
@@ -149,6 +171,17 @@ export async function importStream(webStream) {
       );
       counts[table] = (counts[table] ?? 0) + 1;
     }
+    // New change and partner-message numbers carry on after the old hub's, so no install's place is behind them.
+    await client.query(
+      `SELECT setval('change_seq', greatest($1::bigint, (SELECT last_value FROM change_seq),
+         (SELECT max(seq) FROM links), (SELECT max(seq) FROM posts), (SELECT max(seq) FROM figures),
+         (SELECT max(seq) FROM xparts), (SELECT max(seq) FROM listings), (SELECT max(seq) FROM orders), 1))`,
+      [String(meta.changeSeq ?? 0)],
+    );
+    await client.query(
+      `SELECT setval('partner_messages_seq_seq', greatest($1::bigint, (SELECT last_value FROM partner_messages_seq_seq), (SELECT max(seq) FROM partner_messages), 1))`,
+      [String(meta.partnerSeq ?? 0)],
+    );
     // New order numbers carry on after the imported ones.
     await client.query(
       `SELECT setval('order_number_seq', greatest((SELECT max(substring(number from 4)::bigint) FROM orders WHERE number ~ '^SH-[0-9]+$'), (SELECT last_value FROM order_number_seq), 1))`,
@@ -158,6 +191,7 @@ export async function importStream(webStream) {
     await client.query("ROLLBACK").catch(() => {});
     throw e;
   } finally {
+    release();
     client.release();
   }
   return counts;

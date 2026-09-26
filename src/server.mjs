@@ -6,7 +6,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
-import { pool, q, one, tx, migrate, getSetting, setSetting } from "./db.mjs";
+import { pool, q, one, tx, migrate, getSetting, setSetting, startFeeds, feedLimit } from "./db.mjs";
 import { startChecker } from "./checker.mjs";
 import { exportStream, importStream } from "./transfer.mjs";
 import { registerParts, partsByIds } from "./parts.mjs";
@@ -209,13 +209,13 @@ member.get("/changes", async (c) => {
   const limit = Math.min(2000, Number(c.req.query("limit") || 1000));
   const { rows } = await q(
     `SELECT t, id, seq FROM (
-       SELECT 'link' t, id, seq FROM links WHERE seq > $1
-       UNION ALL SELECT 'post', id, seq FROM posts WHERE seq > $1
-       UNION ALL SELECT 'figure', id, seq FROM figures WHERE seq > $1
-       UNION ALL SELECT 'xpart', id, seq FROM xparts WHERE seq > $1
-       UNION ALL SELECT 'listing', id, seq FROM listings WHERE seq > $1
+       SELECT 'link' t, id, seq FROM links WHERE seq > $1 AND seq <= $3
+       UNION ALL SELECT 'post', id, seq FROM posts WHERE seq > $1 AND seq <= $3
+       UNION ALL SELECT 'figure', id, seq FROM figures WHERE seq > $1 AND seq <= $3
+       UNION ALL SELECT 'xpart', id, seq FROM xparts WHERE seq > $1 AND seq <= $3
+       UNION ALL SELECT 'listing', id, seq FROM listings WHERE seq > $1 AND seq <= $3
      ) x ORDER BY seq LIMIT $2`,
-    [since.toString(), limit],
+    [since.toString(), limit, (await feedLimit()).change],
   );
   const ids = (t) => rows.filter((r) => r.t === t).map((r) => r.id);
   const links = ids("link").length ? (await q(`SELECT * FROM links WHERE id = ANY($1)`, [ids("link")])).rows.map(linkOut) : [];
@@ -396,11 +396,18 @@ member.post("/posts", async (c) => {
   }
   const id = newId();
   const inst = c.get("install");
-  await tx(async (client) => {
-    await client.query(
-      `INSERT INTO posts (id, install_id, shop_name, author_name, brand, model, model_key, kind, title, body) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-      [id, inst.id, inst.name, String(p.authorName ?? "").slice(0, 80) || null, brand, model, model.toUpperCase().replace(/[^A-Z0-9]/g, ""), kind, title, body],
+  const clientId = p.clientId ? String(p.clientId).slice(0, 64) : null;
+  if (clientId) {
+    const had = await one(`SELECT id FROM posts WHERE install_id = $1 AND client_id = $2`, [inst.id, clientId]);
+    if (had) return c.json({ id: had.id });
+  }
+  const made = await tx(async (client) => {
+    const r = await client.query(
+      `INSERT INTO posts (id, install_id, shop_name, author_name, brand, model, model_key, kind, title, body, client_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (install_id, client_id) WHERE client_id IS NOT NULL DO NOTHING`,
+      [id, inst.id, inst.name, String(p.authorName ?? "").slice(0, 80) || null, brand, model, model.toUpperCase().replace(/[^A-Z0-9]/g, ""), kind, title, body, clientId],
     );
+    if (!r.rowCount) return false; // the same upload, made by a retry a moment ago
     for (const [i, f] of files.entries()) {
       const m = meta[i] ?? {};
       await client.query(`INSERT INTO photos (id, post_id, kind, caption, mime, data, sort_order) VALUES ($1,$2,$3,$4,$5,$6,$7)`, [
@@ -413,7 +420,9 @@ member.post("/posts", async (c) => {
         i,
       ]);
     }
+    return true;
   });
+  if (!made) return c.json({ id: (await one(`SELECT id FROM posts WHERE install_id = $1 AND client_id = $2`, [inst.id, clientId])).id });
   notify(`🛠️ ${inst.name}: **${title}** (${brand} ${model})${files.length ? ` · ${files.length} photo${files.length > 1 ? "s" : ""}` : ""}\n${body.slice(0, 400)}`);
   return c.json({ id });
 });
@@ -603,6 +612,7 @@ app.route("/v1", member);
 // ---------- start ----------
 
 await migrate(path.join(ROOT, "migrations"));
+await startFeeds();
 if (!(await getSetting("join_key")) && process.env.JOIN_KEY) await setSetting("join_key", process.env.JOIN_KEY);
 if (process.env.LINK_CHECKER !== "off") startChecker();
 const port = Number(process.env.PORT ?? 8080);

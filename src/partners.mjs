@@ -5,7 +5,8 @@
 // just typed JSON to it. A sewing shop that isn't a community member joins with the invite alone and can then use the
 // partner routes and nothing else.
 import crypto from "node:crypto";
-import { one, q, tx } from "./db.mjs";
+import { bodyLimit } from "hono/body-limit";
+import { one, q, tx, feedLimit } from "./db.mjs";
 
 const SIDES = new Set(["repair", "retail"]);
 const TYPE = /^[a-z]{2,20}(\.[a-z]{2,20})?$/;
@@ -47,6 +48,8 @@ function sideOf(link, installId, shopRef) {
 }
 
 export function registerPartners({ app, member, fail, newId, allow, sha, hubName, createInstall }) {
+  // Invitations, codes and link changes are a few hundred bytes: nobody needs to send more.
+  const small = bodyLimit({ maxSize: 64 * 1024, onError: (c) => c.json({ error: "Too large." }, 413) });
   function shopFields(body) {
     const shopRef = str(body.shopRef, 64);
     const shopName = str(body.shopName, 120);
@@ -104,7 +107,7 @@ export function registerPartners({ app, member, fail, newId, allow, sha, hubName
   }
 
   // A shop makes a code to hand to the shop it wants to work with (repair shop -> sewing shop, or the other way).
-  member.post("/partners/invites", async (c) => {
+  member.post("/partners/invites", small, async (c) => {
     if (!allow(`pinvite:${c.get("install").id}`, 30)) throw fail(429, "Too many partner codes in the last hour.");
     const body = await c.req.json().catch(() => ({}));
     const { shopRef, shopName } = shopFields(body);
@@ -127,7 +130,7 @@ export function registerPartners({ app, member, fail, newId, allow, sha, hubName
   });
 
   // An install that's already on the hub redeems a code for one of its shops.
-  member.post("/partners/redeem", async (c) => {
+  member.post("/partners/redeem", small, async (c) => {
     if (!allow(`predeem:${c.get("install").id}`, 20)) throw fail(429, "Too many tries. Wait an hour.");
     const body = await c.req.json().catch(() => ({}));
     const { shopRef, shopName } = shopFields(body);
@@ -135,7 +138,7 @@ export function registerPartners({ app, member, fail, newId, allow, sha, hubName
   });
 
   // A sewing shop that isn't a community member: the partner code alone gets it an install key for the partner routes.
-  app.post("/v1/partners/join", async (c) => {
+  app.post("/v1/partners/join", small, async (c) => {
     const ip = c.req.header("x-forwarded-for")?.split(",")[0].trim() ?? "local";
     if (!allow(`pjoin:${ip}`, 10)) throw fail(429, "Too many tries. Wait an hour.");
     const body = await c.req.json().catch(() => ({}));
@@ -163,9 +166,10 @@ export function registerPartners({ app, member, fail, newId, allow, sha, hubName
     return c.json(out);
   });
 
-  member.post("/partners/links/:id/messages", async (c) => {
+  // Counted as it arrives, so a body sent without a length (chunked) is held to the limit too.
+  const message = bodyLimit({ maxSize: MAX_MESSAGE + 64 * 1024, onError: (c) => c.json({ error: "That message is too large (4 MB at most)." }, 413) });
+  member.post("/partners/links/:id/messages", message, async (c) => {
     if (!allow(`pmsg:${c.get("install").id}`, 3000)) throw fail(429, "Too many partner messages in the last hour.");
-    if (Number(c.req.header("content-length") ?? 0) > MAX_MESSAGE) throw fail(413, "That message is too large (4 MB at most).");
     const body = await c.req.json().catch(() => ({}));
     const { link, side } = await myLink(c, c.req.param("id"), str(body.shopRef, 64));
     const id = str(body.id, 64);
@@ -191,14 +195,14 @@ export function registerPartners({ app, member, fail, newId, allow, sha, hubName
       await q(
         `WITH page AS (
            SELECT m.seq FROM partner_messages m JOIN partner_links l ON l.id = m.link_id
-           WHERE m.seq > $2 AND ((l.repair_install_id = $1 AND m.from_side <> 'repair') OR (l.retail_install_id = $1 AND m.from_side <> 'retail'))
+           WHERE m.seq > $2 AND m.seq <= $4 AND ((l.repair_install_id = $1 AND m.from_side <> 'repair') OR (l.retail_install_id = $1 AND m.from_side <> 'retail'))
            ORDER BY m.seq LIMIT $3)
          SELECT m.*, s.to_side, CASE s.to_side WHEN 'repair' THEN l.repair_shop_ref ELSE l.retail_shop_ref END AS to_shop_ref
          FROM page p JOIN partner_messages m ON m.seq = p.seq JOIN partner_links l ON l.id = m.link_id
          CROSS JOIN (VALUES ('repair'), ('retail')) AS s(to_side)
          WHERE m.from_side <> s.to_side AND (CASE s.to_side WHEN 'repair' THEN l.repair_install_id ELSE l.retail_install_id END) = $1
          ORDER BY m.seq, s.to_side`,
-        [id, since, limit],
+        [id, since, limit, (await feedLimit()).partner],
       )
     ).rows;
     const next = rows.length ? String(rows[rows.length - 1].seq) : since;
@@ -220,7 +224,7 @@ export function registerPartners({ app, member, fail, newId, allow, sha, hubName
   });
 
   // Either side can end the partnership; both keep their records, and messages can still pass for the final statement.
-  member.post("/partners/links/:id/end", async (c) => {
+  member.post("/partners/links/:id/end", small, async (c) => {
     const body = await c.req.json().catch(() => ({}));
     const { link, side } = await myLink(c, c.req.param("id"), str(body.shopRef, 64));
     const ended = await tx(async (client) => {
