@@ -4,10 +4,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import net from "node:net";
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
-import { pool, q, one, tx, migrate, getSetting, setSetting, startFeeds, feedLimit } from "./db.mjs";
-import { startChecker } from "./checker.mjs";
+import { getConnInfo } from "@hono/node-server/conninfo";
+import { pool, q, one, tx, migrate, getSetting, setSetting, startFeeds, feedLimit, staleCursor } from "./db.mjs";
+import { startChecker, privateAddress } from "./checker.mjs";
 import { exportStream, importStream } from "./transfer.mjs";
 import { registerParts, partsByIds } from "./parts.mjs";
 import { registerMarket, listingsByIds } from "./market.mjs";
@@ -63,25 +65,64 @@ function validUrl(url) {
   }
 }
 
+/** Not an address inside someone's own network (the link checker won't try those, and other shops can't open them). */
+function publicLink(url) {
+  const host = new URL(url).hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (net.isIP(host)) return !privateAddress(host);
+  return host.includes(".") && !/(^|\.)(localhost|local|internal|lan|home\.arpa)$/.test(host);
+}
+
 // Tell the community's Discord channel (optional: admin sets a webhook URL).
+// Never fails: it's called without waiting, and a database hiccup here mustn't stop the hub.
 async function notify(text) {
-  const hook = await getSetting("discord_webhook");
-  if (!hook) return;
-  fetch(hook, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: text.slice(0, 1900) }) }).catch(() => {});
+  try {
+    const hook = await getSetting("discord_webhook");
+    if (!hook) return;
+    fetch(hook, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: text.slice(0, 1900) }) }).catch(() => {});
+  } catch (e) {
+    console.error("discord:", e.message);
+  }
 }
 
 // A few simple limits so one install can't flood the hub.
 const buckets = new Map();
-function allow(key, perHour) {
+function bucket(key) {
   const now = Date.now();
-  const b = buckets.get(key) ?? { n: 0, since: now };
-  if (now - b.since > 3600_000) {
-    b.n = 0;
-    b.since = now;
+  let b = buckets.get(key);
+  if (!b || now - b.since > 3600_000) buckets.set(key, (b = { n: 0, since: now }));
+  return b;
+}
+function allow(key, perHour) {
+  return ++bucket(key).n <= perHour;
+}
+// Hours that are over are forgotten, so addresses and installs seen once don't pile up.
+setInterval(() => {
+  for (const [k, b] of buckets) if (Date.now() - b.since > 3600_000) buckets.delete(k);
+}, 600_000).unref();
+
+// Where a request came from, for the limits on joining. Behind a proxy (Railway, a tunnel, a reverse proxy) set
+// TRUST_PROXY=true (on Railway it's the default): the proxy's own entry, the last in X-Forwarded-For, is used, since
+// anything before it is whatever the client sent. Otherwise the connection's address: a client can claim any header.
+const TRUST_PROXY = (process.env.TRUST_PROXY || (process.env.RAILWAY_ENVIRONMENT_ID ? "true" : "")) === "true";
+function clientIp(c) {
+  if (TRUST_PROXY) {
+    const hops = (c.req.header("x-forwarded-for") ?? "").split(",").map((h) => h.trim()).filter(Boolean);
+    if (hops.length) return hops[hops.length - 1].slice(0, 64);
   }
-  b.n += 1;
-  buckets.set(key, b);
-  return b.n <= perHour;
+  return getConnInfo(c).remote.address ?? "unknown";
+}
+
+// Wrong join keys from everywhere together are limited too, so guessing from many addresses stays slow. When they run
+// out, joining pauses for the rest of the hour; shops already on the hub carry on.
+const WRONG_JOIN_KEYS = 100;
+async function checkJoinKey(joinKey) {
+  const wrong = bucket("join-key:wrong");
+  if (wrong.n >= WRONG_JOIN_KEYS) throw fail(429, "Too many wrong join keys were tried lately. Try again in an hour.");
+  const expected = (await getSetting("join_key")) ?? process.env.JOIN_KEY ?? "";
+  if (!expected || !joinKey || !same(sha(String(joinKey)), sha(expected))) {
+    if (++wrong.n === WRONG_JOIN_KEYS) console.warn(`join: ${WRONG_JOIN_KEYS} wrong join keys this hour; joining is paused until the hour is up`);
+    throw fail(403, "That join key isn't right. Ask the hub admin for the current one.");
+  }
 }
 
 const app = new Hono();
@@ -100,6 +141,50 @@ function fail(status, message) {
   e.expose = true;
   return e;
 }
+
+// ---------- request size ----------
+// The largest body each route takes, for every route (parts, market, usage and partners too). A body sent without a
+// length is counted as it arrives. Nothing is read until the route reads it, which is after the key check.
+const KB = 1024;
+const MB = 1024 * KB;
+const ADMIN_UPLOAD = (Number(process.env.ADMIN_UPLOAD_MB) || 1024) * MB; // bulk imports, data sets, moving the hub
+
+function maxBody(p) {
+  if (p === "/v1/register" || p === "/v1/partners/join") return 16 * KB; // no key needed: a join key or code and a name
+  if (p === "/v1/posts") return 12 * 3 * MB + MB; // a note with up to 12 photos of 3 MB
+  if (p === "/v1/listings") return 8 * 3 * MB + MB; // a listing with up to 8 photos
+  if (/^\/v1\/figures\/[^/]+$/.test(p)) return 2 * MB;
+  if (/^\/v1\/partners\/links\/[^/]+\/messages$/.test(p)) return 4 * MB + 64 * KB; // intake photos travel inside
+  if (/^\/v1\/xparts(\/[^/]+)?$/.test(p) || p === "/v1/usage") return 2 * MB; // a part with all its fits; a month of parts used
+  if (p.startsWith("/v1/admin/")) return ADMIN_UPLOAD;
+  return 64 * KB; // everything else is a small JSON body
+}
+
+app.use("*", async (c, next) => {
+  const req = c.req.raw;
+  if (!req.body) return next();
+  const max = maxBody(c.req.path);
+  const tooLarge = () => {
+    c.header("Connection", "close"); // the rest of the body isn't read: the client mustn't send its next request after it
+    return fail(413, `That's too large for the hub (${max >= MB ? `${Math.floor(max / MB)} MB` : `${max / KB} KB`} at most).`);
+  };
+  if (req.headers.has("content-length") && !req.headers.has("transfer-encoding")) {
+    if (Number(req.headers.get("content-length")) > max) throw tooLarge();
+    return next(); // no more than that length is read
+  }
+  let seen = 0;
+  const counted = req.body.pipeThrough(
+    new TransformStream({
+      transform(chunk, ctl) {
+        seen += chunk.byteLength;
+        if (seen > max) ctl.error(tooLarge());
+        else ctl.enqueue(chunk);
+      },
+    }),
+  );
+  c.req.raw = new Request(req, { body: counted, duplex: "half" });
+  await next();
+});
 
 // ---------- public ----------
 
@@ -121,11 +206,9 @@ app.get("/admin", (c) => c.html(fs.readFileSync(path.join(ROOT, "public", "admin
 
 // Join: the community's join key gets an install its own key (shown once).
 app.post("/v1/register", async (c) => {
-  const ip = c.req.header("x-forwarded-for")?.split(",")[0].trim() ?? "local";
-  if (!allow(`register:${ip}`, 10)) throw fail(429, "Too many tries. Wait an hour.");
+  if (!allow(`register:${clientIp(c)}`, 10)) throw fail(429, "Too many tries. Wait an hour.");
   const { joinKey, name, contact } = await c.req.json();
-  const expected = (await getSetting("join_key")) ?? process.env.JOIN_KEY ?? "";
-  if (!expected || !joinKey || !same(sha(String(joinKey)), sha(expected))) throw fail(403, "That join key isn't right. Ask the hub admin for the current one.");
+  await checkJoinKey(joinKey);
   const shop = String(name ?? "").trim().slice(0, 120);
   if (!shop) throw fail(400, "Give your shop's name.");
   const { id, key } = await createInstall(pool, shop, String(contact ?? "").slice(0, 200) || null, "member");
@@ -158,9 +241,37 @@ member.use("*", async (c, next) => {
   await next();
 });
 
+// 300 changes an hour per install. A hosted StitchBench serves several companies through one install: when it says
+// which company a change is for (X-Shop-Ref), each company has its own 300, so one can't use up the others', and the
+// install as a whole up to 3,000.
 function writeLimit(c) {
-  if (!allow(`write:${c.get("install").id}`, 300)) throw fail(429, "Too many changes in the last hour. Try again later.");
+  const id = c.get("install").id;
+  const shop = c.req.header("x-shop-ref")?.trim().slice(0, 64);
+  if (!(shop ? allow(`write:${id}:${shop}`, 300) && allow(`writes:${id}`, 3000) : allow(`write:${id}`, 300))) {
+    throw fail(429, "Too many changes in the last hour. Try again later.");
+  }
 }
+
+// Parts-usage reports replace a month's counts, so sending one again changes nothing: they have their own allowance
+// and don't use up the one for real changes (StitchBench sends two with every "Sync now").
+function usageLimit(c) {
+  if (!allow(`usage:${c.get("install").id}`, 120)) throw fail(429, "Too many parts-usage reports in the last hour. Try again later.");
+}
+
+// A hub restored from an older export: an install that had synced past it starts that feed over (staleCursor in
+// db.mjs). It receives everything again, and X-Feed-Reset: 1 says so.
+const FEEDS = { "/v1/changes": "change", "/v1/orders": "change", "/v1/partners/messages": "partner" };
+member.use("*", async (c, next) => {
+  const feed = c.req.method === "GET" && FEEDS[c.req.path];
+  const since = feed && c.req.query("since");
+  if (since && /^\d+$/.test(since) && (await staleCursor(feed, since))) {
+    const u = new URL(c.req.url);
+    u.searchParams.set("since", "0");
+    c.req.raw = new Request(u, c.req.raw);
+    c.header("X-Feed-Reset", "1");
+  }
+  await next();
+});
 
 member.get("/me", async (c) =>
   c.json({
@@ -176,8 +287,7 @@ member.get("/me", async (c) =>
 member.post("/upgrade", async (c) => {
   if (!allow(`upgrade:${c.get("install").id}`, 10)) throw fail(429, "Too many tries. Wait an hour.");
   const { joinKey } = await c.req.json().catch(() => ({}));
-  const expected = (await getSetting("join_key")) ?? process.env.JOIN_KEY ?? "";
-  if (!expected || !joinKey || !same(sha(String(joinKey)), sha(expected))) throw fail(403, "That join key isn't right. Ask the hub admin for the current one.");
+  await checkJoinKey(joinKey);
   if (c.get("install").scope !== "member") {
     await q(`UPDATE installs SET scope = 'member' WHERE id = $1`, [c.get("install").id]);
     notify(`👋 ${c.get("install").name} joined ${HUB_NAME}.`);
@@ -223,7 +333,8 @@ member.get("/changes", async (c) => {
   if (ids("post").length) {
     const ps = (await q(`SELECT * FROM posts WHERE id = ANY($1)`, [ids("post")])).rows;
     const photos = (await q(`SELECT id, post_id, kind, caption, mime, sort_order FROM photos WHERE post_id = ANY($1) ORDER BY sort_order`, [ids("post")])).rows;
-    posts = ps.map((p) => ({
+    // A removed note is only its id: what it said is gone from the hub.
+    posts = ps.map((p) => p.deleted ? { id: p.id, deleted: true } : ({
       id: p.id,
       shopName: p.shop_name,
       authorName: p.author_name,
@@ -239,10 +350,13 @@ member.get("/changes", async (c) => {
       photos: photos.filter((ph) => ph.post_id === p.id).map((ph) => ({ id: ph.id, kind: ph.kind, caption: ph.caption, mime: ph.mime, sortOrder: ph.sort_order })),
     }));
   }
+  // A figure id that comes again means its picture changed; removedFigures are ones the hub admin took down.
+  const removed = new Set(ids("figure").length ? (await q(`SELECT id FROM figures WHERE id = ANY($1) AND deleted`, [ids("figure")])).rows.map((f) => f.id) : []);
   return c.json({
     links,
     posts,
-    figures: ids("figure"),
+    figures: ids("figure").filter((id) => !removed.has(id)),
+    removedFigures: ids("figure").filter((id) => removed.has(id)),
     xparts: await partsByIds(ids("xpart")),
     listings: await listingsByIds(ids("listing"), c.get("install").id),
     next: rows.length ? rows[rows.length - 1].seq : since.toString(),
@@ -265,6 +379,7 @@ function linkFields(body) {
   if (!f.brand || !f.models) throw fail(400, "Give the brand and model(s).");
   if (!f.title) f.title = `${f.brand} ${f.models} ${f.docType ?? "manual"}`;
   if (!validUrl(f.url)) throw fail(400, "The link must start with http:// or https://");
+  if (!publicLink(f.url)) throw fail(400, "That link points inside a private network. Share a link any shop can open.");
   return f;
 }
 
@@ -370,9 +485,9 @@ async function setDeleted(c, deleted) {
 member.delete("/links/:id", (c) => setDeleted(c, true));
 member.post("/links/:id/restore", (c) => setDeleted(c, false));
 
-// An install couldn't download it (or could): check it again soon.
+// An install couldn't download it (or could): check it again soon (a link at most every 10 minutes).
 member.post("/links/:id/report", async (c) => {
-  await q(`UPDATE links SET checked_at = NULL WHERE id = $1`, [c.req.param("id")]);
+  await q(`UPDATE links SET checked_at = NULL WHERE id = $1 AND checked_at < now() - interval '10 minutes'`, [c.req.param("id")]);
   return c.json({ ok: true });
 });
 
@@ -427,17 +542,29 @@ member.post("/posts", async (c) => {
   return c.json({ id });
 });
 
+/**
+ * Removing a note (by its shop, or by the hub admin when installId is null) takes back what it said and its photos:
+ * only its id stays, so installs drop their copy.
+ */
+async function removePost(id, installId) {
+  return tx(async (client) => {
+    const r = await client.query(
+      `UPDATE posts SET deleted = true, title = '', body = '', author_name = NULL, updated_at = now(), seq = nextval('change_seq')
+       WHERE id = $1 AND ($2::text IS NULL OR install_id = $2)`,
+      [id, installId],
+    );
+    if (r.rowCount) await client.query(`DELETE FROM photos WHERE post_id = $1`, [id]);
+    return r.rowCount;
+  });
+}
+
 member.delete("/posts/:id", async (c) => {
-  const r = await q(`UPDATE posts SET deleted = true, updated_at = now(), seq = nextval('change_seq') WHERE id = $1 AND install_id = $2`, [
-    c.req.param("id"),
-    c.get("install").id,
-  ]);
-  if (!r.rowCount) throw fail(404, "Only the shop that shared a note can remove it.");
+  if (!(await removePost(c.req.param("id"), c.get("install").id))) throw fail(404, "Only the shop that shared a note can remove it.");
   return c.json({ ok: true });
 });
 
 member.get("/photos/:id", async (c) => {
-  const p = await one(`SELECT mime, data FROM photos WHERE id = $1`, [c.req.param("id")]);
+  const p = await one(`SELECT ph.mime, ph.data FROM photos ph JOIN posts p ON p.id = ph.post_id WHERE ph.id = $1 AND NOT p.deleted`, [c.req.param("id")]);
   if (!p) throw fail(404, "No such photo.");
   return c.body(p.data, 200, { "Content-Type": p.mime, "Cache-Control": "private, max-age=31536000, immutable" });
 });
@@ -445,7 +572,7 @@ member.get("/photos/:id", async (c) => {
 // ----- figure snapshots -----
 
 member.get("/figures/:id", async (c) => {
-  const f = await one(`SELECT mime, data FROM figures WHERE id = $1`, [c.req.param("id")]);
+  const f = await one(`SELECT mime, data FROM figures WHERE id = $1 AND NOT deleted`, [c.req.param("id")]);
   if (!f) throw fail(404, "No such figure.");
   return c.body(f.data, 200, { "Content-Type": f.mime, "Cache-Control": "private, max-age=31536000, immutable" });
 });
@@ -455,17 +582,19 @@ member.put("/figures/:id", async (c) => {
   if (!/^[0-9a-f]{24}$/.test(id)) throw fail(400, "Bad figure id.");
   const mime = c.req.header("content-type") ?? "";
   if (!IMAGE.has(mime)) throw fail(415, "Figures must be JPEG, PNG or WebP.");
+  if (!allow(`figures:${c.get("install").id}`, 3000)) throw fail(429, "Too many figures in the last hour. Try again later.");
   const data = Buffer.from(await c.req.arrayBuffer());
   if (data.length > 2 * 1024 * 1024) throw fail(413, "Figure too large.");
-  await q(`INSERT INTO figures (id, mime, data, width, height, install_id) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (id) DO NOTHING`, [
-    id,
-    mime,
-    data,
-    Number(c.req.query("w")) || null,
-    Number(c.req.query("h")) || null,
-    c.get("install").id,
-  ]);
-  return c.json({ ok: true });
+  // The first shop to share a figure keeps it, and can replace it (a redraw); a figure the hub admin removed can be
+  // shared again by anyone. stored: false means another shop's copy is already here and this one was not kept.
+  const r = await q(
+    `INSERT INTO figures (id, mime, data, width, height, install_id) VALUES ($1,$2,$3,$4,$5,$6)
+     ON CONFLICT (id) DO UPDATE SET mime = EXCLUDED.mime, data = EXCLUDED.data, width = EXCLUDED.width, height = EXCLUDED.height,
+       install_id = EXCLUDED.install_id, deleted = false, seq = nextval('change_seq')
+     WHERE figures.install_id = EXCLUDED.install_id OR figures.deleted`,
+    [id, mime, data, Number(c.req.query("w")) || null, Number(c.req.query("h")) || null, c.get("install").id],
+  );
+  return c.json({ ok: true, stored: r.rowCount > 0 });
 });
 
 // ----- data sets the admin publishes (e.g. "specs") -----
@@ -492,11 +621,14 @@ admin.use("*", async (c, next) => {
 admin.get("/summary", async (c) => {
   const counts = await one(`SELECT (SELECT count(*) FROM links WHERE NOT deleted) links, (SELECT count(*) FROM links WHERE status='dead' AND NOT deleted) dead,
     (SELECT count(*) FROM links WHERE status='ok' AND NOT deleted) ok, (SELECT count(*) FROM posts WHERE NOT deleted) posts,
-    (SELECT count(*) FROM figures) figures, (SELECT count(*) FROM installs) installs,
+    (SELECT count(*) FROM figures WHERE NOT deleted) figures, (SELECT count(*) FROM installs) installs,
     (SELECT count(*) FROM xparts WHERE NOT deleted) parts, (SELECT count(*) FROM listings WHERE status = 'ACTIVE') listings,
     (SELECT count(*) FROM orders) orders, (SELECT count(*) FROM order_ratings) ratings, (SELECT count(*) FROM part_usage) usage,
     (SELECT count(*) FROM partner_links WHERE status = 'ACTIVE') partner_links, (SELECT count(*) FROM partner_messages) partner_messages`);
-  const installs = (await q(`SELECT id, name, contact, scope, blocked, created_at, last_seen_at FROM installs ORDER BY created_at`)).rows;
+  const installs = (
+    await q(`SELECT id, name, contact, scope, blocked, created_at, last_seen_at,
+      (SELECT count(*) FROM figures f WHERE f.install_id = installs.id AND NOT f.deleted)::int AS figures FROM installs ORDER BY created_at`)
+  ).rows;
   const datasets = (await q(`SELECT name, version, length(data) AS size, updated_at FROM datasets ORDER BY name`)).rows;
   return c.json({
     hubName: HUB_NAME,
@@ -541,9 +673,15 @@ admin.post("/installs/:id/block", async (c) => {
 });
 
 admin.delete("/posts/:id", async (c) => {
-  await q(`UPDATE posts SET deleted = true, updated_at = now(), seq = nextval('change_seq') WHERE id = $1`, [c.req.param("id")]);
+  await removePost(c.req.param("id"), null);
   return c.json({ ok: true });
 });
+
+// A wrong or unwanted figure snapshot, or every one a shop shared: gone from the hub, installs drop their copy, and
+// any shop can share the figure again.
+const REMOVE_FIGURE = `UPDATE figures SET deleted = true, data = ''::bytea, seq = nextval('change_seq') WHERE NOT deleted AND`;
+admin.delete("/figures/:id", async (c) => c.json({ removed: (await q(`${REMOVE_FIGURE} id = $1`, [c.req.param("id")])).rowCount }));
+admin.delete("/installs/:id/figures", async (c) => c.json({ removed: (await q(`${REMOVE_FIGURE} install_id = $1`, [c.req.param("id")])).rowCount }));
 
 // Seed or add many links at once: a JSON array of { brand, models, docType, title, url, fileName, category, status, checked }.
 admin.post("/links/import", async (c) => {
@@ -602,8 +740,8 @@ admin.post("/import", async (c) => c.json(await importStream(c.req.raw.body)));
 // Parts cross-reference, marketplace and parts usage (src/parts.mjs, src/market.mjs, src/usage.mjs; docs/parts-and-marketplace.md).
 registerParts({ member, admin, fail, newId, writeLimit, validUrl });
 registerMarket({ member, fail, newId, writeLimit, notify });
-registerUsage({ member, fail, writeLimit });
-registerPartners({ app, member, fail, newId, allow, sha, hubName: HUB_NAME, createInstall });
+registerUsage({ member, fail, writeLimit: usageLimit });
+registerPartners({ app, member, fail, newId, allow, clientIp, sha, hubName: HUB_NAME, createInstall });
 
 // Admin first: the member routes below would otherwise answer /v1/admin/* with their key check.
 app.route("/v1/admin", admin);
@@ -617,6 +755,10 @@ if (!(await getSetting("join_key")) && process.env.JOIN_KEY) await setSetting("j
 if (process.env.LINK_CHECKER !== "off") startChecker();
 const port = Number(process.env.PORT ?? 8080);
 serve({ fetch: app.fetch, port, hostname: "0.0.0.0" }, () => console.log(`${HUB_NAME} listening on :${port}`));
+
+// Something left running in the background that fails (a Discord post, a last-seen update) is logged; it mustn't stop
+// the hub for everyone.
+process.on("unhandledRejection", (e) => console.error("unhandled:", e));
 
 process.on("SIGTERM", async () => {
   await pool.end().catch(() => {});

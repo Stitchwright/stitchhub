@@ -45,7 +45,8 @@ cp .env.example .env        # set ADMIN_TOKEN and JOIN_KEY
 docker compose up -d        # hub on port 8080, with its own PostgreSQL
 ```
 To let shops reach it from outside your network, put it behind a tunnel or reverse proxy with HTTPS (for example
-Cloudflare Tunnel or Tailscale Funnel).
+Cloudflare Tunnel or Tailscale Funnel), and set `TRUST_PROXY=true` in `.env` so the limits on joining see each shop's
+own address. (On Railway that's already the default.)
 
 ### Without Docker
 Node 20+ and PostgreSQL: `npm ci`, set the variables from `.env.example`, `npm start`.
@@ -55,9 +56,21 @@ The database tables are created on first start.
 
 The **/admin** page exports everything to one `.ndjson.gz` file, and imports that file into another StitchHub. That
 includes members and their keys, the join key, links with their history, notes, photos, figures, data sets, the
-parts cross-reference with its history, and marketplace listings and orders. After an
-import, members keep working with their existing keys once they point StitchBench at the new address. Download an
-export now and then and keep it somewhere safe.
+parts cross-reference with its history, and marketplace listings and orders. The export is one snapshot, so it can be
+taken while shops are using the hub. Download an export now and then and keep it somewhere safe.
+
+**Keep the hub's address when you move it.** Point the same address (your own domain, for example
+`hub.example.com`) at the new server: members' StitchBench installs carry on with their keys and their place, and
+nothing changes for them. StitchBench can't switch a joined install to a new address yet. If the address changes,
+each shop has to join again at the new one and becomes a new member there; its listings, orders, notes and partner
+links stay with its old membership. On Railway, add your own domain before members join, so a move never changes it.
+
+Import into a new, empty hub. Restoring an older export works too: installs that had synced past it start over and
+receive everything on the hub again, so nothing new is missed (changes made after that export are gone from the hub;
+each install keeps its own copy). Importing into a hub that's already in use adds the file's rows as new changes, so
+every install receives them, and a link whose address is already there is merged into that one. If an import fails,
+nothing is imported and the admin page says which line of the file was refused. Imports, bulk loads and data sets can
+be up to 1 GB; set `ADMIN_UPLOAD_MB` for more.
 
 If a hub disappears without an export, each StitchBench install still has its own synced copy of the links and
 notes, so nobody loses what they can already see.
@@ -137,12 +150,12 @@ Members send `Authorization: Bearer <install key>`.
 | | |
 |---|---|
 | `POST /v1/register` | `{ joinKey, name, contact }` → `{ installId, installKey }` |
-| `GET /v1/changes?since=N` | links, notes (photo info), figure ids, parts and listings changed after `N`; `next` is the new `N` |
-| `POST /v1/links`, `PUT /v1/links/:id`, `DELETE /v1/links/:id`, `POST /v1/links/:id/restore` | add, fix, remove, restore a link |
+| `GET /v1/changes?since=N` | links, notes (photo info), figure ids, parts and listings changed after `N`; `next` is the new `N`. A removed note is only `{ id, deleted: true }`; a figure id that comes again was redrawn; `removedFigures` are figures the hub admin took down |
+| `POST /v1/links`, `PUT /v1/links/:id`, `DELETE /v1/links/:id`, `POST /v1/links/:id/restore` | add, fix, remove, restore a link (a link into a private network is refused) |
 | `GET /v1/links/:id/history`, `POST /v1/links/:id/revert` | a link's versions; go back to one |
 | `POST /v1/links/:id/report` | "this didn't download": check it again soon |
 | `POST /v1/posts` (multipart: `post` JSON + `photo` files), `DELETE /v1/posts/:id` | share or remove a note |
-| `GET /v1/photos/:id`, `GET/PUT /v1/figures/:id` | pictures |
+| `GET /v1/photos/:id`, `GET/PUT /v1/figures/:id` | pictures. The first shop to share a figure keeps it and can replace it; PUT answers `{ ok, stored }`, and `stored: false` means another shop's copy is already there |
 | `GET /v1/datasets`, `GET /v1/datasets/:name` | published data sets |
 | `POST /v1/xparts`, `PUT /v1/xparts/:id`, `DELETE /v1/xparts/:id`, `POST /v1/xparts/:id/restore` | add, edit, remove, restore a part (409 + `partId` if a number is already on another part) |
 | `POST /v1/xparts/:id/merge` | `{ intoId }`: the two entries are the same part |
@@ -164,9 +177,20 @@ Members send `Authorization: Bearer <install key>`.
 | `POST /v1/partners/links/:id/end` | end a partnership (both shops are told) |
 | `POST /v1/upgrade` | `{ joinKey }`: a partner-only install becomes a member |
 
+The feeds (`/v1/changes`, `/v1/orders`, `/v1/partners/messages`) answer with `X-Feed-Reset: 1` when `since` was past
+what this hub holds (it was restored from an older export): that answer starts again from the beginning.
+
+A hosted StitchBench that serves several companies through one install can send `X-Shop-Ref: <company id>` with its
+changes: each company then has its own 300 changes an hour (3,000 for the install), so one can't use up the others'.
+Parts-usage reports have their own allowance.
+
+Request bodies are limited per route: 16 KB to join, 2 MB for a figure, a part or a month of parts usage, 37 MB for a
+note with photos, 25 MB for a listing, 4 MB for a partner message and 64 KB for the rest. A larger one gets 413.
+
 The admin API is under `/v1/admin` and uses `Authorization: Bearer <ADMIN_TOKEN>`. It includes
-`POST /v1/admin/xparts/import` (load parts in bulk) and `POST /v1/admin/xparts/sources/import` (buying links in
-bulk).
+`POST /v1/admin/xparts/import` (load parts in bulk), `POST /v1/admin/xparts/sources/import` (buying links in
+bulk), and `DELETE /v1/admin/figures/:id` or `DELETE /v1/admin/installs/:id/figures` (take down one figure, or every
+figure a shop shared).
 
 ## License
 
