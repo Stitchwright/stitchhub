@@ -20,7 +20,7 @@ const TABLES = [
     cols: ["id", "category", "brand", "models", "model_keys", "doc_type", "title", "file_name", "url", "source", "status", "http_status", "checked_at", "fail_count", "deleted", "created_at", "updated_at"],
   },
   { t: "revision", table: "link_revisions", cols: ["id", "link_id", "action", "brand", "models", "doc_type", "title", "url", "by_name", "by_shop", "install_id", "note", "created_at"] },
-  { t: "post", table: "posts", cols: ["id", "install_id", "shop_name", "author_name", "brand", "model", "model_key", "kind", "title", "body", "deleted", "created_at", "updated_at"] },
+  { t: "post", table: "posts", cols: ["id", "install_id", "client_id", "shop_name", "author_name", "brand", "model", "model_key", "kind", "title", "body", "deleted", "created_at", "updated_at"] },
   { t: "photo", table: "photos", cols: ["id", "post_id", "kind", "caption", "mime", "data", "sort_order"] },
   { t: "figure", table: "figures", cols: ["id", "mime", "data", "width", "height", "install_id", "deleted", "created_at"] },
   { t: "dataset", table: "datasets", cols: ["name", "version", "data", "updated_at"], key: "name" },
