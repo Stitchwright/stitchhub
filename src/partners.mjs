@@ -11,14 +11,51 @@ import { one, q, tx, feedLimit } from "./db.mjs";
 const SIDES = new Set(["repair", "retail"]);
 const TYPE = /^[a-z]{2,20}(\.[a-z]{2,20})?$/;
 const MAX_MESSAGE = 4 * 1024 * 1024; // intake photos travel inside the message, already shrunk by the app
+const MAX_HOUR_BYTES = 256 * 1024 * 1024; // what one install may send in an hour, all its links together
+const MAX_STORED = 2 * 1024 * 1024 * 1024; // what one install may have on the hub at once (a busy year of intakes with photos is under 1 GB)
+const MAX_PAGE_BYTES = 16 * 1024 * 1024; // one answer to a message poll; the first message always fits
 const INVITE_DAYS = 14;
-const KEEP_DAYS = 365;
+const KEEP_DAYS = 365; // a message the shop it's for has had every chance to pull
+const KEEP_UNPULLED_DAYS = 3 * KEEP_DAYS; // one it hasn't (that shop's install hasn't been on the hub since it was sent)
 const ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"; // no 0/O, 1/I/L: the code is read out and typed at a counter
 
 const str = (v, max) => {
   const s = String(v ?? "").trim();
   return s ? s.slice(0, max) : null;
 };
+
+// Bytes each install has sent in the last hour, kept the way the per-hour request counts in server.mjs are. The
+// count limit on messages alone would let one install store 12 GB an hour (3,000 messages of 4 MB), kept for a year.
+const hourBytes = new Map();
+function allowBytes(installId, bytes) {
+  const now = Date.now();
+  const b = hourBytes.get(installId) ?? { n: 0, since: now };
+  if (now - b.since > 3600_000) {
+    b.n = 0;
+    b.since = now;
+  }
+  if (b.n + bytes > MAX_HOUR_BYTES) return false;
+  b.n += bytes;
+  hourBytes.set(installId, b);
+  return true;
+}
+
+// What each install has on the hub now (about: the stored size of its messages). Read again every ten minutes so
+// the sweep's deletions count; what it sends in between is added on.
+const stored = new Map();
+async function storedBytes(installId) {
+  const s = stored.get(installId);
+  if (s && Date.now() - s.at < 600_000) return s;
+  const r = await one(
+    `SELECT coalesce(sum(pg_column_size(m.data)), 0)::bigint AS bytes
+     FROM partner_links l JOIN partner_messages m ON m.link_id = l.id
+     WHERE (l.repair_install_id = $1 AND m.from_side = 'repair') OR (l.retail_install_id = $1 AND m.from_side = 'retail')`,
+    [installId],
+  );
+  const fresh = { bytes: Number(r.bytes), at: Date.now() };
+  stored.set(installId, fresh);
+  return fresh;
+}
 
 function newCode() {
   const bytes = crypto.randomBytes(12);
@@ -66,7 +103,10 @@ export function registerPartners({ app, member, fail, newId, allow, sha, hubName
     const mine = inv.side === "repair" ? "retail" : "repair";
     const repair = inv.side === "repair" ? { i: inv.install_id, r: inv.shop_ref, n: inv.shop_name } : { i: install.id, r: shopRef, n: shopName };
     const retail = inv.side === "retail" ? { i: inv.install_id, r: inv.shop_ref, n: inv.shop_name } : { i: install.id, r: shopRef, n: shopName };
-    // Linking the same two shops again picks up the old link instead of making a second one.
+    // Linking the same two shops again picks up the old link instead of making a second one. Redeems for the same
+    // pair take turns (a lock on the pair for this transaction): two codes for one pair entered at the same moment
+    // would otherwise each find no link yet and each make one.
+    await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [[repair.i, repair.r, retail.i, retail.r].join("|")]);
     let link = (
       await client.query(
         `SELECT * FROM partner_links WHERE repair_install_id = $1 AND repair_shop_ref = $2 AND retail_install_id = $3 AND retail_shop_ref = $4`,
@@ -169,19 +209,30 @@ export function registerPartners({ app, member, fail, newId, allow, sha, hubName
   // Counted as it arrives, so a body sent without a length (chunked) is held to the limit too.
   const message = bodyLimit({ maxSize: MAX_MESSAGE + 64 * 1024, onError: (c) => c.json({ error: "That message is too large (4 MB at most)." }, 413) });
   member.post("/partners/links/:id/messages", message, async (c) => {
-    if (!allow(`pmsg:${c.get("install").id}`, 3000)) throw fail(429, "Too many partner messages in the last hour.");
+    const installId = c.get("install").id;
+    if (!allow(`pmsg:${installId}`, 3000)) throw fail(429, "Too many partner messages in the last hour.");
     const body = await c.req.json().catch(() => ({}));
     const { link, side } = await myLink(c, c.req.param("id"), str(body.shopRef, 64));
     const id = str(body.id, 64);
     const type = String(body.type ?? "");
     if (!id) throw fail(400, "Send the message's own id (so a retry isn't stored twice).");
     if (!TYPE.test(type)) throw fail(400, "type looks like job.new or order.update.");
-    if (body.data === undefined || JSON.stringify(body.data).length > MAX_MESSAGE) throw fail(400, "Send data (4 MB at most).");
+    const data = JSON.stringify(body.data);
+    if (data === undefined || data.length > MAX_MESSAGE) throw fail(400, "Send data (4 MB at most).");
+    // Room as well as count: an hour's budget, and a ceiling on what the install has on the hub altogether. Both
+    // answers make StitchBench try again later rather than give the message up.
+    const bytes = Buffer.byteLength(data);
+    if (!allowBytes(installId, bytes)) throw fail(429, "This shop has sent partners all the hub takes in an hour (256 MB). It will go through later.");
+    const kept = await storedBytes(installId);
+    if (kept.bytes + bytes > MAX_STORED) {
+      throw fail(507, "This shop's partner messages fill its room on the hub (2 GB). Old ones clear after a year; ask the hub admin if you need room sooner.");
+    }
     const row = await one(
       `INSERT INTO partner_messages (id, link_id, from_side, type, data) VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT (link_id, from_side, id) DO NOTHING RETURNING seq`,
-      [id, link.id, side, type, JSON.stringify(body.data)],
+      [id, link.id, side, type, data],
     );
+    if (row) kept.bytes += bytes;
     return c.json({ ok: true, duplicate: !row, seq: row ? String(row.seq) : null });
   });
 
@@ -191,21 +242,33 @@ export function registerPartners({ app, member, fail, newId, allow, sha, hubName
     const id = c.get("install").id;
     const since = /^\d+$/.test(c.req.query("since") ?? "") ? c.req.query("since") : "0";
     const limit = Math.min(Math.max(Number(c.req.query("limit")) || 200, 1), 500);
-    const rows = (
+    // A page is cut by size as well as by count. Messages can be 4 MB each: a page of hundreds would be more JSON
+    // than the hub can build or the shop can take in before it gives up, and it would stay stuck on that page for
+    // every partner it has. Sizes come from the stored (compressed) column, which is cheap to read.
+    const page = (
       await q(
-        `WITH page AS (
-           SELECT m.seq FROM partner_messages m JOIN partner_links l ON l.id = m.link_id
-           WHERE m.seq > $2 AND m.seq <= $4 AND ((l.repair_install_id = $1 AND m.from_side <> 'repair') OR (l.retail_install_id = $1 AND m.from_side <> 'retail'))
-           ORDER BY m.seq LIMIT $3)
-         SELECT m.*, s.to_side, CASE s.to_side WHEN 'repair' THEN l.repair_shop_ref ELSE l.retail_shop_ref END AS to_shop_ref
-         FROM page p JOIN partner_messages m ON m.seq = p.seq JOIN partner_links l ON l.id = m.link_id
-         CROSS JOIN (VALUES ('repair'), ('retail')) AS s(to_side)
-         WHERE m.from_side <> s.to_side AND (CASE s.to_side WHEN 'repair' THEN l.repair_install_id ELSE l.retail_install_id END) = $1
-         ORDER BY m.seq, s.to_side`,
+        `SELECT m.seq, pg_column_size(m.data) AS bytes FROM partner_messages m JOIN partner_links l ON l.id = m.link_id
+         WHERE m.seq > $2 AND m.seq <= $4 AND ((l.repair_install_id = $1 AND m.from_side <> 'repair') OR (l.retail_install_id = $1 AND m.from_side <> 'retail'))
+         ORDER BY m.seq LIMIT $3`,
         [id, since, limit, (await feedLimit()).partner],
       )
     ).rows;
-    const next = rows.length ? String(rows[rows.length - 1].seq) : since;
+    let n = 0;
+    for (let bytes = 0; n < page.length && (n === 0 || bytes + page[n].bytes <= MAX_PAGE_BYTES); n++) bytes += page[n].bytes;
+    const seqs = page.slice(0, n).map((r) => r.seq);
+    const rows = seqs.length
+      ? (
+          await q(
+            `SELECT m.*, s.to_side, CASE s.to_side WHEN 'repair' THEN l.repair_shop_ref ELSE l.retail_shop_ref END AS to_shop_ref
+             FROM partner_messages m JOIN partner_links l ON l.id = m.link_id
+             CROSS JOIN (VALUES ('repair'), ('retail')) AS s(to_side)
+             WHERE m.seq = ANY($2::bigint[]) AND m.from_side <> s.to_side AND (CASE s.to_side WHEN 'repair' THEN l.repair_install_id ELSE l.retail_install_id END) = $1
+             ORDER BY m.seq, s.to_side`,
+            [id, seqs],
+          )
+        ).rows
+      : [];
+    const next = seqs.length ? String(seqs[seqs.length - 1]) : since;
     return c.json({
       messages: rows.map((m) => ({
         seq: String(m.seq),
@@ -219,7 +282,7 @@ export function registerPartners({ app, member, fail, newId, allow, sha, hubName
         createdAt: m.created_at,
       })),
       next,
-      more: new Set(rows.map((r) => String(r.seq))).size >= limit,
+      more: page.length >= limit || n < page.length,
     });
   });
 
@@ -239,10 +302,19 @@ export function registerPartners({ app, member, fail, newId, allow, sha, hubName
     return c.json(linkOut(ended));
   });
 
-  // Old messages and spent codes go after a while.
+  // Old messages and spent codes go after a while. A message goes after a year only once every shop it's for has
+  // been on the hub since it was sent (it pulls on every sync, so it has had it); the hub doesn't keep each shop's
+  // place in the feed, so this stands in for "delivered". After three years it goes regardless.
   const sweep = () =>
     Promise.all([
-      q(`DELETE FROM partner_messages WHERE created_at < now() - make_interval(days => $1)`, [KEEP_DAYS]),
+      q(
+        `DELETE FROM partner_messages m USING partner_links l
+         WHERE l.id = m.link_id AND m.created_at < now() - make_interval(days => $1)
+           AND (m.created_at < now() - make_interval(days => $2)
+             OR ((m.from_side = 'repair' OR m.created_at < (SELECT last_seen_at FROM installs WHERE id = l.repair_install_id))
+               AND (m.from_side = 'retail' OR m.created_at < (SELECT last_seen_at FROM installs WHERE id = l.retail_install_id))))`,
+        [KEEP_DAYS, KEEP_UNPULLED_DAYS],
+      ),
       q(`DELETE FROM partner_invites WHERE expires_at < now() - interval '30 days'`),
     ]).catch((e) => console.error("partner sweep:", e.message));
   setInterval(sweep, 6 * 3600_000).unref();

@@ -7,9 +7,11 @@ StitchHub is the one small shared server that the shops sync with. It holds only
 
 - **Manual links.** Where each service, parts or operator manual can be downloaded, with a status (working, dead,
   or blocks robots) that the hub rechecks every week. Anyone can fix a dead link. Every change is kept and can be
-  rolled back. **The hub never stores manuals**, only links to where they're published.
+  rolled back. **The hub never stores manuals**, only links to where they're published. The checker only contacts
+  public web addresses: a link to a private or local address counts as dead.
 - **Tech notes.** An issue found, how it was fixed, or a tip, per brand and model, with photos (wiring and
-  connectors, inside the machine, parts). Customer names and serial numbers are never sent.
+  connectors, inside the machine, parts). Customer names and serial numbers are never sent. Removing a note deletes
+  its text and photos from the hub; only a marker stays so every shop, including ones that join later, learns it's gone.
 - **Figure snapshots.** Small crops of manual pages that show a timing or adjustment, so a tech on a phone can see
   them.
 - **Parts cross-reference.** One entry per physical part: every number it's sold under (per brand), the machines
@@ -31,6 +33,10 @@ contribution toward server costs). In StitchBench, open **Settings → Community
 The install gets its own key. The admin can block any install, and can change the join key for new members
 without affecting shops that already joined.
 
+The join key is 16+ characters; use the **Generate** button on /admin rather than a memorable word. Each address gets
+10 tries an hour, and after 50 wrong keys in an hour from anywhere, joining pauses for the rest of that hour (the
+Discord channel is told once). Existing members aren't affected by the pause.
+
 ## Running a hub
 
 ### Railway (about $5/month)
@@ -46,6 +52,10 @@ docker compose up -d        # hub on port 8080, with its own PostgreSQL
 ```
 To let shops reach it from outside your network, put it behind a tunnel or reverse proxy with HTTPS (for example
 Cloudflare Tunnel or Tailscale Funnel).
+
+`TRUST_PROXY` is how many proxies sit in front of the hub: `1` (the default) for Railway's edge or one reverse proxy or
+tunnel, `0` when shops connect to it directly. The hub takes each request's address from that entry of
+`X-Forwarded-For` for its per-address limits, and ignores anything the client put there itself.
 
 ### Without Docker
 Node 20+ and PostgreSQL: `npm ci`, set the variables from `.env.example`, `npm start`.
@@ -65,7 +75,9 @@ notes, so nobody loses what they can already see.
 ## Discord
 
 On the /admin page, paste a Discord channel webhook. The hub then posts new notes, link fixes, new marketplace
-listings and new members to that channel. Orders are never posted.
+listings and new members to that channel. Orders are never posted. Nothing the hub posts can ping anyone (an
+"@everyone" in a note is shown as plain text, and so are markdown and masked links in members' words), and removing a
+note takes its announcement down again.
 
 ## Parts cross-reference and marketplace
 
@@ -141,7 +153,7 @@ Members send `Authorization: Bearer <install key>`.
 | `POST /v1/links`, `PUT /v1/links/:id`, `DELETE /v1/links/:id`, `POST /v1/links/:id/restore` | add, fix, remove, restore a link |
 | `GET /v1/links/:id/history`, `POST /v1/links/:id/revert` | a link's versions; go back to one |
 | `POST /v1/links/:id/report` | "this didn't download": check it again soon |
-| `POST /v1/posts` (multipart: `post` JSON + `photo` files), `DELETE /v1/posts/:id` | share or remove a note |
+| `POST /v1/posts` (multipart: `post` JSON + `photo` files), `DELETE /v1/posts/:id` | share or remove a note (removed notes come through `/changes` as `{ id, deleted: true }` only) |
 | `GET /v1/photos/:id`, `GET/PUT /v1/figures/:id` | pictures |
 | `GET /v1/datasets`, `GET /v1/datasets/:name` | published data sets |
 | `POST /v1/xparts`, `PUT /v1/xparts/:id`, `DELETE /v1/xparts/:id`, `POST /v1/xparts/:id/restore` | add, edit, remove, restore a part (409 + `partId` if a number is already on another part) |

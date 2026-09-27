@@ -6,7 +6,8 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
-import { pool, q, one, tx, migrate, getSetting, setSetting, startFeeds, feedLimit } from "./db.mjs";
+import { getConnInfo } from "@hono/node-server/conninfo";
+import { pool, q, one, tx, migrate, getSetting, setSetting, feedLimit } from "./db.mjs";
 import { startChecker } from "./checker.mjs";
 import { exportStream, importStream } from "./transfer.mjs";
 import { registerParts, partsByIds } from "./parts.mjs";
@@ -24,6 +25,7 @@ const sha = (s) => crypto.createHash("sha256").update(s).digest("hex");
 const newId = () => crypto.randomUUID().replace(/-/g, "").slice(0, 24);
 const same = (a, b) => a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
 const IMAGE = new Set(["image/jpeg", "image/png", "image/webp"]);
+const JOIN_KEY_MIN = 16; // the /admin generator makes 21; anything a person would type from memory is guessable
 const KINDS = new Set(["GOTCHA", "TIP", "FACT"]);
 const PHOTO_KINDS = new Set(["CONDITION", "INSIDE", "WIRING", "PART", "AFTER"]);
 
@@ -63,15 +65,56 @@ function validUrl(url) {
   }
 }
 
-// Tell the community's Discord channel (optional: admin sets a webhook URL).
+// Tell the community's Discord channel (optional: admin sets a webhook URL). A message may never ping anyone (an
+// "@everyone" in a note title stays plain text), and members' own words go through plain() first. Answers with
+// Discord's id for the message, so a note's announcement can be taken down with the note; null if it wasn't posted.
 async function notify(text) {
-  const hook = await getSetting("discord_webhook");
-  if (!hook) return;
-  fetch(hook, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: text.slice(0, 1900) }) }).catch(() => {});
+  try {
+    const hook = await getSetting("discord_webhook");
+    if (!hook) return null;
+    const u = new URL(hook);
+    u.searchParams.set("wait", "true"); // answer with the message instead of an empty 204
+    const r = await fetch(u, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: text.slice(0, 1900), allowed_mentions: { parse: [] } }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    const id = r.ok ? String((await r.json()).id ?? "") : "";
+    return /^\d+$/.test(id) ? id : null;
+  } catch {
+    return null;
+  }
 }
 
-// A few simple limits so one install can't flood the hub.
+/** A member's text for a Discord message: markdown and [masked](links) show as typed instead of being rendered. */
+const plain = (s) => String(s ?? "").replace(/[\\*_~`|#\[\]]/g, "\\$&");
+
+// Announce a note and remember Discord's id for the message (in settings, keyed by the note) so removing the note takes
+// the announcement down too. Routes don't wait for this: a slow Discord shouldn't slow the hub.
+async function announcePost(id, text) {
+  const msgId = await notify(text);
+  if (!msgId) return;
+  await setSetting(`discord_msg:${id}`, msgId);
+  if ((await one(`SELECT deleted FROM posts WHERE id = $1`, [id]))?.deleted) await unnotify(id); // removed while Discord was answering
+}
+
+// Take a note's announcement off the channel again.
+async function unnotify(postId) {
+  const msgId = await getSetting(`discord_msg:${postId}`);
+  if (!msgId) return;
+  await q(`DELETE FROM settings WHERE key = $1`, [`discord_msg:${postId}`]);
+  const hook = await getSetting("discord_webhook");
+  if (!hook) return;
+  const u = new URL(hook);
+  u.pathname = `${u.pathname.replace(/\/$/, "")}/messages/${msgId}`;
+  await fetch(u, { method: "DELETE", signal: AbortSignal.timeout(10_000) });
+}
+
+// A few simple limits so one install can't flood the hub. Buckets an hour old are swept out and the map is capped
+// (oldest out first), so a stream of requests from ever-new addresses can't grow it until memory runs out.
 const buckets = new Map();
+const BUCKET_CAP = 50_000;
 function allow(key, perHour) {
   const now = Date.now();
   const b = buckets.get(key) ?? { n: 0, since: now };
@@ -80,8 +123,50 @@ function allow(key, perHour) {
     b.since = now;
   }
   b.n += 1;
+  buckets.delete(key); // put back at the end, so the map runs oldest-first
   buckets.set(key, b);
+  for (const k of buckets.keys()) {
+    if (buckets.size <= BUCKET_CAP) break;
+    buckets.delete(k);
+  }
   return b.n <= perHour;
+}
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, b] of buckets) if (now - b.since > 3600_000) buckets.delete(k);
+}, 600_000).unref();
+
+// How many proxies sit in front of the hub: 1 on Railway (its edge) or behind one reverse proxy or tunnel, 0 when shops
+// reach it directly. Each proxy appends the address it saw to X-Forwarded-For, so the entry that many from the right
+// end is the real client. Anything further left is whatever the client itself sent, and counts for nothing.
+const TRUST_PROXY = /^\d+$/.test(process.env.TRUST_PROXY ?? "") ? Number(process.env.TRUST_PROXY) : 1;
+function clientIp(c) {
+  const hops = (c.req.header("x-forwarded-for") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  let ip = TRUST_PROXY && hops.length >= TRUST_PROXY ? hops[hops.length - TRUST_PROXY] : null;
+  if (!ip) {
+    try {
+      ip = getConnInfo(c).remote.address;
+    } catch {
+      ip = null;
+    }
+  }
+  return (ip || "local").slice(0, 64);
+}
+
+// Wrong join keys are counted across every address too: past JOIN_FAILS an hour, joining pauses for the rest of it, so
+// a guessing run gets nowhere however many addresses or partner-only installs it comes from. The channel hears once.
+const JOIN_FAILS = 50;
+function joinPaused() {
+  const b = buckets.get("joinfail");
+  return Boolean(b && b.n > JOIN_FAILS && Date.now() - b.since <= 3600_000);
+}
+async function joinKeyOk(joinKey) {
+  const expected = (await getSetting("join_key")) ?? process.env.JOIN_KEY ?? "";
+  if (expected && joinKey && same(sha(String(joinKey)), sha(expected))) return true;
+  if (!allow("joinfail", JOIN_FAILS) && buckets.get("joinfail").n === JOIN_FAILS + 1) {
+    notify(`⚠️ ${JOIN_FAILS} wrong join keys in the last hour: joining is paused for the rest of it. Check who has the key.`);
+  }
+  return false;
 }
 
 const app = new Hono();
@@ -121,15 +206,14 @@ app.get("/admin", (c) => c.html(fs.readFileSync(path.join(ROOT, "public", "admin
 
 // Join: the community's join key gets an install its own key (shown once).
 app.post("/v1/register", async (c) => {
-  const ip = c.req.header("x-forwarded-for")?.split(",")[0].trim() ?? "local";
-  if (!allow(`register:${ip}`, 10)) throw fail(429, "Too many tries. Wait an hour.");
+  if (!allow(`register:${clientIp(c)}`, 10)) throw fail(429, "Too many tries. Wait an hour.");
+  if (joinPaused()) throw fail(429, "Joining is paused after too many wrong join keys. Try again in an hour.");
   const { joinKey, name, contact } = await c.req.json();
-  const expected = (await getSetting("join_key")) ?? process.env.JOIN_KEY ?? "";
-  if (!expected || !joinKey || !same(sha(String(joinKey)), sha(expected))) throw fail(403, "That join key isn't right. Ask the hub admin for the current one.");
+  if (!(await joinKeyOk(joinKey))) throw fail(403, "That join key isn't right. Ask the hub admin for the current one.");
   const shop = String(name ?? "").trim().slice(0, 120);
   if (!shop) throw fail(400, "Give your shop's name.");
   const { id, key } = await createInstall(pool, shop, String(contact ?? "").slice(0, 200) || null, "member");
-  notify(`👋 ${shop} joined ${HUB_NAME}.`);
+  notify(`👋 ${plain(shop)} joined ${HUB_NAME}.`);
   return c.json({ installId: id, installKey: key, hubName: HUB_NAME, scope: "member" });
 });
 
@@ -175,12 +259,12 @@ member.get("/me", async (c) =>
 // A shop that joined with a partner code only, now with the community's join key: same key and partner links, full member.
 member.post("/upgrade", async (c) => {
   if (!allow(`upgrade:${c.get("install").id}`, 10)) throw fail(429, "Too many tries. Wait an hour.");
+  if (joinPaused()) throw fail(429, "Joining is paused after too many wrong join keys. Try again in an hour.");
   const { joinKey } = await c.req.json().catch(() => ({}));
-  const expected = (await getSetting("join_key")) ?? process.env.JOIN_KEY ?? "";
-  if (!expected || !joinKey || !same(sha(String(joinKey)), sha(expected))) throw fail(403, "That join key isn't right. Ask the hub admin for the current one.");
+  if (!(await joinKeyOk(joinKey))) throw fail(403, "That join key isn't right. Ask the hub admin for the current one.");
   if (c.get("install").scope !== "member") {
     await q(`UPDATE installs SET scope = 'member' WHERE id = $1`, [c.get("install").id]);
-    notify(`👋 ${c.get("install").name} joined ${HUB_NAME}.`);
+    notify(`👋 ${plain(c.get("install").name)} joined ${HUB_NAME}.`);
   }
   return c.json({ installId: c.get("install").id, hubName: HUB_NAME, scope: "member" });
 });
@@ -222,22 +306,28 @@ member.get("/changes", async (c) => {
   let posts = [];
   if (ids("post").length) {
     const ps = (await q(`SELECT * FROM posts WHERE id = ANY($1)`, [ids("post")])).rows;
-    const photos = (await q(`SELECT id, post_id, kind, caption, mime, sort_order FROM photos WHERE post_id = ANY($1) ORDER BY sort_order`, [ids("post")])).rows;
-    posts = ps.map((p) => ({
-      id: p.id,
-      shopName: p.shop_name,
-      authorName: p.author_name,
-      brand: p.brand,
-      model: p.model,
-      modelKey: p.model_key,
-      kind: p.kind,
-      title: p.title,
-      body: p.body,
-      deleted: p.deleted,
-      mine: p.install_id === c.get("install").id,
-      createdAt: p.created_at,
-      photos: photos.filter((ph) => ph.post_id === p.id).map((ph) => ({ id: ph.id, kind: ph.kind, caption: ph.caption, mime: ph.mime, sortOrder: ph.sort_order })),
-    }));
+    const live = ps.filter((p) => !p.deleted).map((p) => p.id);
+    const photos = live.length ? (await q(`SELECT id, post_id, kind, caption, mime, sort_order FROM photos WHERE post_id = ANY($1) ORDER BY sort_order`, [live])).rows : [];
+    // A removed note is only a marker: its text and photos are gone from the hub, for old and new members alike.
+    posts = ps.map((p) =>
+      p.deleted
+        ? { id: p.id, deleted: true }
+        : {
+            id: p.id,
+            shopName: p.shop_name,
+            authorName: p.author_name,
+            brand: p.brand,
+            model: p.model,
+            modelKey: p.model_key,
+            kind: p.kind,
+            title: p.title,
+            body: p.body,
+            deleted: false,
+            mine: p.install_id === c.get("install").id,
+            createdAt: p.created_at,
+            photos: photos.filter((ph) => ph.post_id === p.id).map((ph) => ({ id: ph.id, kind: ph.kind, caption: ph.caption, mime: ph.mime, sortOrder: ph.sort_order })),
+          },
+    );
   }
   return c.json({
     links,
@@ -295,7 +385,7 @@ member.post("/links", async (c) => {
     );
     await saveRevision(client, id, "added", f, c, body.note);
   });
-  notify(`🔗 ${c.get("install").name} added a manual link: ${f.brand} ${f.models} — ${f.title}`);
+  notify(`🔗 ${plain(c.get("install").name)} added a manual link: ${plain(f.brand)} ${plain(f.models)} — ${plain(f.title)}`);
   return c.json(linkOut(await one(`SELECT * FROM links WHERE id = $1`, [id])));
 });
 
@@ -321,7 +411,7 @@ member.put("/links/:id", async (c) => {
   const body = await c.req.json();
   c.byName = String(body.byName ?? "").slice(0, 80) || null;
   const link = await applyEdit(c, c.req.param("id"), linkFields(body), "edited", body.note);
-  notify(`✏️ ${c.get("install").name} fixed a manual link: ${link.brand} ${link.models} — ${link.title}`);
+  notify(`✏️ ${plain(c.get("install").name)} fixed a manual link: ${plain(link.brand)} ${plain(link.models)} — ${plain(link.title)}`);
   return c.json(link);
 });
 
@@ -372,6 +462,7 @@ member.post("/links/:id/restore", (c) => setDeleted(c, false));
 
 // An install couldn't download it (or could): check it again soon.
 member.post("/links/:id/report", async (c) => {
+  writeLimit(c);
   await q(`UPDATE links SET checked_at = NULL WHERE id = $1`, [c.req.param("id")]);
   return c.json({ ok: true });
 });
@@ -423,21 +514,38 @@ member.post("/posts", async (c) => {
     return true;
   });
   if (!made) return c.json({ id: (await one(`SELECT id FROM posts WHERE install_id = $1 AND client_id = $2`, [inst.id, clientId])).id });
-  notify(`🛠️ ${inst.name}: **${title}** (${brand} ${model})${files.length ? ` · ${files.length} photo${files.length > 1 ? "s" : ""}` : ""}\n${body.slice(0, 400)}`);
+  announcePost(
+    id,
+    `🛠️ ${plain(inst.name)}: **${plain(title)}** (${plain(brand)} ${plain(model)})${files.length ? ` · ${files.length} photo${files.length > 1 ? "s" : ""}` : ""}\n${plain(body.slice(0, 400))}`,
+  ).catch(() => {});
   return c.json({ id });
 });
 
+// Removing a note takes its text and photos off the hub for good; only a marker (id, deleted, seq) stays, so every
+// install, and every shop that joins later, learns it's gone. Its Discord announcement goes with it. A member can only
+// remove the notes its own shop shared; the admin (installId null) any note.
+async function removePost(id, installId) {
+  const gone = await tx(async (client) => {
+    const r = await client.query(
+      `UPDATE posts SET deleted = true, title = '', body = '', author_name = NULL, updated_at = now(), seq = nextval('change_seq')
+       WHERE id = $1 AND ($2::text IS NULL OR install_id = $2::text)`,
+      [id, installId],
+    );
+    if (r.rowCount) await client.query(`DELETE FROM photos WHERE post_id = $1`, [id]);
+    return r.rowCount > 0;
+  });
+  if (gone) unnotify(id).catch(() => {});
+  return gone;
+}
+
 member.delete("/posts/:id", async (c) => {
-  const r = await q(`UPDATE posts SET deleted = true, updated_at = now(), seq = nextval('change_seq') WHERE id = $1 AND install_id = $2`, [
-    c.req.param("id"),
-    c.get("install").id,
-  ]);
-  if (!r.rowCount) throw fail(404, "Only the shop that shared a note can remove it.");
+  if (!(await removePost(c.req.param("id"), c.get("install").id))) throw fail(404, "Only the shop that shared a note can remove it.");
   return c.json({ ok: true });
 });
 
 member.get("/photos/:id", async (c) => {
-  const p = await one(`SELECT mime, data FROM photos WHERE id = $1`, [c.req.param("id")]);
+  // Through its note, so a removed note's photos are gone with it (notes removed before photos were deleted along too).
+  const p = await one(`SELECT ph.mime, ph.data FROM photos ph JOIN posts po ON po.id = ph.post_id WHERE ph.id = $1 AND NOT po.deleted`, [c.req.param("id")]);
   if (!p) throw fail(404, "No such photo.");
   return c.body(p.data, 200, { "Content-Type": p.mime, "Cache-Control": "private, max-age=31536000, immutable" });
 });
@@ -511,7 +619,7 @@ admin.get("/summary", async (c) => {
 
 admin.put("/join-key", async (c) => {
   const { joinKey } = await c.req.json();
-  if (!joinKey || String(joinKey).length < 8) throw fail(400, "Use a join key of 8+ characters.");
+  if (!joinKey || String(joinKey).length < JOIN_KEY_MIN) throw fail(400, `Use a join key of ${JOIN_KEY_MIN}+ characters (the Generate button makes one).`);
   await setSetting("join_key", String(joinKey));
   return c.json({ ok: true });
 });
@@ -541,7 +649,7 @@ admin.post("/installs/:id/block", async (c) => {
 });
 
 admin.delete("/posts/:id", async (c) => {
-  await q(`UPDATE posts SET deleted = true, updated_at = now(), seq = nextval('change_seq') WHERE id = $1`, [c.req.param("id")]);
+  await removePost(c.req.param("id"), null);
   return c.json({ ok: true });
 });
 
@@ -601,9 +709,9 @@ admin.post("/import", async (c) => c.json(await importStream(c.req.raw.body)));
 
 // Parts cross-reference, marketplace and parts usage (src/parts.mjs, src/market.mjs, src/usage.mjs; docs/parts-and-marketplace.md).
 registerParts({ member, admin, fail, newId, writeLimit, validUrl });
-registerMarket({ member, fail, newId, writeLimit, notify });
+registerMarket({ member, fail, newId, writeLimit, notify, plain });
 registerUsage({ member, fail, writeLimit });
-registerPartners({ app, member, fail, newId, allow, sha, hubName: HUB_NAME, createInstall });
+registerPartners({ app, member, fail, newId, allow, clientIp, sha, hubName: HUB_NAME, createInstall });
 
 // Admin first: the member routes below would otherwise answer /v1/admin/* with their key check.
 app.route("/v1/admin", admin);
@@ -612,8 +720,10 @@ app.route("/v1", member);
 // ---------- start ----------
 
 await migrate(path.join(ROOT, "migrations"));
-await startFeeds();
-if (!(await getSetting("join_key")) && process.env.JOIN_KEY) await setSetting("join_key", process.env.JOIN_KEY);
+if (!(await getSetting("join_key")) && process.env.JOIN_KEY) {
+  if (process.env.JOIN_KEY.length < JOIN_KEY_MIN) throw new Error(`Set JOIN_KEY to ${JOIN_KEY_MIN}+ characters, or leave it empty and make one on /admin.`);
+  await setSetting("join_key", process.env.JOIN_KEY);
+}
 if (process.env.LINK_CHECKER !== "off") startChecker();
 const port = Number(process.env.PORT ?? 8080);
 serve({ fetch: app.fetch, port, hostname: "0.0.0.0" }, () => console.log(`${HUB_NAME} listening on :${port}`));

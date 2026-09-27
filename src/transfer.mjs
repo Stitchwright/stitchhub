@@ -2,12 +2,17 @@
 // Keeps members working: installs (their hashed keys), the join key, links with history, notes, photos, figures,
 // data sets, the parts cross-reference with its history, marketplace listings, orders and ratings, parts usage, and the
 // partner links between repair shops and sewing shops with their messages and open invitations.
-// Every row keeps its change number (seq) and the sequences carry on past the old hub's, so installs keep their
-// place in the change, order and partner-message feeds after a move.
+// Every row keeps its change number (seq), and an import moves the sequences a long way past every number in play, so
+// installs keep their place in the change, order and partner-message feeds after a move and still get everything
+// written after it, even when the file is older than what they last synced (a hub rebuilt from a saved export).
 import zlib from "node:zlib";
 import readline from "node:readline";
-import { Readable } from "node:stream";
+import { Readable, pipeline } from "node:stream";
 import { pool, q, holdFeeds } from "./db.mjs";
+
+// How far an import jumps the sequences past the highest number the file, this hub or any row carries: more than a hub
+// hands out between two exports, so nothing written after the import lands on a number an install has already passed.
+const SEQ_JUMP = 1_000_000_000;
 
 // In import order (parents before children). `key` pages the export; `conflict` is the primary key.
 const TABLES = [
@@ -19,7 +24,7 @@ const TABLES = [
     cols: ["id", "category", "brand", "models", "model_keys", "doc_type", "title", "file_name", "url", "source", "status", "http_status", "checked_at", "fail_count", "deleted", "created_at", "updated_at"],
   },
   { t: "revision", table: "link_revisions", cols: ["id", "link_id", "action", "brand", "models", "doc_type", "title", "url", "by_name", "by_shop", "install_id", "note", "created_at"] },
-  { t: "post", table: "posts", cols: ["id", "install_id", "shop_name", "author_name", "brand", "model", "model_key", "kind", "title", "body", "deleted", "created_at", "updated_at"] },
+  { t: "post", table: "posts", cols: ["id", "install_id", "client_id", "shop_name", "author_name", "brand", "model", "model_key", "kind", "title", "body", "deleted", "created_at", "updated_at"] },
   { t: "photo", table: "photos", cols: ["id", "post_id", "kind", "caption", "mime", "data", "sort_order"] },
   { t: "figure", table: "figures", cols: ["id", "mime", "data", "width", "height", "install_id", "created_at"] },
   { t: "dataset", table: "datasets", cols: ["name", "version", "data", "updated_at"], key: "name" },
@@ -120,7 +125,26 @@ async function* lines() {
 
 /** A web stream of the whole hub, gzipped. */
 export function exportStream() {
-  return Readable.toWeb(Readable.from(lines()).pipe(zlib.createGzip()));
+  // pipeline, not pipe: a query that fails half way ends the download with an error, instead of the source's error
+  // going unhandled and taking the hub down. (A download the admin cancels closes the same way, quietly.)
+  const gz = pipeline(Readable.from(lines()), zlib.createGzip(), (e) => {
+    if (e && e.code !== "ERR_STREAM_PREMATURE_CLOSE") console.error("export:", e.message);
+  });
+  return Readable.toWeb(gz);
+}
+
+/** Move the change and partner-message sequences past the file's numbers, this hub's and every row's, plus `jump`. */
+async function advanceSequences(client, meta, jump) {
+  await client.query(
+    `SELECT setval('change_seq', greatest($1::bigint, (SELECT last_value FROM change_seq),
+       (SELECT max(seq) FROM links), (SELECT max(seq) FROM posts), (SELECT max(seq) FROM figures),
+       (SELECT max(seq) FROM xparts), (SELECT max(seq) FROM listings), (SELECT max(seq) FROM orders), 1) + $2::bigint)`,
+    [String(meta.changeSeq ?? 0), String(jump)],
+  );
+  await client.query(
+    `SELECT setval('partner_messages_seq_seq', greatest($1::bigint, (SELECT last_value FROM partner_messages_seq_seq), (SELECT max(seq) FROM partner_messages), 1) + $2::bigint)`,
+    [String(meta.partnerSeq ?? 0), String(jump)],
+  );
 }
 
 /** Load an export into this hub. Existing rows with the same key are replaced. */
@@ -134,8 +158,11 @@ export async function importStream(webStream) {
     await client.query("BEGIN");
     // Start reading only now: readline drops lines that arrive before its iterator is being consumed,
     // so creating it before the awaits above lost the first rows of an upload that was already buffered.
-    const input = Readable.fromWeb(webStream).pipe(zlib.createGunzip());
+    // pipeline, not pipe: an upload that breaks off part way errors the reader here, so the import rolls back and
+    // the admin sees why, instead of the upload's error going unhandled and taking the hub down.
+    const input = pipeline(Readable.fromWeb(webStream), zlib.createGunzip(), () => {});
     const rl = readline.createInterface({ input, crlfDelay: Infinity });
+    let advanced = false;
     for await (const line of rl) {
       if (!line.trim()) continue;
       const row = JSON.parse(line);
@@ -146,6 +173,12 @@ export async function importStream(webStream) {
       }
       const spec = byType[row.t];
       if (!spec) continue;
+      // Before the first row: every number handed out from here on (rows the file doesn't number, rows it changes,
+      // and all that's written after the import) is past every install's place in the feeds.
+      if (!advanced) {
+        advanced = true;
+        await advanceSequences(client, meta, SEQ_JUMP);
+      }
       const { table, cols } = spec;
       const conflict = spec.conflict ?? [spec.key ?? "id"];
       const vals = cols.map((c) => {
@@ -163,7 +196,13 @@ export async function importStream(webStream) {
         vals.push(String(row.seq));
         params.push(`$${vals.length}`);
       } else if (WITH_SEQ.has(table)) params.push("nextval('change_seq')");
-      const updates = colList.filter((c) => !conflict.includes(c) && !(spec.seq === "own" && c === "seq")).map((c) => `${c} = EXCLUDED.${c}`);
+      const updates = cols.filter((c) => !conflict.includes(c)).map((c) => `${c} = EXCLUDED.${c}`);
+      // A row this hub already has keeps its number unless the file changes it; then it takes a new one, so every
+      // install picks the change up (the file's own number could be one they have already passed).
+      if (WITH_SEQ.has(table)) {
+        const same = `(${cols.map((c) => `${table}.${c}`).join(", ")}) IS NOT DISTINCT FROM (${cols.map((c) => `EXCLUDED.${c}`).join(", ")})`;
+        updates.push(`seq = CASE WHEN ${same} THEN ${table}.seq ELSE nextval('change_seq') END`);
+      }
       await client.query(
         `INSERT INTO ${table} (${colList.join(", ")}) VALUES (${params.join(", ")})
          ON CONFLICT (${conflict.join(", ")}) ${updates.length ? `DO UPDATE SET ${updates.join(", ")}` : "DO NOTHING"}`,
@@ -171,17 +210,8 @@ export async function importStream(webStream) {
       );
       counts[table] = (counts[table] ?? 0) + 1;
     }
-    // New change and partner-message numbers carry on after the old hub's, so no install's place is behind them.
-    await client.query(
-      `SELECT setval('change_seq', greatest($1::bigint, (SELECT last_value FROM change_seq),
-         (SELECT max(seq) FROM links), (SELECT max(seq) FROM posts), (SELECT max(seq) FROM figures),
-         (SELECT max(seq) FROM xparts), (SELECT max(seq) FROM listings), (SELECT max(seq) FROM orders), 1))`,
-      [String(meta.changeSeq ?? 0)],
-    );
-    await client.query(
-      `SELECT setval('partner_messages_seq_seq', greatest($1::bigint, (SELECT last_value FROM partner_messages_seq_seq), (SELECT max(seq) FROM partner_messages), 1))`,
-      [String(meta.partnerSeq ?? 0)],
-    );
+    // Belt and braces: never leave a sequence behind a number an imported row carries.
+    await advanceSequences(client, meta, 0);
     // New order numbers carry on after the imported ones.
     await client.query(
       `SELECT setval('order_number_seq', greatest((SELECT max(substring(number from 4)::bigint) FROM orders WHERE number ~ '^SH-[0-9]+$'), (SELECT last_value FROM order_number_seq), 1))`,

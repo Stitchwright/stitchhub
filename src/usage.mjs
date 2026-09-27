@@ -5,6 +5,15 @@ import { key } from "./parts.mjs";
 
 const MAX_ITEMS = 5000;
 const MONTH = /^(\d{4})-(0[1-9]|1[0-2])$/;
+// A part shows in the community list only when this many shops reported it, so no row is one shop's own figures
+// (with two, a shop could take its own numbers off and read the other's).
+const MIN_SHOPS = 3;
+// The windows the list can be asked for. Coarse on purpose: with any count of months allowed, two windows a month
+// apart would give one month's figures away by subtraction.
+const WINDOWS = [3, 6, 12, 24];
+// One shop-month counts at most this much of a part toward the totals, so one shop's slip (or mischief) can't swamp
+// everyone else's real numbers.
+const MAX_COUNTED = 1000;
 
 /** "YYYY-MM" for the month `back` months before the current one (UTC). */
 function monthAgo(back) {
@@ -45,6 +54,8 @@ export function registerUsage({ member, fail, writeLimit }) {
       if (r) {
         r.qty += qty;
         r.tickets += tickets;
+        // Added up, the number still has to be a sensible count (and fit the column).
+        if (!count(r.qty) || !count(r.tickets)) throw fail(400, "qty and tickets add up to more than 1,000,000 for one part number.");
       } else rows.set(k, { k, number, brand: str(it?.brand, 60), qty, tickets });
     }
     const list = [...rows.values()];
@@ -64,8 +75,9 @@ export function registerUsage({ member, fail, writeLimit }) {
   });
 
   member.get("/usage/top", async (c) => {
+    // The window asked for, rounded up to the next one the list offers.
     const monthsRaw = Number(c.req.query("months") ?? 12);
-    const months = Number.isInteger(monthsRaw) ? Math.min(36, Math.max(1, monthsRaw)) : 12;
+    const months = Number.isFinite(monthsRaw) ? (WINDOWS.find((w) => w >= monthsRaw) ?? WINDOWS[WINDOWS.length - 1]) : 12;
     const limitRaw = Number(c.req.query("limit") ?? 200);
     const limit = Number.isInteger(limitRaw) ? Math.min(1000, Math.max(1, limitRaw)) : 200;
     const brand = str(c.req.query("brand"), 60);
@@ -76,16 +88,19 @@ export function registerUsage({ member, fail, writeLimit }) {
       SELECT pu.* FROM part_usage pu JOIN installs i ON i.id = pu.install_id AND NOT i.blocked
       WHERE pu.month BETWEEN $1 AND $2 AND ($3::text IS NULL OR lower(pu.brand) = lower($3))`;
     const shops = Number((await one(`SELECT count(DISTINCT install_id) AS n FROM (${window}) u`, [from, to, brand])).n);
+    // Totals stay bigint (sum of int) and are turned into numbers below: cast to int they could overflow and fail.
+    // The spelling and brand shown are the ones most shops use, by shops rather than rows, so one shop sending a
+    // part every month can't relabel it for everyone.
     const { rows } = await q(
       `WITH u AS (${window}),
        agg AS (
-         SELECT number_key, sum(qty)::int AS qty, sum(tickets)::int AS tickets, count(DISTINCT install_id)::int AS shops
-         FROM u GROUP BY number_key
+         SELECT number_key, sum(least(qty, $5::int)) AS qty, sum(least(tickets, $5::int)) AS tickets, count(DISTINCT install_id)::int AS shops
+         FROM u GROUP BY number_key HAVING count(DISTINCT install_id) >= $6::int
        ),
        spelling AS (
          SELECT DISTINCT ON (number_key) number_key, number, brand
-         FROM (SELECT number_key, number, brand, count(*) AS n, sum(qty) AS q FROM u GROUP BY number_key, number, brand) s
-         ORDER BY number_key, n DESC, q DESC, number, brand
+         FROM (SELECT number_key, number, brand, count(DISTINCT install_id) AS shops, count(*) AS n, sum(qty) AS q FROM u GROUP BY number_key, number, brand) s
+         ORDER BY number_key, shops DESC, n DESC, q DESC, number, brand
        )
        SELECT a.number_key, s.number, s.brand, a.qty, a.tickets, a.shops, x.id AS xpart_id, x.name
        FROM agg a JOIN spelling s USING (number_key)
@@ -95,18 +110,20 @@ export function registerUsage({ member, fail, writeLimit }) {
        ) x ON true
        ORDER BY a.shops DESC, a.qty DESC, a.number_key
        LIMIT $4`,
-      [from, to, brand, limit],
+      [from, to, brand, limit, MAX_COUNTED, MIN_SHOPS],
     );
     return c.json({
       from,
       to,
-      shops,
+      // Fewer than the minimum means there are no rows to go with it, and saying "1 shop" would say whose figures
+      // a narrow brand filter is about.
+      shops: shops >= MIN_SHOPS ? shops : 0,
       items: rows.map((r) => ({
         numberKey: r.number_key,
         number: r.number,
         brand: r.brand,
-        qty: r.qty,
-        tickets: r.tickets,
+        qty: Number(r.qty),
+        tickets: Number(r.tickets),
         shops: r.shops,
         xpartId: r.xpart_id ?? null,
         name: r.name ?? null,
