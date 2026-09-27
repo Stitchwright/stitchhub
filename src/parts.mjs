@@ -1,9 +1,14 @@
 // Parts cross-reference: one entry per physical part, every number it's sold under, the machines it fits, and
 // where to buy it. Anyone can add or fix an entry; every change keeps the whole entry as a revision.
+import { bodyLimit } from "hono/body-limit";
 import { pool, q, one, tx } from "./db.mjs";
 
 const KINDS = new Set(["PART", "ACCESSORY", "SUPPLY"]);
 const EVIDENCE = new Set(["listed", "tested", "maker"]);
+// The most a part holds, whichever way it's written (edit, revert, merge or import). Over-full input is refused,
+// never trimmed on the quiet: a universal bobbin fits thousands of machines, and every one of them should stay.
+const LIMITS = { numbers: 50, fits: 10000, sources: 30 };
+const LABEL = { numbers: "part numbers", fits: "machines it fits", sources: "places to buy it" };
 
 /** Upper-case letters and digits only: how brands, numbers and models are matched. */
 export const key = (s) =>
@@ -63,7 +68,7 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
   function cleanPart(body, defaultEvidence) {
     const numbers = [];
     const seenNum = new Set();
-    for (const n of Array.isArray(body.numbers) ? body.numbers.slice(0, 50) : []) {
+    for (const n of Array.isArray(body.numbers) ? body.numbers : []) {
       const brand = str(n?.brand, 60);
       const number = str(n?.number, 60);
       if (!brand || !number || !key(brand) || !key(number)) throw fail(400, "Each part number needs a brand and a number.");
@@ -74,7 +79,7 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
     }
     const fits = [];
     const seenFit = new Set();
-    for (const f of Array.isArray(body.fits) ? body.fits.slice(0, 3000) : []) {
+    for (const f of Array.isArray(body.fits) ? body.fits : []) {
       const brand = str(f?.brand, 60);
       const model = str(f?.model, 80);
       if (!brand || !model || !key(brand) || !key(model)) throw fail(400, "Each machine it fits needs a brand and a model.");
@@ -91,7 +96,7 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
       });
     }
     const sources = [];
-    for (const s of Array.isArray(body.sources) ? body.sources.slice(0, 30) : []) {
+    for (const s of Array.isArray(body.sources) ? body.sources : []) {
       const vendor = str(s?.vendor, 120);
       if (!vendor) throw fail(400, "Each place to buy it needs a vendor name.");
       const url = str(s.url, 1000);
@@ -106,6 +111,9 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
         currency: /^[A-Z]{3}$/.test(String(s.currency ?? "")) ? s.currency : "USD",
         note: str(s.note, 300),
       });
+    }
+    for (const k of Object.keys(LIMITS)) {
+      if ({ numbers, fits, sources }[k].length > LIMITS[k]) throw fail(400, `A part can list up to ${LIMITS[k]} ${LABEL[k]}. Trim the entry, or split it in two.`);
     }
     const name = str(body.name, 200) ?? (numbers[0] ? `Part ${numbers[0].number}` : null);
     if (!name) throw fail(400, "Give the part a name or a part number.");
@@ -133,12 +141,16 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
     );
   }
 
-  /** A number here that already belongs to another part: 409 pointing at that part. */
+  /**
+   * A number here that already belongs to another live part: 409 pointing at that part. Numbers on a removed part
+   * don't count (see freeNumbers), or a slip of the Remove button would lock them for good.
+   */
   async function checkNumbers(client, numbers, exceptId) {
     if (!numbers.length) return;
     const hit = (
       await client.query(
-        `SELECT n.xpart_id FROM xpart_numbers n JOIN unnest($1::text[], $2::text[]) u(b, k) ON n.brand_key = u.b AND n.number_key = u.k
+        `SELECT n.xpart_id FROM xpart_numbers n JOIN xparts p ON p.id = n.xpart_id AND NOT p.deleted
+         JOIN unnest($1::text[], $2::text[]) u(b, k) ON n.brand_key = u.b AND n.number_key = u.k
          WHERE n.xpart_id <> $3 LIMIT 1`,
         [numbers.map((n) => n.brandKey), numbers.map((n) => n.numberKey), exceptId ?? ""],
       )
@@ -150,6 +162,19 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
     }
   }
 
+  /**
+   * A removed part keeps its numbers only until a live part claims them: drop them from the removed part before
+   * they're written elsewhere (each (brand, number) can sit on one part). Its revision history still holds them.
+   */
+  async function freeNumbers(client, numbers) {
+    if (!numbers.length) return;
+    await client.query(
+      `DELETE FROM xpart_numbers n USING xparts p, unnest($1::text[], $2::text[]) u(b, k)
+       WHERE p.id = n.xpart_id AND p.deleted AND n.brand_key = u.b AND n.number_key = u.k`,
+      [numbers.map((n) => n.brandKey), numbers.map((n) => n.numberKey)],
+    );
+  }
+
   /** Replace a part's numbers, fits and sources. Sources keep their id, shop and date when unchanged. */
   async function writeEntry(client, id, f, c) {
     const old = (await client.query(`SELECT * FROM xpart_sources WHERE xpart_id = $1`, [id])).rows;
@@ -157,6 +182,7 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
     await client.query(`DELETE FROM xpart_fits WHERE xpart_id = $1`, [id]);
     await client.query(`DELETE FROM xpart_sources WHERE xpart_id = $1`, [id]);
     if (f.numbers.length) {
+      await freeNumbers(client, f.numbers);
       await client.query(
         `INSERT INTO xpart_numbers (xpart_id, brand, number, brand_key, number_key)
          SELECT $1, * FROM unnest($2::text[], $3::text[], $4::text[], $5::text[])`,
@@ -184,7 +210,8 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
       const was = s.id ? old.find((o) => o.id === s.id) : null;
       const same =
         was && was.vendor === s.vendor && (was.url ?? null) === s.url && (was.price_cents ?? null) === s.priceCents && was.currency === s.currency && (was.note ?? null) === s.note;
-      return { ...s, id: was ? was.id : newId(), byShop: was ? was.by_shop : shop, updatedAt: same ? was.updated_at : now };
+      // A changed source is credited to the shop that changed it, not the one that first added it.
+      return { ...s, id: was ? was.id : newId(), byShop: same ? was.by_shop : shop, updatedAt: same ? was.updated_at : now };
     });
     if (srcs.length) {
       await client.query(
@@ -215,7 +242,12 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
     return p;
   }
 
-  member.post("/xparts", async (c) => {
+  // Bodies are counted as they arrive, so a body sent without a length (chunked) is held to the limit too. A whole
+  // entry with LIMITS.fits machines is under 2 MB of JSON; merge, remove, restore and revert send a few fields.
+  const small = bodyLimit({ maxSize: 64 * 1024, onError: (c) => c.json({ error: "Too large." }, 413) });
+  const entry = bodyLimit({ maxSize: 4 * 1024 * 1024, onError: (c) => c.json({ error: "That part entry is too large (4 MB at most)." }, 413) });
+
+  member.post("/xparts", entry, async (c) => {
     writeLimit(c);
     const body = await c.req.json();
     const f = cleanPart(body, "tested");
@@ -237,7 +269,7 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
     return c.json(await current(id));
   });
 
-  member.put("/xparts/:id", async (c) => {
+  member.put("/xparts/:id", entry, async (c) => {
     writeLimit(c);
     const id = c.req.param("id");
     const body = await c.req.json();
@@ -258,7 +290,7 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
   });
 
   // The two entries are the same part: move everything from :id into intoId, and remove :id.
-  member.post("/xparts/:id/merge", async (c) => {
+  member.post("/xparts/:id/merge", small, async (c) => {
     writeLimit(c);
     const id = c.req.param("id");
     const body = await c.req.json();
@@ -272,6 +304,18 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
       if (!from || !into) throw fail(404, "That part isn't on the hub.");
       if (into.deleted) throw fail(409, "The part to merge into was removed. Restore it first.");
       if (from.deleted) throw fail(409, "That part was already removed.");
+      // Together they must still fit LIMITS, or the next edit of the merged part could not be saved.
+      const total = (
+        await client.query(
+          `SELECT (SELECT count(*) FROM xpart_numbers WHERE xpart_id = ANY($1))::int AS numbers,
+                  (SELECT count(DISTINCT (brand_key, model_key)) FROM xpart_fits WHERE xpart_id = ANY($1))::int AS fits,
+                  (SELECT count(*) FROM xpart_sources WHERE xpart_id = ANY($1))::int AS sources`,
+          [[id, intoId]],
+        )
+      ).rows[0];
+      for (const k of Object.keys(LIMITS)) {
+        if (total[k] > LIMITS[k]) throw fail(409, `Merged, this part would list more than ${LIMITS[k]} ${LABEL[k]}. Trim one of them first.`);
+      }
       await client.query(`UPDATE xpart_numbers SET xpart_id = $2 WHERE xpart_id = $1`, [id, intoId]);
       await client.query(
         `INSERT INTO xpart_fits (xpart_id, brand, model, brand_key, model_key, evidence, source)
@@ -287,9 +331,10 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
       );
       await client.query(`DELETE FROM xpart_fits WHERE xpart_id = $1`, [id]);
       await client.query(`UPDATE xpart_sources SET xpart_id = $2 WHERE xpart_id = $1`, [id, intoId]);
+      // Notes are joined but stay within what an edit may send back (2,000 characters), so nothing is lost later.
       await client.query(
         `UPDATE xparts SET category = coalesce(category, $2), specs = coalesce(specs, $3),
-           notes = CASE WHEN $4::text IS NULL THEN notes WHEN notes IS NULL THEN $4 ELSE notes || E'\\n' || $4 END,
+           notes = left(CASE WHEN $4::text IS NULL THEN notes WHEN notes IS NULL THEN $4 ELSE notes || E'\\n' || $4 END, 2000),
            updated_at = now(), seq = nextval('change_seq') WHERE id = $1`,
         [intoId, from.category, from.specs, from.notes],
       );
@@ -312,8 +357,8 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
     });
     return c.json(await current(id));
   }
-  member.delete("/xparts/:id", (c) => setDeleted(c, true));
-  member.post("/xparts/:id/restore", (c) => setDeleted(c, false));
+  member.delete("/xparts/:id", small, (c) => setDeleted(c, true));
+  member.post("/xparts/:id/restore", small, (c) => setDeleted(c, false));
 
   member.get("/xparts/:id/history", async (c) => {
     const { rows } = await q(`SELECT * FROM xpart_revisions WHERE xpart_id = $1 ORDER BY created_at DESC, id DESC`, [c.req.param("id")]);
@@ -322,7 +367,7 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
     );
   });
 
-  member.post("/xparts/:id/revert", async (c) => {
+  member.post("/xparts/:id/revert", small, async (c) => {
     writeLimit(c);
     const id = c.req.param("id");
     const body = await c.req.json();
@@ -346,13 +391,15 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
   });
 
   // Bulk seed: [{ name, kind, category, numbers, fits }]. A new number makes a new part; an entry whose numbers
-  // are already on the hub adds its new numbers and fits to that part.
+  // are already on a live part adds its new numbers and fits to that part. `full` (only when it happened) counts
+  // entries that lost numbers or fits because their part was already at LIMITS.
   admin.post("/xparts/import", async (c) => {
     const list = await c.req.json();
     if (!Array.isArray(list)) throw fail(400, "Send a JSON array of parts.");
     let added = 0;
     let merged = 0;
     let skipped = 0;
+    let full = 0;
     for (let start = 0; start < list.length; start += 2000) {
       const chunk = [];
       for (const raw of list.slice(start, start + 2000)) {
@@ -366,12 +413,13 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
       }
       if (!chunk.length) continue;
       await tx(async (client) => {
-        // Which numbers are already on the hub, and which fits those parts already have.
+        // Which numbers are already on a live part (a removed part's numbers are free to take), and which fits and
+        // how many numbers those parts already have.
         const allNums = chunk.flatMap((f) => f.numbers);
         const owner = new Map(); // "BRAND|NUMBER" -> part id
         if (allNums.length) {
           const { rows } = await client.query(
-            `SELECT n.brand_key, n.number_key, n.xpart_id FROM xpart_numbers n
+            `SELECT n.brand_key, n.number_key, n.xpart_id FROM xpart_numbers n JOIN xparts p ON p.id = n.xpart_id AND NOT p.deleted
              JOIN unnest($1::text[], $2::text[]) u(b, k) ON n.brand_key = u.b AND n.number_key = u.k`,
             [allNums.map((n) => n.brandKey), allNums.map((n) => n.numberKey)],
           );
@@ -379,10 +427,23 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
         }
         const existingIds = [...new Set(owner.values())];
         const haveFit = new Set();
+        const count = { numbers: new Map(), fits: new Map() }; // part id -> how many it holds, kept within LIMITS
         if (existingIds.length) {
           const { rows } = await client.query(`SELECT xpart_id, brand_key, model_key FROM xpart_fits WHERE xpart_id = ANY($1)`, [existingIds]);
-          for (const r of rows) haveFit.add(`${r.xpart_id}|${r.brand_key}|${r.model_key}`);
+          for (const r of rows) {
+            haveFit.add(`${r.xpart_id}|${r.brand_key}|${r.model_key}`);
+            count.fits.set(r.xpart_id, (count.fits.get(r.xpart_id) ?? 0) + 1);
+          }
+          const { rows: ns } = await client.query(`SELECT xpart_id, count(*)::int AS n FROM xpart_numbers WHERE xpart_id = ANY($1) GROUP BY 1`, [existingIds]);
+          for (const r of ns) count.numbers.set(r.xpart_id, r.n);
         }
+        // Room on the part for one more of `kind`; counts it when there is.
+        const room = (kind, id) => {
+          const n = count[kind].get(id) ?? 0;
+          if (n >= LIMITS[kind]) return false;
+          count[kind].set(id, n + 1);
+          return true;
+        };
         const newParts = [];
         const nums = [];
         const fits = [];
@@ -391,6 +452,7 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
           const target = f.numbers.map((n) => owner.get(`${n.brandKey}|${n.numberKey}`)).find(Boolean);
           const id = target ?? newId();
           let changed = !target;
+          let dropped = false;
           if (!target) {
             newParts.push({ id, ...f });
             added++;
@@ -398,6 +460,10 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
           for (const n of f.numbers) {
             const k = `${n.brandKey}|${n.numberKey}`;
             if (owner.has(k)) continue;
+            if (!room("numbers", id)) {
+              dropped = true;
+              continue;
+            }
             owner.set(k, id);
             nums.push({ id, ...n });
             changed = true;
@@ -405,10 +471,15 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
           for (const x of f.fits) {
             const k = `${id}|${x.brandKey}|${x.modelKey}`;
             if (haveFit.has(k)) continue;
+            if (!room("fits", id)) {
+              dropped = true;
+              continue;
+            }
             haveFit.add(k);
             fits.push({ id, ...x });
             changed = true;
           }
+          if (dropped) full++;
           if (target) {
             if (changed) {
               touched.add(target);
@@ -423,6 +494,7 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
           );
         }
         if (nums.length) {
+          await freeNumbers(client, nums);
           await client.query(
             `INSERT INTO xpart_numbers (xpart_id, brand, number, brand_key, number_key)
              SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[]) ON CONFLICT DO NOTHING`,
@@ -462,13 +534,16 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
         }
       });
     }
-    return c.json({ added, merged, skipped });
+    return c.json({ added, merged, skipped, ...(full ? { full } : {}) });
   });
 
   // Where to buy, in bulk (from a supplier scan): [{ number, brand?, vendor, url, priceCents?, currency?, note? }].
-  // Each row goes on the part that owns that number (that brand's number when a brand is given), keyed by
-  // (part, url): a link already on the part gets its vendor, price and note updated instead of a second copy.
-  // Rows whose number isn't on the hub (or that are missing a vendor or a valid link) count as unmatched.
+  // Each row goes on the live part that owns that number: that brand's number when a brand is given, otherwise the
+  // one part holding the number under any brand. Keyed by (part, url): a link already on the part gets its vendor,
+  // price and note updated instead of a second copy. Rows count as unmatched when the number isn't on the hub
+  // under the brand given, when no brand is given and different parts hold it under different brands (the same
+  // digits from two makers are not one part), or when the vendor or link is missing. `full` (only when it
+  // happened) counts new links a part had no room for.
   admin.post("/xparts/sources/import", async (c) => {
     const list = await c.req.json();
     if (!Array.isArray(list)) throw fail(400, "Send a JSON array of sources.");
@@ -476,6 +551,7 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
     let updated = 0;
     let unchanged = 0;
     let unmatched = 0;
+    let full = 0;
     const SCAN = "StitchHub scan";
     for (let start = 0; start < list.length; start += 5000) {
       const rows = [];
@@ -511,27 +587,32 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
         // The last row for a (part, link) wins.
         const wanted = new Map();
         for (const r of rows) {
-          const cands = byNumber.get(r.numberKey);
-          if (!cands) {
+          const cands = byNumber.get(r.numberKey) ?? [];
+          const part = r.brandKey ? cands.find((o) => o.brand_key === r.brandKey) : new Set(cands.map((o) => o.xpart_id)).size === 1 ? cands[0] : null;
+          if (!part) {
             unmatched++;
             continue;
           }
-          const part = (r.brandKey && cands.find((o) => o.brand_key === r.brandKey)) || cands[0];
           wanted.set(`${part.xpart_id}|${r.url}`, { ...r, partId: part.xpart_id });
         }
         if (!wanted.size) return;
         const partIds = [...new Set([...wanted.values()].map((w) => w.partId))];
-        const { rows: existing } = await client.query(
-          `SELECT id, xpart_id, url, vendor, price_cents, currency, note FROM xpart_sources WHERE xpart_id = ANY($1) AND url IS NOT NULL`,
-          [partIds],
-        );
+        const { rows: existing } = await client.query(`SELECT id, xpart_id, url, vendor, price_cents, currency, note FROM xpart_sources WHERE xpart_id = ANY($1)`, [partIds]);
         const have = new Map(existing.map((s) => [`${s.xpart_id}|${s.url}`, s]));
+        const count = new Map(); // part id -> places to buy it already holds, kept within LIMITS.sources
+        for (const s of existing) count.set(s.xpart_id, (count.get(s.xpart_id) ?? 0) + 1);
         const inserts = [];
         const updates = [];
         const touched = new Set();
         for (const [k, w] of wanted) {
           const s = have.get(k);
           if (!s) {
+            const n = count.get(w.partId) ?? 0;
+            if (n >= LIMITS.sources) {
+              full++;
+              continue;
+            }
+            count.set(w.partId, n + 1);
             inserts.push({ ...w, id: newId() });
             touched.add(w.partId);
             attached++;
@@ -581,6 +662,6 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
         }
       });
     }
-    return c.json({ attached, updated, unmatched, unchanged });
+    return c.json({ attached, updated, unmatched, unchanged, ...(full ? { full } : {}) });
   });
 }
