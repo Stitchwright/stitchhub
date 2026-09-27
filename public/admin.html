@@ -66,6 +66,12 @@
     </section>
 
     <section>
+      <h2>Figure snapshots</h2>
+      <p class="muted">A wrong or unwanted figure can be taken down: installs drop their copy, and any shop can share that figure again. Its id is the end of the picture's address in StitchBench (right-click the figure, Copy image address). To take down every figure one shop shared, use Remove figures under Members.</p>
+      <form class="row" id="figForm"><label for="figId" class="muted">Figure id</label><input id="figId" required pattern="[0-9a-f]{24}" placeholder="24 letters and digits"><button>Remove figure</button></form>
+    </section>
+
+    <section>
       <h2>Data sets</h2>
       <p class="muted">Files every install downloads when they change, e.g. <code>specs</code> (factory tension and timing values, made by StitchBench's <code>scripts/hub/publish-specs</code>).</p>
       <div id="datasets" class="muted"></div>
@@ -115,7 +121,13 @@
       tr.append(td(i.name + (i.blocked ? " (blocked)" : "")), td(i.contact), td(when(i.created_at)), td(when(i.last_seen_at)));
       const b = document.createElement("button"); b.className = "plain"; b.textContent = i.blocked ? "Unblock" : "Block";
       b.onclick = async () => { await api(`/installs/${i.id}/block`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ blocked: !i.blocked }) }); load(); };
-      const c = document.createElement("td"); c.append(b); tr.append(c); return tr;
+      const c = document.createElement("td"); c.append(b);
+      if (i.figures) {
+        const f = document.createElement("button"); f.className = "plain"; f.textContent = `Remove figures (${i.figures})`;
+        f.onclick = async () => { if (!confirm(`Remove every figure snapshot ${i.name} shared? Other shops can share them again.`)) return; try { const r = await (await api(`/installs/${i.id}/figures`, { method: "DELETE" })).json(); say(`Removed ${r.removed} figures.`); load(); } catch (err) { say(err.message, true); } };
+        c.append(" ", f);
+      }
+      tr.append(c); return tr;
     }));
     $("datasets").textContent = s.datasets.length ? s.datasets.map((d) => `${d.name}: version ${d.version}, ${(d.size / 1e6).toFixed(1)} MB`).join(" · ") : "None yet.";
   }
@@ -126,6 +138,7 @@
   $("inviteForm").onsubmit = async (e) => { e.preventDefault(); try { await api("/discord-invite", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: $("dInvite").value.trim() }) }); say("Discord invite link saved."); load(); } catch (err) { say(err.message, true); } };
   $("copyInvite").onclick = async () => { try { await navigator.clipboard.writeText($("inviteCode").value); say("Invite code copied."); } catch { $("inviteCode").select(); say("Select the code and copy it.", true); } };
   $("saveInvite").onclick = () => { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([JSON.stringify(window.hubInvite, null, 2)], { type: "application/json" })); a.download = (window.hubInvite.name || "StitchHub").replace(/[^\w-]+/g, "-") + ".stitchhub"; a.click(); };
+  $("figForm").onsubmit = async (e) => { e.preventDefault(); try { const r = await (await api(`/figures/${$("figId").value.trim()}`, { method: "DELETE" })).json(); say(r.removed ? "Figure removed." : "No figure with that id is on the hub.", !r.removed); $("figId").value = ""; load(); } catch (err) { say(err.message, true); } };
   $("hookForm").onsubmit = async (e) => { e.preventDefault(); try { await api("/discord-webhook", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: $("hook").value.trim() }) }); $("hook").value = ""; say("Discord setting saved."); load(); } catch (err) { say(err.message, true); } };
   $("export").onclick = async () => { try { say("Preparing export..."); const b = await (await api("/export")).blob(); const a = document.createElement("a"); a.href = URL.createObjectURL(b); a.download = `stitchhub-export-${new Date().toISOString().slice(0, 10)}.ndjson.gz`; a.click(); say("Export downloaded."); } catch (err) { say(err.message, true); } };
   $("import").onclick = async () => { const f = $("importFile").files[0]; if (!f) return say("Pick an export file first.", true); if (!confirm("Import this export? Rows with the same id are replaced.")) return; try { say("Importing..."); const r = await (await api("/import", { method: "POST", body: f })).json(); say("Imported: " + Object.entries(r).map(([k, v]) => `${k} ${v}`).join(", ")); load(); } catch (err) { say(err.message, true); } };

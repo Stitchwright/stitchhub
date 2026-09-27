@@ -2,12 +2,13 @@
 // Keeps members working: installs (their hashed keys), the join key, links with history, notes, photos, figures,
 // data sets, the parts cross-reference with its history, marketplace listings, orders and ratings, parts usage, and the
 // partner links between repair shops and sewing shops with their messages and open invitations.
-// Every row keeps its change number (seq) and the sequences carry on past the old hub's, so installs keep their
-// place in the change, order and partner-message feeds after a move.
+// Into an empty hub every row keeps its change number (seq) and the sequences carry on well past the old hub's, so
+// installs keep their place in the change, order and partner-message feeds after a move. Into a hub already in use,
+// imported rows are numbered after its own, so every install receives them.
 import zlib from "node:zlib";
 import readline from "node:readline";
-import { Readable } from "node:stream";
-import { pool, q, holdFeeds } from "./db.mjs";
+import { Readable, pipeline } from "node:stream";
+import { pool, holdFeeds } from "./db.mjs";
 
 // In import order (parents before children). `key` pages the export; `conflict` is the primary key.
 const TABLES = [
@@ -21,7 +22,7 @@ const TABLES = [
   { t: "revision", table: "link_revisions", cols: ["id", "link_id", "action", "brand", "models", "doc_type", "title", "url", "by_name", "by_shop", "install_id", "note", "created_at"] },
   { t: "post", table: "posts", cols: ["id", "install_id", "shop_name", "author_name", "brand", "model", "model_key", "kind", "title", "body", "deleted", "created_at", "updated_at"] },
   { t: "photo", table: "photos", cols: ["id", "post_id", "kind", "caption", "mime", "data", "sort_order"] },
-  { t: "figure", table: "figures", cols: ["id", "mime", "data", "width", "height", "install_id", "created_at"] },
+  { t: "figure", table: "figures", cols: ["id", "mime", "data", "width", "height", "install_id", "deleted", "created_at"] },
   { t: "dataset", table: "datasets", cols: ["name", "version", "data", "updated_at"], key: "name" },
   { t: "xpart", table: "xparts", cols: ["id", "name", "kind", "category", "specs", "notes", "deleted", "created_at", "updated_at"] },
   {
@@ -98,29 +99,62 @@ const JSONB = new Set(["snapshot", "item", "buyer_contact", "seller_contact", "t
 const WITH_SEQ = new Set(["links", "posts", "figures", "xparts", "listings", "orders"]);
 const hasSeq = (spec) => WITH_SEQ.has(spec.table) || spec.seq === "own";
 
+// How far past an export's numbers an import carries on: far more than a hub hands out in years (the link checker
+// takes about 17,000 a day), so no install's place can be beyond it.
+const GAP = "1000000000";
+
 async function* lines() {
-  const seqs = (await q(`SELECT (SELECT last_value FROM change_seq) AS change, (SELECT last_value FROM partner_messages_seq_seq) AS partner`)).rows[0];
-  yield JSON.stringify({ t: "meta", format: "stitchhub-export", version: 3, exportedAt: new Date().toISOString(), changeSeq: seqs.change, partnerSeq: seqs.partner }) + "\n";
-  for (const spec of TABLES) {
-    const { t, table, key = "id", json = [] } = spec;
-    const cols = hasSeq(spec) ? [...spec.cols, "seq"] : spec.cols;
-    let after = "";
-    for (;;) {
-      const { rows } = await q(`SELECT ${cols.join(", ")}, (${key}) AS _k FROM ${table} WHERE (${key}) > $1 ORDER BY (${key}) LIMIT 200`, [after]);
-      if (!rows.length) break;
-      after = rows[rows.length - 1]._k;
-      for (const r of rows) {
-        delete r._k;
-        for (const c of cols) if (BINARY.has(c) && !json.includes(c) && r[c]) r[c] = r[c].toString("base64");
-        yield JSON.stringify({ t, ...r }) + "\n";
+  const client = await pool.connect();
+  let done = false;
+  try {
+    // One snapshot of every table: a row written while the file downloads (a new shop's first note) can't end up in
+    // it without its parent, which would stop the import of this file.
+    await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    const seqs = (await client.query(`SELECT (SELECT last_value FROM change_seq) AS change, (SELECT last_value FROM partner_messages_seq_seq) AS partner`)).rows[0];
+    yield JSON.stringify({ t: "meta", format: "stitchhub-export", version: 3, exportedAt: new Date().toISOString(), changeSeq: seqs.change, partnerSeq: seqs.partner }) + "\n";
+    for (const spec of TABLES) {
+      const { t, table, key = "id", json = [] } = spec;
+      const cols = hasSeq(spec) ? [...spec.cols, "seq"] : spec.cols;
+      let after = "";
+      for (;;) {
+        const { rows } = await client.query(`SELECT ${cols.join(", ")}, (${key}) AS _k FROM ${table} WHERE (${key}) > $1 ORDER BY (${key}) LIMIT 200`, [after]);
+        if (!rows.length) break;
+        after = rows[rows.length - 1]._k;
+        for (const r of rows) {
+          delete r._k;
+          for (const c of cols) if (BINARY.has(c) && !json.includes(c) && r[c]) r[c] = r[c].toString("base64");
+          yield JSON.stringify({ t, ...r }) + "\n";
+        }
       }
     }
+    await client.query("COMMIT");
+    done = true;
+  } finally {
+    // Also when the download stopped part way: the snapshot ends and the connection goes back (or is dropped if broken).
+    const broken = !done && (await client.query("ROLLBACK").then(() => false, () => true));
+    client.release(broken);
   }
 }
 
 /** A web stream of the whole hub, gzipped. */
 export function exportStream() {
-  return Readable.toWeb(Readable.from(lines()).pipe(zlib.createGzip()));
+  // pipeline (not pipe): a download that stops part way stops reading the database too.
+  return Readable.toWeb(pipeline(Readable.from(lines()), zlib.createGzip(), () => {}));
+}
+
+function refused(status, message) {
+  const e = new Error(message);
+  e.status = status;
+  e.expose = true;
+  return e;
+}
+
+/** Why an import stopped, for the admin page: where in the file, and that nothing was imported. */
+function importError(e, lineNo, table) {
+  if (e.expose) return e; // too large, or not an export at all
+  if (e.code === "Z_DATA_ERROR" || e.code === "Z_BUF_ERROR") return refused(400, "Nothing was imported: that file isn't a gzipped StitchHub export (.ndjson.gz).");
+  if (e instanceof SyntaxError) return refused(400, `Nothing was imported: line ${lineNo} of the file isn't valid JSON.`);
+  return refused(400, `Nothing was imported: line ${lineNo} of the file${table ? ` (${table})` : ""} was refused: ${e.message}`);
 }
 
 /** Load an export into this hub. Existing rows with the same key are replaced. */
@@ -128,25 +162,53 @@ export async function importStream(webStream) {
   const byType = Object.fromEntries(TABLES.map((s) => [s.t, s]));
   const counts = {};
   const meta = {};
+  const linkIds = new Map(); // an imported link whose address is already here under another id: merged into that one
   const client = await pool.connect();
   const release = holdFeeds(); // members' feeds wait until the import has committed
+  let lineNo = 0;
+  let table = null;
   try {
     await client.query("BEGIN");
+    // An empty hub takes the export's numbers as they are, so installs keep their place after a move. A hub already in
+    // use numbers imported rows after its own: kept numbers could be behind its installs' places (they would never get
+    // those rows) or the same as rows already here (a page of changes would skip one of the two).
+    const empty = (await client.query(`SELECT ${[...WITH_SEQ, "partner_messages"].map((t) => `NOT EXISTS (SELECT 1 FROM ${t})`).join(" AND ")} AS empty`)).rows[0].empty;
     // Start reading only now: readline drops lines that arrive before its iterator is being consumed,
     // so creating it before the awaits above lost the first rows of an upload that was already buffered.
-    const input = Readable.fromWeb(webStream).pipe(zlib.createGunzip());
+    // pipeline (not pipe): an upload that breaks off or is too large stops the import instead of leaving it waiting.
+    const input = pipeline(Readable.fromWeb(webStream), zlib.createGunzip(), () => {});
     const rl = readline.createInterface({ input, crlfDelay: Infinity });
     for await (const line of rl) {
+      lineNo++;
+      table = null;
       if (!line.trim()) continue;
       const row = JSON.parse(line);
       if (row.t === "meta") {
-        if (row.format !== "stitchhub-export") throw new Error("Not a StitchHub export file.");
+        if (row.format !== "stitchhub-export") throw refused(400, "Nothing was imported: that isn't a StitchHub export file.");
         Object.assign(meta, row);
+        // New numbers for the imported rows come after the old hub's too, so its members receive them wherever they were.
+        if (!empty) {
+          await client.query(
+            `SELECT setval('change_seq', greatest($1::bigint, (SELECT last_value FROM change_seq))),
+               setval('partner_messages_seq_seq', greatest($2::bigint, (SELECT last_value FROM partner_messages_seq_seq)))`,
+            [String(meta.changeSeq ?? 0), String(meta.partnerSeq ?? 0)],
+          );
+        }
         continue;
       }
       const spec = byType[row.t];
       if (!spec) continue;
-      const { table, cols } = spec;
+      if (!empty && row.t === "setting" && row.key === "feed_gaps") continue; // about the old hub's numbers, not this one's
+      table = spec.table;
+      if (table === "links" && !empty) {
+        const same = (await client.query(`SELECT id FROM links WHERE url = $1 AND coalesce(file_name, '') = coalesce($2, '') AND id <> $3`, [row.url, row.file_name ?? null, row.id])).rows[0];
+        if (same) {
+          linkIds.set(row.id, same.id);
+          row.id = same.id;
+        }
+      }
+      if (table === "link_revisions" && linkIds.has(row.link_id)) row.link_id = linkIds.get(row.link_id);
+      const cols = spec.cols.filter((c) => row[c] !== undefined); // a column an older export doesn't have takes its default
       const conflict = spec.conflict ?? [spec.key ?? "id"];
       const vals = cols.map((c) => {
         const v = row[c] ?? null;
@@ -155,8 +217,8 @@ export async function importStream(webStream) {
         if (BINARY.has(c)) return Buffer.from(v, "base64");
         return v;
       });
-      // The row's own change number when the export has it (version 3); a new one otherwise.
-      const kept = hasSeq(spec) && row.seq != null;
+      // The row's own change number going into an empty hub (exports from version 3 have it); a new one otherwise.
+      const kept = empty && hasSeq(spec) && row.seq != null;
       const colList = kept || WITH_SEQ.has(table) ? [...cols, "seq"] : cols;
       const params = cols.map((_, i) => `$${i + 1}`);
       if (kept) {
@@ -171,17 +233,23 @@ export async function importStream(webStream) {
       );
       counts[table] = (counts[table] ?? 0) + 1;
     }
-    // New change and partner-message numbers carry on after the old hub's, so no install's place is behind them.
-    await client.query(
-      `SELECT setval('change_seq', greatest($1::bigint, (SELECT last_value FROM change_seq),
-         (SELECT max(seq) FROM links), (SELECT max(seq) FROM posts), (SELECT max(seq) FROM figures),
-         (SELECT max(seq) FROM xparts), (SELECT max(seq) FROM listings), (SELECT max(seq) FROM orders), 1))`,
-      [String(meta.changeSeq ?? 0)],
-    );
-    await client.query(
-      `SELECT setval('partner_messages_seq_seq', greatest($1::bigint, (SELECT last_value FROM partner_messages_seq_seq), (SELECT max(seq) FROM partner_messages), 1))`,
-      [String(meta.partnerSeq ?? 0)],
-    );
+    table = null;
+    if (empty) {
+      // Numbers carry on well past the export's. An install whose place is in between had synced past this export
+      // (a backup restored after the old hub was lost): its feed starts over (staleCursor in db.mjs) rather than skip
+      // what is numbered next.
+      const gaps = JSON.parse((await client.query(`SELECT value FROM settings WHERE key = 'feed_gaps'`)).rows[0]?.value ?? "{}");
+      const carryOn = async (feed, sequence, fromExport, highest) => {
+        const after = (await client.query(`SELECT greatest($1::bigint, ${highest}, 0)::text AS n`, [String(fromExport ?? 0)])).rows[0].n;
+        const upTo = (
+          await client.query(`SELECT setval('${sequence}', greatest($1::bigint, (SELECT last_value FROM ${sequence})) + $2::bigint)::text AS n`, [after, GAP])
+        ).rows[0].n;
+        gaps[feed] = [...(gaps[feed] ?? []), [after, upTo]];
+      };
+      await carryOn("change", "change_seq", meta.changeSeq, [...WITH_SEQ].map((t) => `(SELECT max(seq) FROM ${t})`).join(", "));
+      await carryOn("partner", "partner_messages_seq_seq", meta.partnerSeq, "(SELECT max(seq) FROM partner_messages)");
+      await client.query(`INSERT INTO settings (key, value) VALUES ('feed_gaps', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, [JSON.stringify(gaps)]);
+    }
     // New order numbers carry on after the imported ones.
     await client.query(
       `SELECT setval('order_number_seq', greatest((SELECT max(substring(number from 4)::bigint) FROM orders WHERE number ~ '^SH-[0-9]+$'), (SELECT last_value FROM order_number_seq), 1))`,
@@ -189,7 +257,7 @@ export async function importStream(webStream) {
     await client.query("COMMIT");
   } catch (e) {
     await client.query("ROLLBACK").catch(() => {});
-    throw e;
+    throw importError(e, lineNo, table);
   } finally {
     release();
     client.release();

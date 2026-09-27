@@ -8,6 +8,9 @@ export const pool = new pg.Pool({
   max: Number(process.env.DB_POOL ?? 8),
   ssl: process.env.DATABASE_SSL === "true" ? { rejectUnauthorized: false } : undefined,
 });
+// An idle connection the database drops (a restart, maintenance, a proxy's idle timeout) is reported here and replaced
+// on the next query. Without a listener the error would stop the whole hub.
+pool.on("error", (e) => console.error("database connection lost:", e.message));
 
 export const q = (text, params) => pool.query(text, params);
 
@@ -80,7 +83,29 @@ export async function feedLimit() {
   return { change: change.toString(), partner: partner.toString() };
 }
 
+/**
+ * After an import, the numbers between the end of the export and where this hub carries on were never handed out. An
+ * install whose place in a feed ("change" or "partner") is among them had synced past the export (a backup older than
+ * its last sync): that feed starts over for it, or it would skip everything numbered in between.
+ */
+export async function staleCursor(feed, since) {
+  const gaps = JSON.parse((await getSetting("feed_gaps")) ?? "{}")[feed] ?? [];
+  const n = BigInt(since);
+  return gaps.some(([after, upTo]) => n > BigInt(after) && n <= BigInt(upTo));
+}
+
 export async function migrate(dir) {
+  // The database may still be starting (docker compose starts both together) or restarting: wait up to a minute.
+  for (let i = 0; ; i++) {
+    try {
+      await q(`SELECT 1`);
+      break;
+    } catch (e) {
+      if (i >= 30) throw e;
+      console.log(`waiting for the database: ${e.message}`);
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
   await q(`CREATE TABLE IF NOT EXISTS hub_migrations (name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`);
   const done = new Set((await q(`SELECT name FROM hub_migrations`)).rows.map((r) => r.name));
   for (const name of fs.readdirSync(dir).filter((f) => f.endsWith(".sql")).sort()) {
