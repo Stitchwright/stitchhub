@@ -1,7 +1,6 @@
 // Marketplace: shops list parts and accessories; another shop orders. The buyer pays the seller directly (the
 // seller's payment instructions are on the invoice) and the seller enters the carrier and tracking.
 // Orders are private to the buyer and the seller.
-import { bodyLimit } from "hono/body-limit";
 import { pool, one, tx, feedLimit } from "./db.mjs";
 
 const IMAGE = new Set(["image/jpeg", "image/png", "image/webp"]);
@@ -36,14 +35,6 @@ export function trackingUrl(carrier, tracking) {
 
 const NO_RATING = { avg: null, count: 0 };
 
-// The ratings that count towards a shop's standing: none from a cancelled or declined order, and one per rater
-// (the latest), however many orders the two shops have had. Two installs can't farm each other's score that way.
-// `where` filters on r.rated_install_id.
-const counted = (where) =>
-  `SELECT DISTINCT ON (r.rated_install_id, r.by_role, r.rater_install_id) r.rated_install_id AS id, r.by_role, r.stars, r.comment, r.updated_at
-   FROM order_ratings r JOIN orders o ON o.id = r.order_id AND o.status NOT IN ('CANCELLED', 'DECLINED')
-   WHERE ${where} ORDER BY r.rated_install_id, r.by_role, r.rater_install_id, r.updated_at DESC`;
-
 /**
  * Ratings each install has received: as a seller (from buyers, by_role 'buyer') and as a buyer (from sellers,
  * by_role 'seller'). Map installId -> { asSeller: {avg, count}, asBuyer: {avg, count} }.
@@ -53,7 +44,8 @@ export async function reputations(installIds, db = pool) {
   const out = new Map(ids.map((id) => [id, { asSeller: NO_RATING, asBuyer: NO_RATING }]));
   if (!ids.length) return out;
   const { rows } = await db.query(
-    `SELECT id, by_role, round(avg(stars)::numeric, 1) AS avg, count(*)::int AS n FROM (${counted("r.rated_install_id = ANY($1)")}) x GROUP BY 1, 2`,
+    `SELECT rated_install_id AS id, by_role, round(avg(stars)::numeric, 1) AS avg, count(*)::int AS n
+     FROM order_ratings WHERE rated_install_id = ANY($1) GROUP BY 1, 2`,
     [ids],
   );
   for (const r of rows) {
@@ -86,8 +78,7 @@ function listingOut(l, photos, installId, rep) {
     shippingCents: l.shipping_cents,
     shippingNote: l.shipping_note,
     shipsFrom: l.ships_from,
-    // A blocked seller's listings show as paused everywhere until the hub admin lifts the block.
-    status: l.seller_blocked && l.status === "ACTIVE" ? "PAUSED" : l.status,
+    status: l.status,
     photos: photos.map((p) => ({ id: p.id, sortOrder: p.sort_order })),
     createdAt: l.created_at,
     updatedAt: l.updated_at,
@@ -97,7 +88,7 @@ function listingOut(l, photos, installId, rep) {
 /** Listings with their photo ids, in the same order, as `installId` sees them. */
 export async function listingsByIds(ids, installId, db = pool) {
   if (!ids.length) return [];
-  const rows = (await db.query(`SELECT l.*, i.blocked AS seller_blocked FROM listings l LEFT JOIN installs i ON i.id = l.install_id WHERE l.id = ANY($1)`, [ids])).rows;
+  const rows = (await db.query(`SELECT * FROM listings WHERE id = ANY($1)`, [ids])).rows;
   const photos = (await db.query(`SELECT id, listing_id, sort_order FROM listing_photos WHERE listing_id = ANY($1) ORDER BY sort_order`, [ids])).rows;
   const reps = await reputations(
     rows.map((l) => l.install_id),
@@ -176,11 +167,6 @@ async function ordersByIds(ids, installId, db = pool) {
 }
 
 export function registerMarket({ member, fail, newId, writeLimit, notify }) {
-  // Bodies are counted as they arrive, so a body sent without a length (chunked) is held to the limit too. Orders
-  // and ratings are a few KB of JSON; a listing carries up to 8 photos of 3 MB.
-  const small = bodyLimit({ maxSize: 64 * 1024, onError: (c) => c.json({ error: "Too large." }, 413) });
-  const withPhotos = bodyLimit({ maxSize: 8 * 3 * 1024 * 1024 + 64 * 1024, onError: (c) => c.json({ error: "Up to 8 photos of 3 MB each per listing." }, 413) });
-
   // ---------- listings ----------
 
   function listingFields(p, partial) {
@@ -221,7 +207,7 @@ export function registerMarket({ member, fail, newId, writeLimit, notify }) {
     return f;
   }
 
-  member.post("/listings", withPhotos, async (c) => {
+  member.post("/listings", async (c) => {
     writeLimit(c);
     const form = await c.req.parseBody({ all: true });
     let p;
@@ -264,7 +250,7 @@ export function registerMarket({ member, fail, newId, writeLimit, notify }) {
     return l;
   }
 
-  member.put("/listings/:id", small, async (c) => {
+  member.put("/listings/:id", async (c) => {
     writeLimit(c);
     const p = await c.req.json();
     const f = listingFields(p, true);
@@ -317,7 +303,7 @@ export function registerMarket({ member, fail, newId, writeLimit, notify }) {
     ]);
   }
 
-  member.post("/orders", small, async (c) => {
+  member.post("/orders", async (c) => {
     writeLimit(c);
     const b = await c.req.json();
     const me = c.get("install");
@@ -332,9 +318,8 @@ export function registerMarket({ member, fail, newId, writeLimit, notify }) {
       if (l.install_id === me.id) throw fail(409, "You can't order your own listing.");
       if (l.status !== "ACTIVE") throw fail(409, l.status === "SOLD_OUT" ? "That listing is sold out." : "That listing is paused right now.");
       if (qty > l.qty) throw fail(409, `Only ${l.qty} left on that listing.`);
-      const seller = (await client.query(`SELECT id, name, blocked FROM installs WHERE id = $1`, [l.install_id])).rows[0];
+      const seller = (await client.query(`SELECT id, name FROM installs WHERE id = $1`, [l.install_id])).rows[0];
       if (!seller) throw fail(409, "The seller isn't on the hub any more.");
-      if (seller.blocked) throw fail(409, "The hub admin has blocked that seller, so its listings are paused.");
       const number = `SH-${String((await client.query(`SELECT nextval('order_number_seq') AS n`)).rows[0].n).padStart(6, "0")}`;
       await client.query(
         `INSERT INTO orders (id, number, listing_id, seller_install_id, buyer_install_id, seller_shop, buyer_shop, item, qty,
@@ -420,7 +405,6 @@ export function registerMarket({ member, fail, newId, writeLimit, notify }) {
 
   member.post(
     "/orders/:id/accept",
-    small,
     step("seller", ["REQUESTED"], async ({ o, body, client }) => {
       let shipping = o.shipping_cents;
       if (body.shippingCents !== undefined && body.shippingCents !== null && body.shippingCents !== "") {
@@ -454,25 +438,21 @@ export function registerMarket({ member, fail, newId, writeLimit, notify }) {
 
   member.post(
     "/orders/:id/decline",
-    small,
     step("seller", ["REQUESTED"], async ({ body }) => ({ set: { status: "DECLINED", cancel_reason: str(body.reason, 1000) }, action: "declined", note: str(body.reason, 1000) })),
   );
 
   member.post(
     "/orders/:id/buyer-paid",
-    small,
     step("buyer", ["ACCEPTED"], async ({ body }) => ({ set: { buyer_paid_note: str(body.note, 1000) ?? "payment sent" }, action: "buyer-paid", note: str(body.note, 1000) })),
   );
 
   member.post(
     "/orders/:id/paid",
-    small,
     step("seller", ["ACCEPTED"], async () => ({ set: { status: "PAID", paid_at: new Date() }, action: "paid" })),
   );
 
   member.post(
     "/orders/:id/ship",
-    small,
     step("seller", ["ACCEPTED", "PAID"], async ({ body }) => {
       const carrier = str(body.carrier, 60);
       const tracking = str(body.tracking, 100);
@@ -483,13 +463,11 @@ export function registerMarket({ member, fail, newId, writeLimit, notify }) {
 
   member.post(
     "/orders/:id/received",
-    small,
     step("buyer", ["SHIPPED"], async () => ({ set: { status: "RECEIVED", received_at: new Date() }, action: "received" })),
   );
 
   member.post(
     "/orders/:id/cancel",
-    small,
     step("either", OPEN, async ({ o, body, client }) => {
       if (o.status !== "REQUESTED") await restock(client, o);
       return { set: { status: "CANCELLED", cancel_reason: str(body.reason, 1000) }, action: "cancelled", note: str(body.reason, 1000) };
@@ -498,7 +476,6 @@ export function registerMarket({ member, fail, newId, writeLimit, notify }) {
 
   member.post(
     "/orders/:id/message",
-    small,
     step("either", null, async ({ body }) => {
       const text = str(body.text, 2000);
       if (!text) throw fail(400, "Write a message.");
@@ -509,12 +486,10 @@ export function registerMarket({ member, fail, newId, writeLimit, notify }) {
   // ---------- ratings ----------
 
   // The buyer rates the seller once it has shipped; the seller rates the buyer once they've paid. Rating again
-  // replaces the earlier one. The seller sets PAID and SHIPPED alone, so a seller rating also needs a step only the
-  // buyer can take: "payment sent" or "received". Otherwise any order placed could be marked paid, rated and
-  // cancelled without the buyer doing a thing.
+  // replaces the earlier one.
   const RATE_FROM = { buyer: ["SHIPPED", "RECEIVED"], seller: ["PAID", "SHIPPED", "RECEIVED"] };
 
-  member.post("/orders/:id/rate", small, async (c) => {
+  member.post("/orders/:id/rate", async (c) => {
     writeLimit(c);
     const me = c.get("install").id;
     const body = await c.req.json().catch(() => ({}));
@@ -526,12 +501,10 @@ export function registerMarket({ member, fail, newId, writeLimit, notify }) {
       const o = (await client.query(`SELECT * FROM orders WHERE id = $1 FOR UPDATE`, [id])).rows[0];
       if (!o || (o.buyer_install_id !== me && o.seller_install_id !== me)) throw fail(404, "No such order.");
       const mine = o.buyer_install_id === me ? "buyer" : "seller";
-      const buyerActed = o.buyer_paid_note != null || o.status === "RECEIVED";
-      if (!RATE_FROM[mine].includes(o.status) || (mine === "seller" && !buyerActed)) {
-        throw fail(409, mine === "buyer" ? "You can rate the seller once the order has shipped." : "You can rate the buyer once they've marked the payment sent or the order received.");
+      if (!RATE_FROM[mine].includes(o.status)) {
+        throw fail(409, mine === "buyer" ? "You can rate the seller once the order has shipped." : "You can rate the buyer once they've paid.");
       }
       const rated = mine === "buyer" ? o.seller_install_id : o.buyer_install_id;
-      const was = (await client.query(`SELECT stars FROM order_ratings WHERE order_id = $1 AND by_role = $2`, [id, mine])).rows[0];
       await client.query(
         `INSERT INTO order_ratings (order_id, by_role, rater_install_id, rated_install_id, stars, comment)
          VALUES ($1, $2, $3, $4, $5, $6)
@@ -541,9 +514,8 @@ export function registerMarket({ member, fail, newId, writeLimit, notify }) {
       );
       await client.query(`UPDATE orders SET updated_at = now(), seq = nextval('change_seq') WHERE id = $1`, [id]);
       await addEvent(client, id, mine, "rated", `${stars} star${stars === 1 ? "" : "s"}`);
-      // A new or changed seller rating travels with that seller's listings to every member. Rating again with the
-      // same stars changes nothing they see, so it doesn't send the seller's whole catalog round again.
-      if (mine === "buyer" && rated && (!was || was.stars !== stars)) {
+      // A new seller rating travels with that seller's listings to every member.
+      if (mine === "buyer" && rated) {
         await client.query(`UPDATE listings SET seq = nextval('change_seq') WHERE install_id = $1 AND status <> 'REMOVED'`, [rated]);
       }
     });
@@ -556,7 +528,10 @@ export function registerMarket({ member, fail, newId, writeLimit, notify }) {
     const inst = await one(`SELECT id FROM installs WHERE id = $1`, [id]);
     if (!inst) throw fail(404, "No such shop on the hub.");
     const rep = (await reputations([id])).get(id);
-    const { rows } = await pool.query(`SELECT stars, comment, by_role, updated_at FROM (${counted("r.rated_install_id = $1")}) x ORDER BY updated_at DESC LIMIT 10`, [id]);
+    const { rows } = await pool.query(
+      `SELECT stars, comment, by_role, updated_at FROM order_ratings WHERE rated_install_id = $1 ORDER BY updated_at DESC LIMIT 10`,
+      [id],
+    );
     return c.json({
       asSeller: rep.asSeller,
       asBuyer: rep.asBuyer,
