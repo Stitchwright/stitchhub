@@ -68,6 +68,9 @@ function validUrl(url) {
 /** Not an address inside someone's own network (the link checker won't try those, and other shops can't open them). */
 function publicLink(url) {
   const host = new URL(url).hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  // A test hub on this PC keeps its links on localhost (HUB_ALLOW_PRIVATE_LINKS=true); never set on a real hub.
+  if (process.env.HUB_ALLOW_PRIVATE_LINKS === "true") return true;
+
   if (net.isIP(host)) return !privateAddress(host);
   return host.includes(".") && !/(^|\.)(localhost|local|internal|lan|home\.arpa)$/.test(host);
 }
