@@ -371,12 +371,24 @@ assert.deepEqual(both.map((m) => `${m.type}>${m.toShopRef}`).sort(), ["link.crea
 await send(`/v1/partners/links/${sameInstall.link.id}/messages`, installKey, { id: "h1", shopRef: "shopB", type: "order.new", data: { lines: [] } });
 const toA = (await get(`/v1/partners/messages?since=${both.at(-1).seq}`, installKey)).messages;
 assert.deepEqual(toA.map((m) => `${m.type}>${m.toShopRef}`), ["order.new>shopA"]);
+// Big messages: a page of the feed is cut by size (by the JSON's size, not the compressed size on disk), so a shop
+// never asks for more than it can take in, and the cursor always moves on.
+const big = "a".repeat(4 * 1024 * 1024 - 1000);
+for (let i = 0; i < 5; i++) await send(`/v1/partners/links/${sameInstall.link.id}/messages`, installKey, { id: `big${i}`, shopRef: "shopB", type: "job.new", data: { big } });
+const bigPage = await get(`/v1/partners/messages?since=${toA.at(-1).seq}&limit=200`, installKey);
+assert.ok(bigPage.messages.length >= 1 && bigPage.messages.length < 5, `a page of big messages is cut short (${bigPage.messages.length})`);
+assert.equal(bigPage.more, true);
+const bigRest = await get(`/v1/partners/messages?since=${bigPage.next}&limit=200`, installKey);
+assert.ok(bigRest.messages.length >= 1 && BigInt(bigRest.next) > BigInt(bigPage.next), "the next page moves on");
 // Ending: both sides hear it.
 await send(`/v1/partners/links/${L}/end`, installKey, { shopRef: "shopA", note: "smoke test" });
 const endMsg = (await get(`/v1/partners/messages?since=${retailIn.next}`, retailKey)).messages;
 assert.equal(endMsg[0].type, "link.ended");
 assert.equal(endMsg[0].data.endedBy, "repair");
 assert.equal((await get("/v1/partners/links", retailKey))[0].status, "ENDED");
+// An ended partnership takes no new work, only updates, payments and terms (the last statement).
+assert.equal((await call(`/v1/partners/links/${L}/messages`, { key: retailKey, method: "POST", json: { id: "late1", shopRef: "retail1", type: "job.new", data: {} } })).status, 409);
+assert.equal((await call(`/v1/partners/links/${L}/messages`, { key: retailKey, method: "POST", json: { id: "late2", shopRef: "retail1", type: "settle.paid", data: { netCents: 1 } } })).status, 200);
 // The sewing shop later joins the community with the join key: same key, now a full member.
 assert.equal((await call("/v1/upgrade", { key: retailKey, method: "POST", json: { joinKey: "wrong" } })).status, 403);
 assert.equal((await send("/v1/upgrade", retailKey, { joinKey: JOIN })).scope, "member");
