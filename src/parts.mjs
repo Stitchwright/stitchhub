@@ -149,15 +149,22 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
     };
   }
 
-  const who = (c) => ({ byName: c.byName ?? null, byShop: c.get("install")?.name ?? "hub admin", installId: c.get("install")?.id ?? null });
+  // byShop is the install; shopRef / shopName say which company on it, when the install said (see byNameOf).
+  const who = (c) => ({
+    byName: c.byName ?? null,
+    byShop: c.get("install")?.name ?? "hub admin",
+    installId: c.get("install")?.id ?? null,
+    shopRef: c.shopRef ?? "",
+    shopName: c.shopName ?? null,
+  });
 
   async function saveRevision(client, id, action, c, note, mergedFrom) {
     const [snapshot] = await partsByIds([id], client);
     const w = who(c);
     await client.query(
-      `INSERT INTO xpart_revisions (id, xpart_id, action, snapshot, by_name, by_shop, install_id, note, merged_from, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, clock_timestamp())`,
-      [newId(), id, action, JSON.stringify(snapshot), w.byName, w.byShop, w.installId, note ?? null, mergedFrom ?? null],
+      `INSERT INTO xpart_revisions (id, xpart_id, action, snapshot, by_name, by_shop, install_id, note, merged_from, created_at, shop_ref, shop_name)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, clock_timestamp(), $10, $11)`,
+      [newId(), id, action, JSON.stringify(snapshot), w.byName, w.byShop, w.installId, note ?? null, mergedFrom ?? null, w.shopRef, w.shopName],
     );
   }
 
@@ -254,7 +261,18 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
     }
   }
 
-  const byNameOf = (body) => String(body?.byName ?? "").slice(0, 80) || null;
+  /**
+   * Who is making this change: the person (byName) and, on an install that holds several companies, which company
+   * (shopRef, the company's id on that install, and its name). Installs from before per-company identity send
+   * neither; the revision then shows the install's name. Returns byName, as the routes store it on the context.
+   */
+  const byNameOf = (body, c) => {
+    if (c) {
+      c.shopRef = str(body?.shopRef, 64) ?? "";
+      c.shopName = (c.shopRef && str(body?.shopName, 120)) || null;
+    }
+    return String(body?.byName ?? "").slice(0, 80) || null;
+  };
 
   async function current(id, client = pool) {
     const [p] = await partsByIds([id], client);
@@ -271,7 +289,7 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
     writeLimit(c);
     const body = await c.req.json();
     const f = cleanPart(body, "tested");
-    c.byName = byNameOf(body);
+    c.byName = byNameOf(body, c);
     const id = newId();
     await tx(async (client) => {
       await checkNumbers(client, f.numbers);
@@ -297,7 +315,7 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
     const id = c.req.param("id");
     const body = await c.req.json();
     const f = cleanPart(body, "tested");
-    c.byName = byNameOf(body);
+    c.byName = byNameOf(body, c);
     // The version the shop edited (its updatedAt). The whole entry is replaced, so an edit made from an older copy
     // would silently undo whatever changed since: another shop's fix, an import, the supplier scan's links.
     const base = body.baseUpdatedAt ? new Date(body.baseUpdatedAt).getTime() : NaN;
@@ -327,7 +345,7 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
     const body = await c.req.json();
     const intoId = String(body.intoId ?? "");
     if (!intoId || intoId === id) throw fail(400, "Pick the other part to merge into.");
-    c.byName = byNameOf(body);
+    c.byName = byNameOf(body, c);
     await tx(async (client) => {
       const rows = (await client.query(`SELECT * FROM xparts WHERE id = ANY($1) ORDER BY id FOR UPDATE`, [[id, intoId]])).rows;
       const from = rows.find((r) => r.id === id);
@@ -380,7 +398,7 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
     writeLimit(c);
     const id = c.req.param("id");
     const body = await c.req.json().catch(() => ({}));
-    c.byName = byNameOf(body);
+    c.byName = byNameOf(body, c);
     await tx(async (client) => {
       const r = await client.query(`UPDATE xparts SET deleted = $2, updated_at = now(), seq = nextval('change_seq') WHERE id = $1`, [id, deleted]);
       if (!r.rowCount) throw fail(404, "That part isn't on the hub.");
@@ -410,7 +428,8 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
     if (n < sizes.length) c.header("X-History-More", "1");
     const { rows } = await q(`SELECT * FROM xpart_revisions WHERE id = ANY($1) ORDER BY created_at DESC, id DESC`, [sizes.slice(0, n).map((r) => r.id)]);
     return c.json(
-      rows.map((r) => ({ id: r.id, action: r.action, snapshot: r.snapshot, byName: r.by_name, byShop: r.by_shop, note: r.note, createdAt: r.created_at })),
+      // byShop: the company that made it, when its install said which; otherwise the install (as every revision was before)
+      rows.map((r) => ({ id: r.id, action: r.action, snapshot: r.snapshot, byName: r.by_name, byShop: r.shop_name || r.by_shop, note: r.note, createdAt: r.created_at })),
     );
   });
 
@@ -420,7 +439,7 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
     const body = await c.req.json();
     const r = await one(`SELECT * FROM xpart_revisions WHERE id = $1 AND xpart_id = $2`, [String(body.revisionId ?? ""), id]);
     if (!r) throw fail(404, "That version isn't in this part's history.");
-    c.byName = byNameOf(body);
+    c.byName = byNameOf(body, c);
     const snap = r.snapshot;
     const f = cleanPart(snap, "listed");
     // Parts merged into this one after that version: going back would drop their numbers, fits and links, so each
