@@ -612,6 +612,17 @@ const repairIn = (await get(`/v1/partners/messages?since=${repairCursor0}`, inst
 assert.deepEqual(repairIn.map((m) => m.type), ["link.created", "job.new"]);
 assert.equal(repairIn[1].toShopRef, "shopA");
 assert.equal(repairIn[1].fromSide, "retail");
+// One message again, whole (a shop applying one it had set aside): by its number, or by its key for an older
+// set-aside; only as the feed gives it (a side never gets its own back, outsiders get nothing).
+const oneMsg = await get(`/v1/partners/messages/${repairIn[1].seq}`, installKey);
+assert.deepEqual(oneMsg.messages.map((m) => `${m.type}>${m.toShopRef}`), ["job.new>shopA"]);
+assert.equal(oneMsg.messages[0].data.tag, "101");
+assert.deepEqual((await get(`/v1/partners/links/${L}/messages/retail/m1`, installKey)).messages.map((m) => m.seq), [repairIn[1].seq]);
+assert.equal((await call(`/v1/partners/messages/${repairIn[1].seq}`, { key: retailKey })).status, 404, "a side never gets its own message back");
+assert.equal((await call(`/v1/partners/messages/${repairIn[1].seq}`, { key: buyerKey })).status, 404, "outsiders can't fetch one");
+assert.equal((await call(`/v1/partners/links/${L}/messages/retail/m1`, { key: buyerKey })).status, 404);
+assert.equal((await call("/v1/partners/messages/abc", { key: installKey })).status, 400);
+assert.equal((await call(`/v1/partners/links/${L}/messages/sideways/m1`, { key: installKey })).status, 400);
 await send(`/v1/partners/links/${L}/messages`, installKey, { id: "r1", shopRef: "shopA", type: "job.update", data: { tag: "101", status: "ON_BENCH" } });
 const retailIn = await get("/v1/partners/messages?since=0", retailKey);
 assert.deepEqual(retailIn.messages.map((m) => m.type), ["link.created", "job.update"], "a side never gets its own messages back");
