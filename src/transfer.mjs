@@ -43,7 +43,7 @@ export const TABLES = [
   {
     t: "listing",
     table: "listings",
-    cols: ["id", "install_id", "shop_name", "shop_ref", "client_id", "title", "description", "kind", "condition", "brand", "part_number", "xpart_id", "fits", "price_cents", "currency", "qty", "shipping_cents", "shipping_note", "ships_from", "status", "created_at", "updated_at"],
+    cols: ["id", "install_id", "shop_name", "shop_ref", "client_id", "title", "description", "kind", "condition", "origin", "brand", "part_number", "xpart_id", "fits", "price_cents", "currency", "qty", "shipping_cents", "shipping_note", "ships_from", "status", "created_at", "updated_at"],
   },
   { t: "listing_photo", table: "listing_photos", cols: ["id", "listing_id", "mime", "data", "sort_order"] },
   {
