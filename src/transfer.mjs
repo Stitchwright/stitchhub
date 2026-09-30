@@ -6,14 +6,13 @@
 // installs keep their place in the change, order and partner-message feeds after a move. Into a hub already in use,
 // imported rows are numbered after its own, so every install receives them.
 import zlib from "node:zlib";
-import readline from "node:readline";
 import { Readable, pipeline } from "node:stream";
 import { pool, holdFeeds } from "./db.mjs";
 
 // In import order (parents before children). `key` pages the export; `conflict` is the primary key.
-const TABLES = [
+export const TABLES = [
   { t: "setting", table: "settings", cols: ["key", "value"], key: "key" },
-  { t: "install", table: "installs", cols: ["id", "name", "contact", "key_hash", "scope", "blocked", "created_at", "last_seen_at"] },
+  { t: "install", table: "installs", cols: ["id", "name", "contact", "key_hash", "scope", "blocked", "invited_by", "created_at", "last_seen_at"] },
   {
     t: "link",
     table: "links",
@@ -86,7 +85,7 @@ const TABLES = [
     // In the order they were sent, with their numbers (an export from before version 3 has none: numbered again).
     t: "partner_message",
     table: "partner_messages",
-    cols: ["id", "link_id", "from_side", "type", "data", "created_at"],
+    cols: ["id", "link_id", "from_side", "type", "data", "bytes", "created_at"],
     key: "lpad(seq::text, 20, '0')",
     conflict: ["link_id", "from_side", "id"],
     json: ["data"],
@@ -98,6 +97,12 @@ const JSONB = new Set(["snapshot", "item", "buyer_contact", "seller_contact", "t
 // Tables whose rows carry a number from change_seq (the change feed); partner_messages has its own sequence.
 const WITH_SEQ = new Set(["links", "posts", "figures", "xparts", "listings", "orders"]);
 const hasSeq = (spec) => WITH_SEQ.has(spec.table) || spec.seq === "own";
+
+// An import reads the file line by line, and no more of it than these: a gzip a few hundred KB long can hold a single
+// line of hundreds of MB (which would stop the hub for everyone), or a gigabyte of lines. A photo or a data set is one
+// line of base64.
+const MAX_LINE = 64 * 1024 * 1024;
+const MAX_INFLATED = (Number(process.env.ADMIN_UPLOAD_MB) || 1024) * 16 * 1024 * 1024;
 
 // How far past an export's numbers an import carries on: far more than a hub hands out in years (the link checker
 // takes about 17,000 a day), so no install's place can be beyond it.
@@ -138,8 +143,9 @@ async function* lines() {
 
 /** A web stream of the whole hub, gzipped. */
 export function exportStream() {
-  // pipeline (not pipe): a download that stops part way stops reading the database too.
-  return Readable.toWeb(pipeline(Readable.from(lines()), zlib.createGzip(), () => {}));
+  // pipeline (not pipe): a download that stops part way stops reading the database too, and an error while reading
+  // it (a dropped connection, a timeout) ends the download with an error instead of stopping the hub.
+  return Readable.toWeb(pipeline(Readable.from(lines()), zlib.createGzip(), (e) => e && console.error("export stopped:", e.message)));
 }
 
 function refused(status, message) {
@@ -157,6 +163,76 @@ function importError(e, lineNo, table) {
   return refused(400, `Nothing was imported: line ${lineNo} of the file${table ? ` (${table})` : ""} was refused: ${e.message}`);
 }
 
+/** The lines of an inflated export. A line or a file past the limits above is refused. */
+async function* linesOf(input) {
+  let parts = [];
+  let held = 0;
+  let total = 0;
+  for await (const chunk of input) {
+    total += chunk.length;
+    if (total > MAX_INFLATED) throw refused(413, "Nothing was imported: that file holds far more than an export can.");
+    for (let start = 0; start < chunk.length; ) {
+      const nl = chunk.indexOf(10, start);
+      const end = nl < 0 ? chunk.length : nl;
+      held += end - start;
+      if (held > MAX_LINE) throw refused(413, `Nothing was imported: a line of the file is longer than ${MAX_LINE / 1024 / 1024} MB.`);
+      parts.push(chunk.subarray(start, end));
+      if (nl < 0) break;
+      yield Buffer.concat(parts).toString("utf8");
+      parts = [];
+      held = 0;
+      start = nl + 1;
+    }
+  }
+  if (held) yield Buffer.concat(parts).toString("utf8");
+}
+
+// What the file may say, by the rules the live routes hold members to: a file handed over by someone else isn't
+// trusted more than a member is. (Members' key hashes are what let them carry on after a move, so only import files
+// from your own hub.)
+const IMAGE = new Set(["image/jpeg", "image/png", "image/webp"]);
+const webAddress = (u) => {
+  try {
+    return /^https?:$/.test(new URL(u).protocol);
+  } catch {
+    return false;
+  }
+};
+const SETTINGS = {
+  join_key: (v) => /^\S{8,}$/.test(v),
+  discord_webhook: (v) => /^https:\/\/(discord\.com|discordapp\.com)\/api\/webhooks\//.test(v),
+  discord_invite: (v) => /^https:\/\/(discord\.gg|discord\.com\/invite)\/[\w-]+$/.test(v),
+  feed_gaps: (v) => {
+    try {
+      const g = JSON.parse(v);
+      return Boolean(g) && typeof g === "object" && !Array.isArray(g);
+    } catch {
+      return false;
+    }
+  },
+};
+
+/** Throws why a row isn't taken. Returns false for a row that isn't one of the hub's own kind (skipped). */
+function checkRow(table, row) {
+  const refuse = (why) => {
+    throw new Error(why);
+  };
+  if (table === "settings") {
+    if (!Object.hasOwn(SETTINGS, row.key)) return false;
+    row.value = String(row.value ?? "").trim();
+    if (!SETTINGS[row.key](row.value)) refuse(`the setting ${row.key} has a value the hub wouldn't take`);
+  } else if (table === "installs") {
+    if (!/^[0-9a-f]{64}$/.test(row.key_hash ?? "")) refuse("a member's key must be a SHA-256 hash");
+  } else if (table === "links" || table === "link_revisions") {
+    if (!webAddress(row.url)) refuse("a link must start with http:// or https://");
+  } else if (table === "xpart_sources") {
+    if (row.url && !webAddress(row.url)) refuse("a buying link must start with http:// or https://");
+  } else if (["photos", "figures", "listing_photos"].includes(table) && !IMAGE.has(row.mime)) {
+    refuse("a picture must be a JPEG, PNG or WebP");
+  }
+  return true;
+}
+
 /** Load an export into this hub. Existing rows with the same key are replaced. */
 export async function importStream(webStream) {
   const byType = Object.fromEntries(TABLES.map((s) => [s.t, s]));
@@ -168,6 +244,7 @@ export async function importStream(webStream) {
   let lineNo = 0;
   let table = null;
   try {
+    if (!webStream) throw refused(400, "Nothing was imported: send the export file as the request body.");
     await client.query("BEGIN");
     // An empty hub takes the export's numbers as they are, so installs keep their place after a move. A hub already in
     // use numbers imported rows after its own: kept numbers could be behind its installs' places (they would never get
@@ -177,8 +254,7 @@ export async function importStream(webStream) {
     // so creating it before the awaits above lost the first rows of an upload that was already buffered.
     // pipeline (not pipe): an upload that breaks off or is too large stops the import instead of leaving it waiting.
     const input = pipeline(Readable.fromWeb(webStream), zlib.createGunzip(), () => {});
-    const rl = readline.createInterface({ input, crlfDelay: Infinity });
-    for await (const line of rl) {
+    for await (const line of linesOf(input)) {
       lineNo++;
       table = null;
       if (!line.trim()) continue;
@@ -200,6 +276,7 @@ export async function importStream(webStream) {
       if (!spec) continue;
       if (!empty && row.t === "setting" && row.key === "feed_gaps") continue; // about the old hub's numbers, not this one's
       table = spec.table;
+      if (!checkRow(table, row)) continue;
       if (table === "links" && !empty) {
         const same = (await client.query(`SELECT id FROM links WHERE url = $1 AND coalesce(file_name, '') = coalesce($2, '') AND id <> $3`, [row.url, row.file_name ?? null, row.id])).rows[0];
         if (same) {

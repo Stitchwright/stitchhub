@@ -9,6 +9,7 @@ const EVIDENCE = new Set(["listed", "tested", "maker"]);
 // never trimmed on the quiet: a universal bobbin fits thousands of machines, and every one of them should stay.
 const LIMITS = { numbers: 50, fits: 10000, sources: 30 };
 const LABEL = { numbers: "part numbers", fits: "machines it fits", sources: "places to buy it" };
+const MAX_CENTS = 100_000_000; // the most a price may be ($1,000,000.00): a typo is refused with a reason
 
 /** Upper-case letters and digits only: how brands, numbers and models are matched. */
 export const key = (s) =>
@@ -121,7 +122,7 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
       const url = str(s.url, 1000);
       if (url && !validUrl(url)) throw fail(400, "A buying link must start with http:// or https://");
       const price = s.priceCents == null || s.priceCents === "" ? null : Number(s.priceCents);
-      if (price != null && (!Number.isInteger(price) || price < 0)) throw fail(400, "Prices are whole cents, 0 or more.");
+      if (price != null && (!Number.isInteger(price) || price < 0 || price > MAX_CENTS)) throw fail(400, "Prices are whole cents, 0 or more (up to $1,000,000.00).");
       sources.push({
         id: str(s.id, 40),
         vendor,
@@ -390,8 +391,24 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
   member.delete("/xparts/:id", small, (c) => setDeleted(c, true));
   member.post("/xparts/:id/restore", small, (c) => setDeleted(c, false));
 
+  // A part's versions, newest first. Each one holds the whole entry (close to 1 MB for a part that fits thousands of
+  // machines) and one shop can add hundreds an hour, so an answer holds at most 50 versions (`limit`, up to 200) and
+  // about 8 MB. X-History-More: 1 says older ones exist; ask for them with before=<id of the oldest one you have>. A
+  // roll back names the version by its id and is done here, so it needs nothing from the older ones.
+  const HISTORY_BYTES = 8 * 1024 * 1024;
   member.get("/xparts/:id/history", async (c) => {
-    const { rows } = await q(`SELECT * FROM xpart_revisions WHERE xpart_id = $1 ORDER BY created_at DESC, id DESC`, [c.req.param("id")]);
+    const asked = Math.floor(Number(c.req.query("limit")));
+    const limit = Math.min(200, asked >= 1 ? asked : 50);
+    const { rows: sizes } = await q(
+      `SELECT id, octet_length(snapshot::text) AS bytes FROM xpart_revisions
+       WHERE xpart_id = $1 AND ($3::text IS NULL OR (created_at, id) < (SELECT created_at, id FROM xpart_revisions WHERE id = $3 AND xpart_id = $1))
+       ORDER BY created_at DESC, id DESC LIMIT $2`,
+      [c.req.param("id"), limit + 1, c.req.query("before") ?? null],
+    );
+    let n = 0;
+    for (let bytes = 0; n < Math.min(limit, sizes.length) && (n === 0 || bytes + sizes[n].bytes <= HISTORY_BYTES); n++) bytes += sizes[n].bytes;
+    if (n < sizes.length) c.header("X-History-More", "1");
+    const { rows } = await q(`SELECT * FROM xpart_revisions WHERE id = ANY($1) ORDER BY created_at DESC, id DESC`, [sizes.slice(0, n).map((r) => r.id)]);
     return c.json(
       rows.map((r) => ({ id: r.id, action: r.action, snapshot: r.snapshot, byName: r.by_name, byShop: r.by_shop, note: r.note, createdAt: r.created_at })),
     );
@@ -409,12 +426,15 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
     // Parts merged into this one after that version: going back would drop their numbers, fits and links, so each
     // becomes its own part again as it was before the merge. A merge from before merges were recorded can't be undone
     // that way, so the roll-back stops there.
+    // (Times are compared in SQL, by revision: a time read into JavaScript loses its microseconds, and two revisions of
+    // one merge can be written within the same millisecond.)
     const merges = (
       await q(
-        `SELECT merged_from, created_at FROM xpart_revisions
-         WHERE xpart_id = $1 AND action = 'merged' AND created_at > $2 AND (merged_from IS NOT NULL OR NOT coalesce((snapshot->>'deleted')::boolean, false))
+        `SELECT id, merged_from FROM xpart_revisions
+         WHERE xpart_id = $1 AND action = 'merged' AND created_at > (SELECT created_at FROM xpart_revisions WHERE id = $2)
+           AND (merged_from IS NOT NULL OR NOT coalesce((snapshot->>'deleted')::boolean, false))
          ORDER BY created_at DESC`,
-        [id, r.created_at],
+        [id, r.id],
       )
     ).rows;
     if (merges.some((m) => !m.merged_from)) {
@@ -430,21 +450,22 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
       );
       await writeEntry(client, id, f, c);
       await saveRevision(client, id, "reverted", c, `back to the version from ${new Date(r.created_at).toISOString().slice(0, 10)}`);
-      for (const m of merges) await unmerge(client, m.merged_from, m.created_at, c);
+      for (const m of merges) await unmerge(client, m.merged_from, m.id, c);
     });
     return c.json(await current(id));
   });
 
-  /** The part merged away at `mergedAt` comes back as it was just before (when it's still removed). */
-  async function unmerge(client, fromId, mergedAt, c) {
+  /** The part merged away by the merge that `mergeRevisionId` records comes back as it was just before (when it's still removed). */
+  async function unmerge(client, fromId, mergeRevisionId, c) {
     const from = (await client.query(`SELECT id, deleted FROM xparts WHERE id = $1 FOR UPDATE`, [fromId])).rows[0];
     if (!from?.deleted) return;
     const before = (
       await client.query(
         `SELECT snapshot FROM xpart_revisions WHERE xpart_id = $1
-           AND created_at < (SELECT max(created_at) FROM xpart_revisions WHERE xpart_id = $1 AND action = 'merged' AND created_at <= $2)
+           AND created_at < (SELECT max(created_at) FROM xpart_revisions WHERE xpart_id = $1 AND action = 'merged'
+             AND created_at <= (SELECT created_at FROM xpart_revisions WHERE id = $2))
          ORDER BY created_at DESC, id DESC LIMIT 1`,
-        [fromId, mergedAt],
+        [fromId, mergeRevisionId],
       )
     ).rows[0];
     if (!before) return;
@@ -628,7 +649,7 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
         const vendor = str(raw?.vendor, 120);
         const url = str(raw?.url, 1000);
         const price = raw?.priceCents == null || raw.priceCents === "" ? null : Number(raw.priceCents);
-        if (!numberKey || !vendor || !url || !validUrl(url) || (price != null && (!Number.isInteger(price) || price < 0))) {
+        if (!numberKey || !vendor || !url || !validUrl(url) || (price != null && (!Number.isInteger(price) || price < 0 || price > MAX_CENTS))) {
           unmatched++;
           continue;
         }

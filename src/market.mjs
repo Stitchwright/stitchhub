@@ -14,6 +14,10 @@ const str = (v, max) => {
   return s ? s.slice(0, max) : null;
 };
 const cents = (v) => (v == null || v === "" ? null : Number(v));
+// The largest money amount (in cents) and quantity taken, well inside what a database int and the app's own can hold:
+// a typo of $30,000,000.00 is refused with a reason, not with "something went wrong".
+const MAX_CENTS = 100_000_000;
+const MAX_QTY = 1_000_000;
 const money = (n, cur = "USD") => `${cur === "USD" ? "$" : ""}${(n / 100).toFixed(2)}${cur === "USD" ? "" : ` ${cur}`}`;
 
 function contact(v, withAddress) {
@@ -43,13 +47,15 @@ const NO_RATING = { avg: null, count: 0 };
 export const shopKey = (installId, shopRef) => `${installId}|${shopRef ?? ""}`;
 
 // The ratings that count towards a shop's standing: the latest one from each shop that rated it (a second install
-// ordering again and again adds one rating, not one per order), and none from $0 orders, which cost nothing to set up.
+// ordering again and again adds one rating, not one per order), none from $0 orders, which cost nothing to set up, and
+// none from an install the hub admin blocked (a sock puppet's ratings go with it, as its usage counts do).
 // `where` filters on r.rated_install_id and r.rated_shop_ref.
 const counted = (where) =>
   `SELECT DISTINCT ON (r.rated_install_id, r.rated_shop_ref, r.by_role, r.rater_install_id, r.rater_shop_ref)
      r.rated_install_id AS id, r.rated_shop_ref AS ref, r.by_role, r.stars, r.comment, r.updated_at
    FROM order_ratings r JOIN orders o ON o.id = r.order_id AND o.unit_price_cents > 0
-   WHERE ${where}
+   LEFT JOIN installs ri ON ri.id = r.rater_install_id
+   WHERE NOT coalesce(ri.blocked, false) AND ${where}
    ORDER BY r.rated_install_id, r.rated_shop_ref, r.by_role, r.rater_install_id, r.rater_shop_ref, r.updated_at DESC`;
 
 /**
@@ -195,7 +201,7 @@ async function ordersByIds(ids, installId, db = pool) {
   return ids.map((id) => byId.get(id)).filter(Boolean);
 }
 
-export function registerMarket({ member, fail, newId, writeLimit, notify }) {
+export function registerMarket({ member, fail, newId, writeLimit, notify, feedPage }) {
   // ---------- listings ----------
 
   function listingFields(p, partial) {
@@ -218,16 +224,19 @@ export function registerMarket({ member, fail, newId, writeLimit, notify }) {
     if (has("priceCents")) {
       const v = cents(p.priceCents);
       if (v == null || !Number.isInteger(v) || v < 0) throw fail(400, "The price is whole cents, 0 or more.");
+      if (v > MAX_CENTS) throw fail(400, "That price is too high (up to $1,000,000.00).");
       f.price_cents = v;
     }
     if (has("qty")) {
       const v = !partial && (p.qty == null || p.qty === "") ? 1 : cents(p.qty);
       if (v == null || !Number.isInteger(v) || v < 0 || (!partial && v < 1)) throw fail(400, "The quantity must be a whole number (at least 1 when listing).");
+      if (v > MAX_QTY) throw fail(400, "That quantity is too high (up to 1,000,000).");
       f.qty = v;
     }
     if (has("shippingCents")) {
       const v = cents(p.shippingCents);
       if (v != null && (!Number.isInteger(v) || v < 0)) throw fail(400, "Shipping is whole cents, 0 or more (leave it empty to quote per order).");
+      if (v > MAX_CENTS) throw fail(400, "That shipping cost is too high (up to $1,000,000.00).");
       f.shipping_cents = v;
     }
     if (has("shippingNote")) f.shipping_note = str(p.shippingNote, 500);
@@ -275,7 +284,7 @@ export function registerMarket({ member, fail, newId, writeLimit, notify }) {
         ]);
       }
     });
-    notify(`🛒 ${shopName} listed **${f.title}**${f.brand ? ` (${f.brand}${f.part_number ? ` ${f.part_number}` : ""})` : ""} for ${money(f.price_cents, f.currency)}${f.qty > 1 ? ` · ${f.qty} available` : ""}`);
+    notify`🛒 ${shopName} listed **${f.title}**${f.brand ? ` (${f.brand}${f.part_number ? ` ${f.part_number}` : ""})` : ""} for ${money(f.price_cents, f.currency)}${f.qty > 1 ? ` · ${f.qty} available` : ""}`;
     return c.json((await listingsByIds([id], inst.id))[0]);
   });
 
@@ -322,6 +331,7 @@ export function registerMarket({ member, fail, newId, writeLimit, notify }) {
     await tx(async (client) => {
       const l = await ownListing(client, c);
       await client.query(`UPDATE listings SET status = 'REMOVED', updated_at = now(), seq = nextval('change_seq') WHERE id = $1`, [l.id]);
+      await client.query(`DELETE FROM listing_photos WHERE listing_id = $1`, [l.id]); // a removed listing can't come back: its photos go, as a removed note's do
       // Orders still waiting on the seller can't be accepted any more: the buyer hears so now, not never.
       await declineWaiting(client, `listing_id = $1`, [l.id], "The seller took the listing down.");
     });
@@ -351,7 +361,7 @@ export function registerMarket({ member, fail, newId, writeLimit, notify }) {
     const b = await c.req.json();
     const me = c.get("install");
     const qty = Number(b.qty ?? 1);
-    if (!Number.isInteger(qty) || qty < 1) throw fail(400, "Order at least 1.");
+    if (!Number.isInteger(qty) || qty < 1 || qty > MAX_QTY) throw fail(400, "Order at least 1 (up to 1,000,000).");
     const shipTo = str(b.shipTo, 500);
     if (!shipTo) throw fail(400, "Give the address to ship to.");
     // The company ordering, on a StitchBench that holds several (installs that don't say order as the install).
@@ -411,18 +421,17 @@ export function registerMarket({ member, fail, newId, writeLimit, notify }) {
 
   member.get("/orders", async (c) => {
     const me = c.get("install").id;
-    const since = BigInt(c.req.query("since") || "0");
-    const limit = Math.min(1000, Number(c.req.query("limit") || 500));
+    const { since, limit } = feedPage(c, 500, 1000);
     const { rows } = await pool.query(
       `SELECT id, seq FROM orders WHERE (buyer_install_id = $1 OR seller_install_id = $1) AND seq > $2 AND seq <= $4 ORDER BY seq LIMIT $3`,
-      [me, since.toString(), limit, (await feedLimit()).change],
+      [me, since, limit, (await feedLimit()).change],
     );
     return c.json({
       orders: await ordersByIds(
         rows.map((r) => r.id),
         me,
       ),
-      next: rows.length ? rows[rows.length - 1].seq : since.toString(),
+      next: rows.length ? rows[rows.length - 1].seq : since,
       more: rows.length === limit,
     });
   });
@@ -470,7 +479,7 @@ export function registerMarket({ member, fail, newId, writeLimit, notify }) {
       let shipping = o.shipping_cents;
       if (body.shippingCents !== undefined && body.shippingCents !== null && body.shippingCents !== "") {
         const v = Number(body.shippingCents);
-        if (!Number.isInteger(v) || v < 0) throw fail(400, "Shipping is whole cents, 0 or more.");
+        if (!Number.isInteger(v) || v < 0 || v > MAX_CENTS) throw fail(400, "Shipping is whole cents, 0 or more (up to $1,000,000.00).");
         shipping = v;
       }
       if (shipping == null) throw fail(400, "Enter the shipping cost for this order (the listing has no flat rate).");
@@ -569,6 +578,8 @@ export function registerMarket({ member, fail, newId, writeLimit, notify }) {
       }
       const rated = mine === "buyer" ? o.seller_install_id : o.buyer_install_id;
       const [raterRef, ratedRef] = mine === "buyer" ? [o.buyer_shop_ref, o.seller_shop_ref] : [o.seller_shop_ref, o.buyer_shop_ref];
+      const standing = async () => (rated && mine === "buyer" ? (await reputations([[rated, ratedRef ?? ""]], client)).get(shopKey(rated, ratedRef)).asSeller : null);
+      const was = await standing();
       await client.query(
         `INSERT INTO order_ratings (order_id, by_role, rater_install_id, rated_install_id, stars, comment, rater_shop_ref, rated_shop_ref)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -579,9 +590,13 @@ export function registerMarket({ member, fail, newId, writeLimit, notify }) {
       );
       await client.query(`UPDATE orders SET updated_at = now(), seq = nextval('change_seq') WHERE id = $1`, [id]);
       await addEvent(client, id, mine, "rated", `${stars} star${stars === 1 ? "" : "s"}`);
-      // A new seller rating travels with that seller's listings to every member.
-      if (mine === "buyer" && rated) {
-        await client.query(`UPDATE listings SET seq = nextval('change_seq') WHERE install_id = $1 AND shop_ref = $2 AND status <> 'REMOVED'`, [rated, ratedRef ?? ""]);
+      // The seller's rating travels with its listings to every member: they go out again only when the average or the
+      // count changed. Rating again with the same stars would send every listing of the seller to every member for nothing.
+      if (was) {
+        const now = await standing();
+        if (now.avg !== was.avg || now.count !== was.count) {
+          await client.query(`UPDATE listings SET seq = nextval('change_seq') WHERE install_id = $1 AND shop_ref = $2 AND status <> 'REMOVED'`, [rated, ratedRef ?? ""]);
+        }
       }
     });
     return c.json((await ordersByIds([id], me))[0]);
@@ -651,6 +666,12 @@ async function declineWaiting(client, where, params, reason) {
 export async function sellerBlocked(installId, blocked) {
   await tx(async (client) => {
     await client.query(`UPDATE listings SET seq = nextval('change_seq') WHERE install_id = $1 AND status <> 'REMOVED'`, [installId]);
+    // Ratings it gave stop counting (or count again) for the sellers it rated: their listings carry the average.
+    await client.query(
+      `UPDATE listings SET seq = nextval('change_seq') WHERE status <> 'REMOVED' AND install_id <> $1 AND (install_id, shop_ref) IN (
+         SELECT rated_install_id, rated_shop_ref FROM order_ratings WHERE rater_install_id = $1 AND by_role = 'buyer')`,
+      [installId],
+    );
     if (blocked) await declineWaiting(client, `seller_install_id = $1`, [installId], "The hub admin paused this seller.");
   });
 }

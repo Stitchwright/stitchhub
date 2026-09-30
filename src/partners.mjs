@@ -1,9 +1,10 @@
 // Partner links: a private channel between a repair shop and a sewing / quilt shop that works with it (takes machines
 // in for repair, orders parts and notions, holds the repair shop's stock on consignment). One side makes an invite code
 // and hands it over in person; the other side redeems it. After that each side sends messages that only the other side
-// receives. The hub doesn't read them: machine intake, repair status, orders, consignment sales and statements are all
-// just typed JSON to it. A sewing shop that isn't a community member joins with the invite alone and can then use the
-// partner routes and nothing else.
+// receives. The hub doesn't act on them: machine intake, repair status, orders, consignment sales and statements are all
+// just typed JSON to it. It does not hide or sign them either: they are kept as plain JSON for a year (and are in
+// exports), so whoever runs the hub can read them, and the apps take the hub's word for who sent one. A sewing shop that
+// isn't a community member joins with the invite alone and can then use the partner routes and nothing else.
 import crypto from "node:crypto";
 import { bodyLimit } from "hono/body-limit";
 import { one, q, tx, feedLimit } from "./db.mjs";

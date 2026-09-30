@@ -107,14 +107,16 @@ export async function checkLink(link) {
   }
   // A failure that isn't final yet is tried again in a few hours rather than next week.
   const soon = next !== "dead" && cls !== "ok" && cls !== "blocked";
-  await q(
+  // A probe can take a minute. If a member fixed the link in that time (it has another address now, and was queued
+  // for a fresh check), what this probe found is about the old address: dropped, not stamped on the fixed link.
+  const { rowCount } = await q(
     `UPDATE links SET status = $2, http_status = $3, fail_count = $4,
        checked_at = CASE WHEN $5 THEN now() - interval '7 days' + interval '6 hours' ELSE now() END,
        seq = nextval('change_seq')
-     WHERE id = $1`,
-    [link.id, next, status || null, fails, soon],
+     WHERE id = $1 AND url = $6 AND NOT deleted`,
+    [link.id, next, status || null, fails, soon, link.url],
   );
-  return { status, result: next };
+  return { status, result: next, dropped: !rowCount };
 }
 
 export function startChecker({ everyMs = 60_000, batch = 12 } = {}) {

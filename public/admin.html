@@ -133,7 +133,7 @@
   }
 
   $("loginForm").onsubmit = async (e) => { e.preventDefault(); token = $("tok").value; try { await load(); try { sessionStorage.setItem("hubAdmin", token); } catch {} say(""); } catch (err) { say(err.message, true); } };
-  $("joinForm").onsubmit = async (e) => { e.preventDefault(); try { await api("/join-key", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ joinKey: $("join").value }) }); say("Join key saved."); } catch (err) { say(err.message, true); } };
+  $("joinForm").onsubmit = async (e) => { e.preventDefault(); try { await api("/join-key", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ joinKey: $("join").value.trim() }) }); say("Join key saved."); } catch (err) { say(err.message, true); } };
   $("genJoin").onclick = () => { const a = new Uint8Array(12); crypto.getRandomValues(a); $("join").value = "join-" + Array.from(a, (x) => x.toString(36).padStart(2, "0")).join("").slice(0, 16); say("New key made. Press Save to use it."); };
   $("inviteForm").onsubmit = async (e) => { e.preventDefault(); try { await api("/discord-invite", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: $("dInvite").value.trim() }) }); say("Discord invite link saved."); load(); } catch (err) { say(err.message, true); } };
   $("copyInvite").onclick = async () => { try { await navigator.clipboard.writeText($("inviteCode").value); say("Invite code copied."); } catch { $("inviteCode").select(); say("Select the code and copy it.", true); } };

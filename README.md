@@ -49,8 +49,17 @@ Cloudflare Tunnel or Tailscale Funnel), and set `TRUST_PROXY=true` in `.env` so 
 own address. (On Railway that's already the default.)
 
 ### Without Docker
-Node 20+ and PostgreSQL: `npm ci`, set the variables from `.env.example`, `npm start`.
-The database tables are created on first start.
+Node 20.12+ (22 recommended) and PostgreSQL: `npm ci`, copy `.env.example` to `.env` and fill it in (or set the same
+variables in the environment; a variable that is set wins over the file), `npm start`. The database tables are
+created on first start.
+
+### One hub process only
+Run **exactly one** hub process per database. The hub keeps track of the writes in progress in its own memory so
+that a shop never skips a change in its sync, and a second process on the same database (Railway's replicas set
+above 1, `docker compose up --scale hub=2`, a manual `npm start` beside the container) doesn't know about them.
+`railway.json` pins Railway to one replica. (A deploy briefly runs the old and the new hub side by side; the old one
+finishes the requests it is on before it stops.) Starting several hubs on one database at the same moment is safe for
+the migrations: they take turns.
 
 ## Moving or rebuilding a hub
 
@@ -134,15 +143,26 @@ with the join key, keeping its partner links).
 What goes through the hub is only what the two shops need: the sewing shop's tag number, the customer's first name
 and last initial, the machine and the problem, intake photos, the repair bill and status, orders, consignment counts
 and sales, and settlements. Customer phone numbers and addresses stay in the sewing shop. Messages are kept for a
-year so a shop that was offline catches up. The hub admin can see them in the database, like everything else on the
-hub.
+year so a shop that was offline catches up. They are not encrypted or signed: the hub admin can read them in the
+database, like everything else on the hub, and could send one as either shop.
 
 ## Checking a hub
 ```
-HUB_URL=https://your-hub ADMIN_TOKEN=... JOIN_KEY=... npm test
+HUB_URL=http://localhost:8080 ADMIN_TOKEN=... JOIN_KEY=... npm test
 ```
-This creates throwaway members, a link, a note, parts, buying links, a listing, orders, ratings and parts usage, and checks
-every part of the API. It then removes the note, link, listing and parts and blocks the test members.
+Run this against a **test hub**, not the community's. It creates throwaway members, a link, a note, parts, buying links,
+a listing, orders, ratings and parts usage, and checks every part of the API. It then removes the note, link, listing,
+figure and parts, ends its partner links and blocks the test members. It joins about eight members (a hub allows ten
+joins an hour from one address: restart the test hub before running it again) and would post about eight messages to
+the hub's Discord channel, so it refuses a hub that has a webhook unless `SMOKE_ALLOW_DISCORD=1`.
+
+To check moving a hub as well, start a second, empty test hub and add `IMPORT_HUB_URL=http://localhost:8081
+IMPORT_ADMIN_TOKEN=...`: the export is imported there and compared (rows, change numbers, members' keys), and files
+that are too large or break the rules are refused.
+
+`DATABASE_URL=<a scratch database> ADMIN_TOKEN=<16+ characters> npm run test:db` checks what needs the database: every
+column is in the export, the feeds stop below a write in progress, and the link checker drops what a probe found when the
+link has changed since.
 
 ## API (for StitchBench)
 Members send `Authorization: Bearer <install key>`.
@@ -150,16 +170,16 @@ Members send `Authorization: Bearer <install key>`.
 | | |
 |---|---|
 | `POST /v1/register` | `{ joinKey, name, contact }` → `{ installId, installKey }` |
-| `GET /v1/changes?since=N` | links, notes (photo info), figure ids, parts and listings changed after `N`; `next` is the new `N`. A removed note is only `{ id, deleted: true }`; a figure id that comes again was redrawn; `removedFigures` are figures the hub admin took down |
+| `GET /v1/changes?since=N&limit=1000` | links, notes (photo info), figure ids, parts and listings changed after `N`; `next` is the new `N`. A removed note is only `{ id, deleted: true }`; a figure id that comes again was redrawn; `removedFigures` are figures the hub admin took down. `since` must be digits (400 otherwise); `limit` is kept between 1 and 2000 |
 | `POST /v1/links`, `PUT /v1/links/:id`, `DELETE /v1/links/:id`, `POST /v1/links/:id/restore` | add, fix, remove, restore a link (a link into a private network is refused) |
 | `GET /v1/links/:id/history`, `POST /v1/links/:id/revert` | a link's versions; go back to one |
-| `POST /v1/links/:id/report` | "this didn't download": check it again soon |
+| `POST /v1/links/:id/report` | "this didn't download": check it again soon (404 for a link that isn't there; a link checked within the hour is left alone; 60 an hour per install) |
 | `POST /v1/posts` (multipart: `post` JSON + `photo` files), `DELETE /v1/posts/:id` | share or remove a note |
 | `GET /v1/photos/:id`, `GET/PUT /v1/figures/:id` | pictures. The first shop to share a figure keeps it and can replace it; PUT answers `{ ok, stored }`, and `stored: false` means another shop's copy is already there |
 | `GET /v1/datasets`, `GET /v1/datasets/:name` | published data sets |
 | `POST /v1/xparts`, `PUT /v1/xparts/:id`, `DELETE /v1/xparts/:id`, `POST /v1/xparts/:id/restore` | add, edit, remove, restore a part (409 + `partId` if a number is already on another part) |
 | `POST /v1/xparts/:id/merge` | `{ intoId }`: the two entries are the same part |
-| `GET /v1/xparts/:id/history`, `POST /v1/xparts/:id/revert` | a part's versions; go back to one |
+| `GET /v1/xparts/:id/history`, `POST /v1/xparts/:id/revert` | a part's versions, newest 50 first (`X-History-More: 1`: ask for older ones with `before=<id>`); go back to one |
 | `POST /v1/listings` (multipart: `listing` JSON + `photo` files), `PUT /v1/listings/:id`, `DELETE /v1/listings/:id` | list, change, remove a listing (own only) |
 | `GET /v1/listing-photos/:id` | a listing photo |
 | `POST /v1/orders`, `GET /v1/orders?since=N` | order from a listing; your orders changed after `N` |
@@ -167,7 +187,7 @@ Members send `Authorization: Bearer <install key>`.
 | `POST /v1/orders/:id/rate` | `{ stars, comment }`: rate the other side of the order |
 | `GET /v1/reputation/:installId` | a shop's ratings as seller and as buyer, and its last 10 |
 | `POST /v1/usage` | `{ month, items: [{ number, brand, qty, tickets }] }`: this shop's parts used that month (replaces it) |
-| `GET /v1/usage/top?months=12&brand=&limit=200` | the community's most used parts, by shops then quantity |
+| `GET /v1/usage/top?months=12&brand=&limit=200` | the community's most used parts, by shops then quantity. Only parts that at least 3 shops used are listed (`USAGE_MIN_SHOPS` to change it), and nothing when fewer than 3 shops reported |
 | `POST /v1/partners/invites` | `{ shopRef, shopName, side, terms }` → `{ code, expiresAt }`: a partner code |
 | `POST /v1/partners/redeem` | `{ code, shopRef, shopName }` → `{ link, side }` |
 | `POST /v1/partners/join` (no key) | `{ code, shopRef, shopName, contact }` → an install key for the partner channel only, and the link |
@@ -183,6 +203,8 @@ what this hub holds (it was restored from an older export): that answer starts a
 A hosted StitchBench that serves several companies through one install can send `X-Shop-Ref: <company id>` with its
 changes: each company then has its own 300 changes an hour (3,000 for the install), so one can't use up the others'.
 Parts-usage reports have their own allowance.
+
+Prices and shipping are up to $1,000,000.00 (100,000,000 cents) and quantities up to 1,000,000; more is a 400 with the reason. A body that isn't JSON is a 400 too.
 
 Request bodies are limited per route: 16 KB to join, 2 MB for a figure, a part or a month of parts usage, 37 MB for a
 note with photos, 25 MB for a listing, 4 MB for a partner message and 64 KB for the rest. A larger one gets 413.
