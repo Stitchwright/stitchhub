@@ -74,7 +74,8 @@ export function registerUsage({ member, fail, writeLimit }) {
         );
       }
     });
-    return c.json({ ok: true, items: list.length });
+    // shopRef tells the install this hub keeps each company's counts apart (an older hub answers without it).
+    return c.json({ ok: true, items: list.length, ...(shopRef ? { shopRef } : {}) });
   });
 
   member.get("/usage/top", async (c) => {
