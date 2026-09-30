@@ -103,8 +103,8 @@ entry, so any version can be restored. The hub admin can bulk-load parts (for ex
 `POST /v1/admin/xparts/import`. An entry whose numbers are already on the hub adds its new numbers and fits to
 that part.
 
-**Marketplace.** A shop lists a part or accessory with its price, quantity, condition, photos, and shipping (a
-flat rate, or quoted per order). Another shop orders it:
+**Marketplace.** A shop lists a part or accessory with its price, quantity, condition, who made it (genuine,
+compatible or 3D printed), photos, and shipping (a flat rate, or quoted per order). Another shop orders it:
 1. The seller accepts, which issues the invoice with the seller's payment instructions and takes the quantity off
    the listing.
 2. The **buyer pays the seller directly**, for example by PayPal, Zelle or check, and can mark it sent.

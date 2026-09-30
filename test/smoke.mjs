@@ -221,14 +221,40 @@ assert.deepEqual([scannedSources[0].priceCents, scannedSources[0].note, scannedS
 console.log("sources import: ok");
 
 // Marketplace: list with a photo, update, and a second shop's view.
+const changesEnd = async (key) => {
+  for (let at = "0"; ; ) {
+    const ch = await get(`/v1/changes?since=${at}&limit=2000`, key);
+    if (!ch.more) return ch.next;
+    at = ch.next;
+  }
+};
+const beforeListings = await changesEnd(buyerKey);
 const listingForm = new FormData();
 listingForm.set(
   "listing",
-  JSON.stringify({ title: `Smoke bobbin case ${RUN}`, kind: "PART", condition: "USED", brand: "Brother", partNumber: nA, xpartId: part.id, priceCents: 1500, qty: 3, shippingCents: 500, shipsFrom: "Testville, TS" }),
+  JSON.stringify({ title: `Smoke bobbin case ${RUN}`, kind: "PART", condition: "USED", origin: "COMPATIBLE", brand: "Brother", partNumber: nA, xpartId: part.id, priceCents: 1500, qty: 3, shippingCents: 500, shipsFrom: "Testville, TS" }),
 );
 listingForm.append("photo", new Blob([png], { type: "image/png" }), "l.png");
 const listing = await (await ok(await call("/v1/listings", { key: installKey, method: "POST", body: listingForm }))).json();
 assert.ok(listing.mine && listing.photos.length === 1 && listing.status === "ACTIVE");
+// Who made it: kept and returned; an install that doesn't send it (an older StitchBench), or sends something the hub
+// doesn't know, lists it as not stated (null), which is not the same as genuine.
+assert.equal(listing.origin, "COMPATIBLE");
+const newListing = async (extra) => {
+  const f = new FormData();
+  f.set("listing", JSON.stringify({ title: `Origin ${RUN}`, priceCents: 100, qty: 1, ...extra }));
+  return (await ok(await call("/v1/listings", { key: installKey, method: "POST", body: f }))).json();
+};
+const [oldStyle, printed, junk] = [await newListing({}), await newListing({ origin: "PRINTED" }), await newListing({ origin: "HANDMADE" })];
+assert.deepEqual([oldStyle.origin, printed.origin, junk.origin], [null, "PRINTED", null]);
+assert.equal((await send(`/v1/listings/${oldStyle.id}`, installKey, { origin: "GENUINE" }, "PUT")).origin, "GENUINE");
+assert.equal((await send(`/v1/listings/${printed.id}`, installKey, { priceCents: 200 }, "PUT")).origin, "PRINTED", "a change that leaves it out keeps it");
+assert.equal((await send(`/v1/listings/${printed.id}`, installKey, { origin: "NOPE" }, "PUT")).origin, "PRINTED", "a value the hub doesn't know changes nothing");
+assert.deepEqual(
+  (await get(`/v1/changes?since=${beforeListings}&limit=2000`, buyerKey)).listings.filter((l) => [oldStyle.id, printed.id, junk.id, listing.id].includes(l.id)).map((l) => [l.id, l.origin]).sort(),
+  [[oldStyle.id, "GENUINE"], [printed.id, "PRINTED"], [junk.id, null], [listing.id, "COMPATIBLE"]].sort(),
+);
+for (const l of [oldStyle, printed, junk]) await ok(await call(`/v1/listings/${l.id}`, { key: installKey, method: "DELETE" }));
 for (const bad of [{ priceCents: 3_000_000_000 }, { qty: 2_000_000_000 }, { shippingCents: 3_000_000_000 }]) {
   const f = new FormData();
   f.set("listing", JSON.stringify({ title: "Too much", priceCents: 100, qty: 1, ...bad }));
@@ -246,6 +272,7 @@ assert.equal((await call("/v1/orders", { key: installKey, method: "POST", json: 
 assert.equal((await call("/v1/orders", { key: buyerKey, method: "POST", json: { listingId: listing.id, qty: 9, ...ship } })).status, 409); // more than listed
 let order = await send("/v1/orders", buyerKey, { listingId: listing.id, qty: 2, buyerNote: "for a PR655", ...ship });
 assert.equal(order.status, "REQUESTED");
+assert.deepEqual([order.item.condition, order.item.origin], ["USED", "COMPATIBLE"], "the order's item says who made it");
 assert.equal(order.role, "buyer");
 assert.equal(order.totalCents, 2 * 1400 + 500);
 assert.match(order.number, /^SH-\d{6}$/);
@@ -313,7 +340,9 @@ assert.equal((await call("/v1/reputation/nope", { key: buyerKey })).status, 404)
   const lf2 = new FormData();
   lf2.set("listing", JSON.stringify({ title: `Sock target ${RUN}`, priceCents: 1000, qty: 5, shippingCents: 0 }));
   const target = await (await ok(await call("/v1/listings", { key: installKey, method: "POST", body: lf2 }))).json();
+  assert.equal(target.origin, null);
   let sock = await send("/v1/orders", sockKey, { listingId: target.id, qty: 1, ...ship });
+  assert.equal(sock.item.origin, null, "a listing from an install that doesn't say has an order that doesn't");
   sock = await send(`/v1/orders/${sock.id}/accept`, installKey, { payInstructions: "x" });
   await send(`/v1/orders/${sock.id}/paid`, installKey, {});
   await send(`/v1/orders/${sock.id}/rate`, sockKey, { stars: 1 });

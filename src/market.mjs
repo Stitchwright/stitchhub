@@ -7,6 +7,7 @@ import { pool, one, tx, feedLimit } from "./db.mjs";
 const IMAGE = new Set(["image/jpeg", "image/png", "image/webp"]);
 const KINDS = new Set(["PART", "ACCESSORY", "SUPPLY", "NOTION", "FABRIC", "THREAD", "PATTERN"]);
 const CONDITIONS = new Set(["NEW", "USED", "REFURB"]);
+const ORIGINS = new Set(["GENUINE", "COMPATIBLE", "PRINTED"]); // who made it: the machine's maker, a compatible replacement, 3D printed
 const OPEN = ["REQUESTED", "ACCEPTED", "PAID"];
 
 const str = (v, max) => {
@@ -94,6 +95,8 @@ function listingOut(l, photos, installId, rep) {
     description: l.description,
     kind: l.kind,
     condition: l.condition,
+    // Null from installs that don't say who made it.
+    origin: l.origin ?? null,
     brand: l.brand,
     partNumber: l.part_number,
     xpartId: l.xpart_id,
@@ -221,6 +224,8 @@ export function registerMarket({ member, fail, newId, writeLimit, notify, feedPa
       f.currency = /^[A-Z]{3}$/.test(String(p.currency ?? "")) ? p.currency : "USD";
     }
     if (has("condition")) f.condition = CONDITIONS.has(p.condition) ? p.condition : partial ? undefined : "NEW";
+    // An install that doesn't send it (or sends something else) leaves it unstated, which isn't the same as genuine.
+    if (has("origin")) f.origin = ORIGINS.has(p.origin) ? p.origin : partial ? undefined : null;
     if (has("priceCents")) {
       const v = cents(p.priceCents);
       if (v == null || !Number.isInteger(v) || v < 0) throw fail(400, "The price is whole cents, 0 or more.");
@@ -401,7 +406,7 @@ export function registerMarket({ member, fail, newId, writeLimit, notify, feedPa
           // The listing's company when it named one; otherwise the install, as before.
           l.shop_ref ? l.shop_name : seller.name,
           buyerName,
-          JSON.stringify({ title: l.title, brand: l.brand, partNumber: l.part_number, condition: l.condition }),
+          JSON.stringify({ title: l.title, brand: l.brand, partNumber: l.part_number, condition: l.condition, origin: l.origin ?? null }),
           qty,
           l.price_cents,
           l.shipping_cents,

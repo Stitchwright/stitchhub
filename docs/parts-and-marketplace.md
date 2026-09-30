@@ -18,6 +18,9 @@ Part {
 ```
 
 - `modelKey` / number keys: upper-case letters and digits only (`BES-1216AC` → `BES1216AC`).
+- A part the maker gave no number (an aftermarket screen, a 3D printed knob) is an entry with a name, the machines it
+  fits and no `numbers`. A 3D printed version is a `sources` entry with the vendor "3D print file" and the design as
+  its link (no price).
 - Parts come to installs through `GET /v1/changes` as `xparts: Part[]` (full entries, `deleted` included), in
   the same `seq` order as links, posts and figures.
 
@@ -48,6 +51,7 @@ payment instructions are on the invoice); the **seller enters the carrier and tr
 ```
 Listing {
   id, shopName, mine, title, description, kind, condition: "NEW" | "USED" | "REFURB",
+  origin: "GENUINE" | "COMPATIBLE" | "PRINTED" | null (who made it; null = the seller's install didn't say),
   brand, partNumber, xpartId, fits (free text), priceCents, currency, qty,
   shippingCents (flat, null = quoted per order), shippingNote, shipsFrom,
   status: "ACTIVE" | "PAUSED" | "SOLD_OUT" | "REMOVED", photos: [{ id, sortOrder }], createdAt, updatedAt
@@ -59,8 +63,8 @@ install's own).
 
 | Call | Body | Answer |
 |---|---|---|
-| `POST /v1/listings` | multipart: `listing` (JSON of the fields above) + `photo` files (≤ 8, ≤ 3 MB each) | `Listing` |
-| `PUT /v1/listings/:id` | JSON: any of title, description, condition, priceCents, qty, shippingCents, shippingNote, shipsFrom, status (ACTIVE / PAUSED) | `Listing` (own only) |
+| `POST /v1/listings` | multipart: `listing` (JSON of the fields above; `origin` is optional, and anything but the three values is stored as not stated) + `photo` files (≤ 8, ≤ 3 MB each) | `Listing` |
+| `PUT /v1/listings/:id` | JSON: any of title, description, condition, origin, priceCents, qty, shippingCents, shippingNote, shipsFrom, status (ACTIVE / PAUSED) | `Listing` (own only) |
 | `DELETE /v1/listings/:id` | | `{ ok }` (status REMOVED; own only). Orders still REQUESTED on it are declined ("The seller took the listing down.") |
 | `GET /v1/listing-photos/:id` | | the image |
 
@@ -69,7 +73,7 @@ install's own).
 ```
 Order {
   id, number ("SH-000123"), role: "buyer" | "seller",
-  listingId, item: { title, brand, partNumber, condition },
+  listingId, item: { title, brand, partNumber, condition, origin },
   sellerShop, buyerShop, qty, unitPriceCents, shippingCents, totalCents, currency,
   shipTo (text), buyerNote, buyerContact: { name, email, phone },
   sellerContact: { name, address, email, phone }, payInstructions,
