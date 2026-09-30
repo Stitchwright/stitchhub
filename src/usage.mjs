@@ -21,6 +21,11 @@ const str = (v, max) => {
 
 const count = (v) => Number.isInteger(v) && v >= 0 && v <= 1_000_000;
 
+// The community list shows a part number only when at least this many shops used it, and nothing at all when fewer
+// shops than that reported in the window (for the brand asked for): with less, the totals are one shop's own counts,
+// and stepping the window month by month would show what it used each month. Small hubs can lower it.
+const MIN_SHOPS = Math.max(1, Math.floor(Number(process.env.USAGE_MIN_SHOPS)) || 3);
+
 export function registerUsage({ member, fail, writeLimit }) {
   member.post("/usage", async (c) => {
     writeLimit(c);
@@ -92,13 +97,14 @@ export function registerUsage({ member, fail, writeLimit }) {
       WHERE pu.month BETWEEN $1 AND $2 AND ($3::text IS NULL OR lower(pu.brand) = lower($3))`;
     // A shop is a company: several on one install count as several.
     const shops = Number((await one(`SELECT count(DISTINCT (install_id, shop_ref)) AS n FROM (${window}) u`, [from, to, brand])).n);
+    if (shops < MIN_SHOPS) return c.json({ from, to, shops: 0, minShops: MIN_SHOPS, items: [] });
     const { rows } = await q(
       `WITH u AS (${window}),
        agg AS (
          -- Summed as bigint and capped: the totals of every shop over many months don't fit an int.
          SELECT number_key, least(sum(qty), 2147483647)::int AS qty, least(sum(tickets), 2147483647)::int AS tickets,
            count(DISTINCT (install_id, shop_ref))::int AS shops
-         FROM u GROUP BY number_key
+         FROM u GROUP BY number_key HAVING count(DISTINCT (install_id, shop_ref)) >= $5
        ),
        spelling AS (
          SELECT DISTINCT ON (number_key) number_key, number, brand
@@ -113,12 +119,13 @@ export function registerUsage({ member, fail, writeLimit }) {
        ) x ON true
        ORDER BY a.shops DESC, a.qty DESC, a.number_key
        LIMIT $4`,
-      [from, to, brand, limit],
+      [from, to, brand, limit, MIN_SHOPS],
     );
     return c.json({
       from,
       to,
       shops,
+      minShops: MIN_SHOPS,
       items: rows.map((r) => ({
         numberKey: r.number_key,
         number: r.number,

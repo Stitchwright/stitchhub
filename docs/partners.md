@@ -4,6 +4,10 @@ A partner link connects one **repair shop** with one **sewing or quilt shop** (S
 for it, buys parts and notions from it, and sells its stock on consignment. The hub relays typed JSON messages
 between the two shops and stores nothing else about them. Only the two shops on a link receive its messages.
 
+The hub does not act on the messages, but it does not hide or sign them either: they are stored as plain JSON for a
+year (and are part of an export), so whoever runs the hub can read them, and could send one as either shop. The
+apps take the hub's word for who a message is from. Run or join a hub you trust with this.
+
 An install can host several shops (companies), so every call names the shop inside the install: `shopRef` (the
 shop's id in that install). Both shops of a link can even be in the same install.
 

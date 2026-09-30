@@ -28,7 +28,7 @@ Part {
 | `PUT /v1/xparts/:id` | same, replaces the whole entry; `baseUpdatedAt` (the `updatedAt` the edit started from) → **409** `{ error, partId }` when the part changed since | `Part` |
 | `POST /v1/xparts/:id/merge` | `{ intoId, byName, note }` (the two are the same part) | the merged `Part` (`:id` becomes deleted) |
 | `DELETE /v1/xparts/:id` / `POST /v1/xparts/:id/restore` | `{ byName, note }` | `Part` |
-| `GET /v1/xparts/:id/history` | | `[{ id, action, snapshot: Part, byName, byShop, note, createdAt }]` newest first |
+| `GET /v1/xparts/:id/history?limit=50&before=<id>` | | `[{ id, action, snapshot: Part, byName, byShop, note, createdAt }]` newest first: at most 50 (`limit`, up to 200) and about 8 MB; `X-History-More: 1` says older versions exist (ask again with `before` = the id of the oldest one you have) |
 | `POST /v1/xparts/:id/revert` | `{ revisionId, byName }` | `Part` |
 
 Each change stores a revision holding the whole entry (`action`: added, edited, merged, removed, restored, reverted).
@@ -105,9 +105,11 @@ After an order, each side rates the other with 1–5 stars and an optional comme
 - A shop's standing counts the latest rating from each shop that rated it (not one per order), and none from $0
   orders.
 - Wrong status (or not your order) → 409 / 404 with a plain message; stars outside 1..5 → 400.
+- Ratings from an install the hub admin blocked stop counting (and come back if it is unblocked).
 - Each rating adds an order event (`action: "rated"`, `note: "4 stars"`) and bumps the order's `seq`. When the
-  buyer rates the seller, every non-REMOVED listing of that seller is bumped too, so the new seller rating reaches
-  every member through `/v1/changes`.
+  buyer rates the seller and the seller's average or count changes, every non-REMOVED listing of that seller is
+  bumped too, so the new seller rating reaches every member through `/v1/changes` (rating again with the same stars
+  sends nothing).
 
 | Call | Who | Body | Answer |
 |---|---|---|---|
@@ -171,8 +173,12 @@ the community's totals. Only counts are stored: no customers, ticket ids or pric
 - `number` / `brand`: the spelling reported most often (by rows; ties go to the one with more used).
 - `xpartId` / `name`: the cross-reference part that owns that number key (any brand), or null.
 - `brand` filters case-insensitively on the reported brand; it applies to `shops` too.
-- `shops` (top level): distinct installs with any usage in the window (and brand, if given).
+- `shops` (top level): distinct shops (companies) with any usage in the window (and brand, if given).
 - Blocked installs are left out of everything.
+- **Small groups are not shown.** A part number is listed only when at least 3 shops used it (`minShops`, answered
+  with the list; `USAGE_MIN_SHOPS` changes it for a small hub), and when fewer than that many shops reported in the
+  window (for the brand asked for) the answer is `{ shops: 0, items: [] }`: with less, the totals would be one
+  shop's own counts.
 
 Export/import carries `part_usage`; the admin summary counts its rows (`usage`).
 
