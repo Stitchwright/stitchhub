@@ -21,10 +21,24 @@ const str = (v, max) => {
 
 const count = (v) => Number.isInteger(v) && v >= 0 && v <= 1_000_000;
 
+// The community list shows a part number only when at least this many shops used it, and nothing at all when fewer
+// shops than that reported in the window (for the brand asked for): with less, the totals are one shop's own counts,
+// and stepping the window month by month would show what it used each month. Small hubs can lower it.
+const MIN_SHOPS = Math.max(1, Math.floor(Number(process.env.USAGE_MIN_SHOPS)) || 3);
+
 export function registerUsage({ member, fail, writeLimit }) {
   member.post("/usage", async (c) => {
     writeLimit(c);
     const body = await c.req.json().catch(() => ({}));
+    const installId = c.get("install").id;
+    // Which company on the install the counts are for ('' = the whole install, from installs that don't say). Once an
+    // install reports per company, what it sent for the whole install before goes: it would count twice.
+    const shopRef = str(body.shopRef, 64) ?? "";
+    // A company that stopped sharing its counts: everything it sent is taken back.
+    if (shopRef && body.off === true) {
+      await q(`DELETE FROM part_usage WHERE install_id = $1 AND shop_ref IN ($2, '')`, [installId, shopRef]);
+      return c.json({ ok: true, items: 0 });
+    }
     const month = String(body.month ?? "");
     if (!MONTH.test(month) || month > monthAgo(0) || month < monthAgo(24)) {
       throw fail(400, "Send a month as YYYY-MM: this month or up to 24 months back.");
@@ -48,19 +62,25 @@ export function registerUsage({ member, fail, writeLimit }) {
       } else rows.set(k, { k, number, brand: str(it?.brand, 60), qty, tickets });
     }
     const list = [...rows.values()];
-    const installId = c.get("install").id;
+    // Two spellings of one number, each at the most, would add up past what a count can hold.
+    for (const r of list) {
+      r.qty = Math.min(r.qty, 1_000_000);
+      r.tickets = Math.min(r.tickets, 1_000_000);
+    }
     await tx(async (client) => {
-      await client.query(`DELETE FROM part_usage WHERE install_id = $1 AND month = $2`, [installId, month]);
+      if (shopRef) await client.query(`DELETE FROM part_usage WHERE install_id = $1 AND shop_ref = ''`, [installId]);
+      await client.query(`DELETE FROM part_usage WHERE install_id = $1 AND shop_ref = $2 AND month = $3`, [installId, shopRef, month]);
       for (let i = 0; i < list.length; i += 1000) {
         const b = list.slice(i, i + 1000);
         await client.query(
-          `INSERT INTO part_usage (install_id, month, number_key, number, brand, qty, tickets)
-           SELECT $1, $2, * FROM unnest($3::text[], $4::text[], $5::text[], $6::int[], $7::int[])`,
-          [installId, month, b.map((r) => r.k), b.map((r) => r.number), b.map((r) => r.brand), b.map((r) => r.qty), b.map((r) => r.tickets)],
+          `INSERT INTO part_usage (install_id, shop_ref, month, number_key, number, brand, qty, tickets)
+           SELECT $1, $2, $3, * FROM unnest($4::text[], $5::text[], $6::text[], $7::int[], $8::int[])`,
+          [installId, shopRef, month, b.map((r) => r.k), b.map((r) => r.number), b.map((r) => r.brand), b.map((r) => r.qty), b.map((r) => r.tickets)],
         );
       }
     });
-    return c.json({ ok: true, items: list.length });
+    // shopRef tells the install this hub keeps each company's counts apart (an older hub answers without it).
+    return c.json({ ok: true, items: list.length, ...(shopRef ? { shopRef } : {}) });
   });
 
   member.get("/usage/top", async (c) => {
@@ -75,12 +95,16 @@ export function registerUsage({ member, fail, writeLimit }) {
     const window = `
       SELECT pu.* FROM part_usage pu JOIN installs i ON i.id = pu.install_id AND NOT i.blocked
       WHERE pu.month BETWEEN $1 AND $2 AND ($3::text IS NULL OR lower(pu.brand) = lower($3))`;
-    const shops = Number((await one(`SELECT count(DISTINCT install_id) AS n FROM (${window}) u`, [from, to, brand])).n);
+    // A shop is a company: several on one install count as several.
+    const shops = Number((await one(`SELECT count(DISTINCT (install_id, shop_ref)) AS n FROM (${window}) u`, [from, to, brand])).n);
+    if (shops < MIN_SHOPS) return c.json({ from, to, shops: 0, minShops: MIN_SHOPS, items: [] });
     const { rows } = await q(
       `WITH u AS (${window}),
        agg AS (
-         SELECT number_key, sum(qty)::int AS qty, sum(tickets)::int AS tickets, count(DISTINCT install_id)::int AS shops
-         FROM u GROUP BY number_key
+         -- Summed as bigint and capped: the totals of every shop over many months don't fit an int.
+         SELECT number_key, least(sum(qty), 2147483647)::int AS qty, least(sum(tickets), 2147483647)::int AS tickets,
+           count(DISTINCT (install_id, shop_ref))::int AS shops
+         FROM u GROUP BY number_key HAVING count(DISTINCT (install_id, shop_ref)) >= $5
        ),
        spelling AS (
          SELECT DISTINCT ON (number_key) number_key, number, brand
@@ -95,12 +119,13 @@ export function registerUsage({ member, fail, writeLimit }) {
        ) x ON true
        ORDER BY a.shops DESC, a.qty DESC, a.number_key
        LIMIT $4`,
-      [from, to, brand, limit],
+      [from, to, brand, limit, MIN_SHOPS],
     );
     return c.json({
       from,
       to,
       shops,
+      minShops: MIN_SHOPS,
       items: rows.map((r) => ({
         numberKey: r.number_key,
         number: r.number,

@@ -4,6 +4,10 @@ A partner link connects one **repair shop** with one **sewing or quilt shop** (S
 for it, buys parts and notions from it, and sells its stock on consignment. The hub relays typed JSON messages
 between the two shops and stores nothing else about them. Only the two shops on a link receive its messages.
 
+The hub does not act on the messages, but it does not hide or sign them either: they are stored as plain JSON for a
+year (and are part of an export), so whoever runs the hub can read them, and could send one as either shop. The
+apps take the hub's word for who a message is from. Run or join a hub you trust with this.
+
 An install can host several shops (companies), so every call names the shop inside the install: `shopRef` (the
 shop's id in that install). Both shops of a link can even be in the same install.
 
@@ -44,17 +48,21 @@ Messages can still pass (for the last statement).
 | hub | `link.created`, `link.ended` | the link (`endedBy`, `note` when ended) |
 | either | `terms.propose` | `{ version, terms, name, at }` |
 | either | `terms.accept` | `{ version, name, at, key }` |
-| repair shop | `catalog` | `{ items: [{ itemKey, partNumber, description, kind, brand, unit, wholesaleCents, retailCents, inStock }] }` |
+| repair shop | `catalog` | `{ items: [{ itemKey, partNumber, description, kind, brand, unit, wholesaleCents, retailCents, inStock, condition?, origin? }] }` |
 | sewing shop | `job.new` | `{ id, tag, customerName (first name, last initial), brand, model, serial, machineType, problem, serviceRequested, accessories, preApprovedCents, note, photos: [{ mime, data (base64), caption }] }` |
 | repair shop | `job.update` | `{ id, status, ticketNumber, lines, totalCents, taxCents, commissionPct, commissionCents, repairNote, paidCents, paidAt, readyAt }` |
 | sewing shop | `job.reply` | `{ id, approval: APPROVED \| DECLINED, approvedCents, note, name }` |
 | sewing shop | `job.paid`, `job.pickedup`, `job.cancel` | `{ id, amountCents, saleNumber }`, `{ id }`, `{ id, note }` |
-| sewing shop | `order.new` | `{ id, number, lines: [{ itemKey, partNumber, description, qty, unitCents }], note, name }` |
-| either | `order.update` | `{ id, status, carrier, tracking, sellerNote, eventNote }` |
-| repair shop | `consign.place` | `{ id, items: [{ itemKey, partNumber, description, kind, brand, unit, priceCents, qty }] }` |
+| sewing shop | `order.new` | `{ id, number, lines: [{ itemKey, partNumber, description, qty, unitCents, condition?, origin? }], note, name }` |
+| either | `order.update` | `{ id, status, carrier, tracking, sellerNote, eventNote }` (from the repair shop also `lines`, as above) |
+| repair shop | `consign.place` | `{ id, items: [{ itemKey, partNumber, description, kind, brand, unit, priceCents, qty, condition?, origin? }] }` |
 | either | `consign.return` | `{ id, items: [{ itemKey, qty }] }` |
 | sewing shop | `consign.sale` | `{ id (sale line), itemKey, qty (negative for a void), priceCents, saleNumber }` |
 | sewing shop | `consign.count` | `{ id, items: [{ itemKey, onHand }] }` |
 | either | `settle.paid` | `{ id, periodFrom, periodTo, netCents (+ sewing shop paid), summary, note, name }` |
 
 Every message also carries `at` (when it happened). Apply messages so that receiving one twice does no harm.
+
+`condition` (`USED` or `REFURB`) and `origin` (`COMPATIBLE` or `PRINTED`) say that a part isn't new / isn't the machine
+maker's own. They are sent only when they say that: left out means `NEW` / `GENUINE`, which is also what an install from
+before they existed means. A receiver ignores values it doesn't know.

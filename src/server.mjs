@@ -1,6 +1,7 @@
 // StitchHub: the community server for StitchBench.
 // Installs join with the community's join key and get their own key. They pull changes (manual links, tech notes,
 // figure snapshots, data sets) and push what their techs share. Manual PDFs are never stored, only links to them.
+import "./env.mjs"; // first: reads .env before the modules below read their variables
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -11,10 +12,11 @@ import { getConnInfo } from "@hono/node-server/conninfo";
 import { pool, q, one, tx, migrate, getSetting, setSetting, startFeeds, feedLimit, staleCursor } from "./db.mjs";
 import { startChecker, privateAddress } from "./checker.mjs";
 import { exportStream, importStream } from "./transfer.mjs";
-import { registerParts, partsByIds } from "./parts.mjs";
-import { registerMarket, listingsByIds } from "./market.mjs";
+import { registerParts, partsByIds, partSizes } from "./parts.mjs";
+import { registerMarket, listingsByIds, sellerBlocked } from "./market.mjs";
 import { registerUsage } from "./usage.mjs";
 import { registerPartners } from "./partners.mjs";
+import { discordBody } from "./discord.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const HUB_NAME = process.env.HUB_NAME ?? "StitchHub";
@@ -77,11 +79,13 @@ function publicLink(url) {
 
 // Tell the community's Discord channel (optional: admin sets a webhook URL).
 // Never fails: it's called without waiting, and a database hiccup here mustn't stop the hub.
-async function notify(text) {
+// Use it as a template tag, notify`${shop} joined`: whatever is put in ${} came from a member and is shown as typed
+// (src/discord.mjs).
+async function notify(parts, ...values) {
   try {
     const hook = await getSetting("discord_webhook");
     if (!hook) return;
-    fetch(hook, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: text.slice(0, 1900) }) }).catch(() => {});
+    fetch(hook, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(discordBody(parts, values)) }).catch(() => {});
   } catch (e) {
     console.error("discord:", e.message);
   }
@@ -121,8 +125,11 @@ const WRONG_JOIN_KEYS = 100;
 async function checkJoinKey(joinKey) {
   const wrong = bucket("join-key:wrong");
   if (wrong.n >= WRONG_JOIN_KEYS) throw fail(429, "Too many wrong join keys were tried lately. Try again in an hour.");
-  const expected = (await getSetting("join_key")) ?? process.env.JOIN_KEY ?? "";
-  if (!expected || !joinKey || !same(sha(String(joinKey)), sha(expected))) {
+  // Compared without spaces around them: StitchBench trims what a member types, and a key pasted from an email often
+  // carries one (an admin-saved key may too, from before it was trimmed on saving).
+  const expected = ((await getSetting("join_key")) ?? process.env.JOIN_KEY ?? "").trim();
+  const given = String(joinKey ?? "").trim();
+  if (!expected || !given || !same(sha(given), sha(expected))) {
     if (++wrong.n === WRONG_JOIN_KEYS) console.warn(`join: ${WRONG_JOIN_KEYS} wrong join keys this hour; joining is paused until the hour is up`);
     throw fail(403, "That join key isn't right. Ask the hub admin for the current one.");
   }
@@ -189,6 +196,24 @@ app.use("*", async (c, next) => {
   await next();
 });
 
+// A body that isn't JSON, or is JSON but not an object or a list (null, a number), is the sender's mistake: 400, not a
+// hub error. Routes that read it with .catch(() => ({})) carry on with nothing, as before.
+app.use("*", async (c, next) => {
+  const parse = c.req.json.bind(c.req);
+  c.req.json = async () => {
+    let body;
+    try {
+      body = await parse();
+    } catch (e) {
+      if (e.status) throw e; // too large (413), or the body stream stopped
+      throw fail(400, "That isn't valid JSON.");
+    }
+    if (body === null || typeof body !== "object") throw fail(400, "Send a JSON object.");
+    return body;
+  };
+  await next();
+});
+
 // ---------- public ----------
 
 app.get("/health", (c) => c.json({ ok: true }));
@@ -215,7 +240,7 @@ app.post("/v1/register", async (c) => {
   const shop = String(name ?? "").trim().slice(0, 120);
   if (!shop) throw fail(400, "Give your shop's name.");
   const { id, key } = await createInstall(pool, shop, String(contact ?? "").slice(0, 200) || null, "member");
-  notify(`👋 ${shop} joined ${HUB_NAME}.`);
+  notify`👋 ${shop} joined ${HUB_NAME}.`;
   return c.json({ installId: id, installKey: key, hubName: HUB_NAME, scope: "member" });
 });
 
@@ -293,7 +318,7 @@ member.post("/upgrade", async (c) => {
   await checkJoinKey(joinKey);
   if (c.get("install").scope !== "member") {
     await q(`UPDATE installs SET scope = 'member' WHERE id = $1`, [c.get("install").id]);
-    notify(`👋 ${c.get("install").name} joined ${HUB_NAME}.`);
+    notify`👋 ${c.get("install").name} joined ${HUB_NAME}.`;
   }
   return c.json({ installId: c.get("install").id, hubName: HUB_NAME, scope: "member" });
 });
@@ -316,10 +341,19 @@ const linkOut = (l) => ({
   updatedAt: l.updated_at,
 });
 
+const FEED_BYTES = 32 * MB;
+
+/** `since` (the number from the previous answer) and `limit` (between 1 and `max`) of a feed request. */
+function feedPage(c, byDefault, max) {
+  const since = c.req.query("since") || "0";
+  if (!/^\d{1,18}$/.test(since)) throw fail(400, "since is the number from the previous answer.");
+  const asked = Math.floor(Number(c.req.query("limit")));
+  return { since, limit: Math.min(max, asked >= 1 ? asked : byDefault) };
+}
+
 // Everything that changed after `since` (a number from the previous answer), oldest first.
 member.get("/changes", async (c) => {
-  const since = BigInt(c.req.query("since") || "0");
-  const limit = Math.min(2000, Number(c.req.query("limit") || 1000));
+  const { since, limit } = feedPage(c, 1000, 2000);
   const { rows } = await q(
     `SELECT t, id, seq FROM (
        SELECT 'link' t, id, seq FROM links WHERE seq > $1 AND seq <= $3
@@ -328,8 +362,18 @@ member.get("/changes", async (c) => {
        UNION ALL SELECT 'xpart', id, seq FROM xparts WHERE seq > $1 AND seq <= $3
        UNION ALL SELECT 'listing', id, seq FROM listings WHERE seq > $1 AND seq <= $3
      ) x ORDER BY seq LIMIT $2`,
-    [since.toString(), limit, (await feedLimit()).change],
+    [since, limit, (await feedLimit()).change],
   );
+  let more = rows.length === limit;
+  // A page stops short of FEED_BYTES: a run of very large parts (thousands of fits each) would otherwise make one
+  // answer too big to build, and every install's sync would stop at that page for good. The first row always goes.
+  const sizes = await partSizes(rows.filter((r) => r.t === "xpart").map((r) => r.id));
+  let bytes = 0;
+  const cut = rows.findIndex((r, i) => (bytes += r.t === "xpart" ? sizes.get(r.id) ?? 2000 : 8000) > FEED_BYTES && i > 0);
+  if (cut > 0) {
+    rows.length = cut;
+    more = true;
+  }
   const ids = (t) => rows.filter((r) => r.t === t).map((r) => r.id);
   const links = ids("link").length ? (await q(`SELECT * FROM links WHERE id = ANY($1)`, [ids("link")])).rows.map(linkOut) : [];
   let posts = [];
@@ -349,6 +393,7 @@ member.get("/changes", async (c) => {
       body: p.body,
       deleted: p.deleted,
       mine: p.install_id === c.get("install").id,
+      shopRef: p.shop_ref || null,
       createdAt: p.created_at,
       photos: photos.filter((ph) => ph.post_id === p.id).map((ph) => ({ id: ph.id, kind: ph.kind, caption: ph.caption, mime: ph.mime, sortOrder: ph.sort_order })),
     }));
@@ -362,12 +407,14 @@ member.get("/changes", async (c) => {
     removedFigures: ids("figure").filter((id) => removed.has(id)),
     xparts: await partsByIds(ids("xpart")),
     listings: await listingsByIds(ids("listing"), c.get("install").id),
-    next: rows.length ? rows[rows.length - 1].seq : since.toString(),
-    more: rows.length === limit,
+    next: rows.length ? rows[rows.length - 1].seq : since,
+    more,
   });
 });
 
 // ----- manual links -----
+
+const MAX_URL = 1800; // bytes
 
 function linkFields(body) {
   const f = {
@@ -382,6 +429,8 @@ function linkFields(body) {
   if (!f.brand || !f.models) throw fail(400, "Give the brand and model(s).");
   if (!f.title) f.title = `${f.brand} ${f.models} ${f.docType ?? "manual"}`;
   if (!validUrl(f.url)) throw fail(400, "The link must start with http:// or https://");
+  // The address is part of a unique index, which can't hold a very long one (a signed cloud link can be that long).
+  if (Buffer.byteLength(f.url) > MAX_URL) throw fail(400, `That link is too long (${MAX_URL} characters at most). Use the plain address of the file.`);
   if (!publicLink(f.url)) throw fail(400, "That link points inside a private network. Share a link any shop can open.");
   return f;
 }
@@ -394,33 +443,50 @@ async function saveRevision(client, linkId, action, f, c, note) {
   );
 }
 
+/** 409 pointing at the link that already has this address (and file name), when there is one other than `exceptId`. */
+async function checkLinkFree(db, url, fileName, exceptId) {
+  const existing = (await db.query(`SELECT id, deleted FROM links WHERE url = $1 AND coalesce(file_name, '') = coalesce($2, '') AND id <> $3`, [url, fileName, exceptId ?? ""])).rows[0];
+  if (!existing) return;
+  const e = fail(409, existing.deleted ? "That link was removed earlier. Restore it from its history instead." : "That link is already on the hub.");
+  e.linkId = existing.id;
+  throw e;
+}
+
+/** Two members saving the same address at the same moment: the second one gets the same 409 as one who was a moment later. */
+async function whenAddressTaken(fn, url, fileName, exceptId) {
+  try {
+    return await fn();
+  } catch (e) {
+    if (e.code === "23505" && e.constraint === "links_url_file") await checkLinkFree(pool, url, fileName, exceptId);
+    throw e;
+  }
+}
+
 member.post("/links", async (c) => {
   writeLimit(c);
   const body = await c.req.json();
   const f = linkFields(body);
   c.byName = String(body.byName ?? "").slice(0, 80) || null;
-  const existing = await one(`SELECT id, deleted FROM links WHERE url = $1 AND coalesce(file_name, '') = coalesce($2, '')`, [f.url, f.fileName]);
-  if (existing) {
-    const e = fail(409, existing.deleted ? "That link was removed earlier. Restore it from its history instead." : "That link is already on the hub.");
-    e.linkId = existing.id;
-    throw e;
-  }
+  await checkLinkFree(pool, f.url, f.fileName);
   const id = newId();
-  await tx(async (client) => {
+  await whenAddressTaken(() => tx(async (client) => {
     await client.query(
       `INSERT INTO links (id, category, brand, models, model_keys, doc_type, title, file_name, url, source) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
       [id, f.category, f.brand, f.models, modelKeys(f.models, f.fileName), f.docType, f.title, f.fileName, f.url, hostOf(f.url)],
     );
     await saveRevision(client, id, "added", f, c, body.note);
-  });
-  notify(`🔗 ${c.get("install").name} added a manual link: ${f.brand} ${f.models} — ${f.title}`);
+  }), f.url, f.fileName);
+  notify`🔗 ${c.get("install").name} added a manual link: ${f.brand} ${f.models} — ${f.title}`;
   return c.json(linkOut(await one(`SELECT * FROM links WHERE id = $1`, [id])));
 });
 
 async function applyEdit(c, id, f, action, note) {
   const cur = await one(`SELECT * FROM links WHERE id = $1`, [id]);
   if (!cur) throw fail(404, "That link isn't on the hub.");
-  await tx(async (client) => {
+  // The address (with the file name the link ends up with) may already be another link's: a fix or a roll back onto it.
+  const fileName = f.fileName ?? cur.file_name;
+  await checkLinkFree(pool, f.url, fileName, id);
+  await whenAddressTaken(() => tx(async (client) => {
     await client.query(
       `UPDATE links SET brand=$2, models=$3, model_keys=$4, doc_type=$5, title=$6, url=$7, source=$8, category=coalesce($9, category),
          file_name=coalesce($10, file_name), deleted=false,
@@ -430,7 +496,7 @@ async function applyEdit(c, id, f, action, note) {
       [id, f.brand, f.models, modelKeys(f.models, f.fileName), f.docType, f.title, f.url, hostOf(f.url), f.category, f.fileName],
     );
     await saveRevision(client, id, action, f, c, note);
-  });
+  }), f.url, fileName, id);
   return linkOut(await one(`SELECT * FROM links WHERE id = $1`, [id]));
 }
 
@@ -439,7 +505,7 @@ member.put("/links/:id", async (c) => {
   const body = await c.req.json();
   c.byName = String(body.byName ?? "").slice(0, 80) || null;
   const link = await applyEdit(c, c.req.param("id"), linkFields(body), "edited", body.note);
-  notify(`✏️ ${c.get("install").name} fixed a manual link: ${link.brand} ${link.models} — ${link.title}`);
+  notify`✏️ ${c.get("install").name} fixed a manual link: ${link.brand} ${link.models} — ${link.title}`;
   return c.json(link);
 });
 
@@ -469,6 +535,7 @@ member.post("/links/:id/revert", async (c) => {
   if (!r) throw fail(404, "That version isn't in this link's history.");
   c.byName = String(byName ?? "").slice(0, 80) || null;
   const f = { brand: r.brand, models: r.models, docType: r.doc_type, title: r.title, url: r.url, category: null, fileName: null };
+  if (!validUrl(f.url)) throw fail(409, "That version's address can't be used any more.");
   return c.json(await applyEdit(c, c.req.param("id"), f, "reverted", `back to the version from ${r.created_at.toISOString().slice(0, 10)}`));
 });
 
@@ -488,9 +555,14 @@ async function setDeleted(c, deleted) {
 member.delete("/links/:id", (c) => setDeleted(c, true));
 member.post("/links/:id/restore", (c) => setDeleted(c, false));
 
-// An install couldn't download it (or could): check it again soon (a link at most every 10 minutes).
+// An install couldn't download it (or could): check it again soon. A link that was checked within the hour isn't
+// checked again, and an install can ask for 60 an hour: otherwise one member could keep the checker on the same links
+// all day, knocking on the manufacturers' sites and making every install download each link again.
 member.post("/links/:id/report", async (c) => {
-  await q(`UPDATE links SET checked_at = NULL WHERE id = $1 AND checked_at < now() - interval '10 minutes'`, [c.req.param("id")]);
+  if (!allow(`report:${c.get("install").id}`, 60)) throw fail(429, "Too many reports in the last hour. Try again later.");
+  const id = c.req.param("id");
+  if (!(await one(`SELECT 1 FROM links WHERE id = $1 AND NOT deleted`, [id]))) throw fail(404, "That link isn't on the hub.");
+  await q(`UPDATE links SET checked_at = NULL WHERE id = $1 AND checked_at < now() - interval '1 hour'`, [id]);
   return c.json({ ok: true });
 });
 
@@ -499,7 +571,13 @@ member.post("/links/:id/report", async (c) => {
 member.post("/posts", async (c) => {
   writeLimit(c);
   const form = await c.req.parseBody({ all: true });
-  const p = JSON.parse(String(form.post ?? "{}"));
+  let p;
+  try {
+    p = JSON.parse(String(form.post ?? "{}"));
+  } catch {
+    throw fail(400, "The note must be JSON.");
+  }
+  if (!p || typeof p !== "object") throw fail(400, "The note must be JSON.");
   const title = String(p.title ?? "").trim().slice(0, 140);
   const body = String(p.body ?? "").trim().slice(0, 5000);
   const brand = String(p.brand ?? "").trim().slice(0, 60);
@@ -515,15 +593,18 @@ member.post("/posts", async (c) => {
   const id = newId();
   const inst = c.get("install");
   const clientId = p.clientId ? String(p.clientId).slice(0, 64) : null;
+  // The company sharing it, on a StitchBench that holds several (installs that don't say share as the install).
+  const shopRef = String(p.shopRef ?? "").trim().slice(0, 64);
+  const shopName = (shopRef && String(p.shopName ?? "").trim().slice(0, 120)) || inst.name;
   if (clientId) {
     const had = await one(`SELECT id FROM posts WHERE install_id = $1 AND client_id = $2`, [inst.id, clientId]);
     if (had) return c.json({ id: had.id });
   }
   const made = await tx(async (client) => {
     const r = await client.query(
-      `INSERT INTO posts (id, install_id, shop_name, author_name, brand, model, model_key, kind, title, body, client_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (install_id, client_id) WHERE client_id IS NOT NULL DO NOTHING`,
-      [id, inst.id, inst.name, String(p.authorName ?? "").slice(0, 80) || null, brand, model, model.toUpperCase().replace(/[^A-Z0-9]/g, ""), kind, title, body, clientId],
+      `INSERT INTO posts (id, install_id, shop_name, author_name, brand, model, model_key, kind, title, body, client_id, shop_ref)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (install_id, client_id) WHERE client_id IS NOT NULL DO NOTHING`,
+      [id, inst.id, shopName, String(p.authorName ?? "").slice(0, 80) || null, brand, model, model.toUpperCase().replace(/[^A-Z0-9]/g, ""), kind, title, body, clientId, shopRef],
     );
     if (!r.rowCount) return false; // the same upload, made by a retry a moment ago
     for (const [i, f] of files.entries()) {
@@ -541,7 +622,7 @@ member.post("/posts", async (c) => {
     return true;
   });
   if (!made) return c.json({ id: (await one(`SELECT id FROM posts WHERE install_id = $1 AND client_id = $2`, [inst.id, clientId])).id });
-  notify(`🛠️ ${inst.name}: **${title}** (${brand} ${model})${files.length ? ` · ${files.length} photo${files.length > 1 ? "s" : ""}` : ""}\n${body.slice(0, 400)}`);
+  notify`🛠️ ${shopName}: **${title}** (${brand} ${model})${files.length ? ` · ${files.length} photo${files.length > 1 ? "s" : ""}` : ""}\n${body.slice(0, 400)}`;
   return c.json({ id });
 });
 
@@ -636,7 +717,7 @@ admin.get("/summary", async (c) => {
   return c.json({
     hubName: HUB_NAME,
     counts,
-    joinKey: (await getSetting("join_key")) ?? process.env.JOIN_KEY ?? null,
+    joinKey: ((await getSetting("join_key")) ?? process.env.JOIN_KEY ?? "").trim() || null,
     discordWebhook: Boolean(await getSetting("discord_webhook")),
     discordInvite: await getSetting("discord_invite"),
     installs,
@@ -646,8 +727,9 @@ admin.get("/summary", async (c) => {
 
 admin.put("/join-key", async (c) => {
   const { joinKey } = await c.req.json();
-  if (!joinKey || String(joinKey).length < 8) throw fail(400, "Use a join key of 8+ characters.");
-  await setSetting("join_key", String(joinKey));
+  const key = String(joinKey ?? "").trim();
+  if (key.length < 8 || /\s/.test(key)) throw fail(400, "Use a join key of 8+ characters with no spaces in it.");
+  await setSetting("join_key", key);
   return c.json({ ok: true });
 });
 
@@ -665,13 +747,14 @@ admin.put("/discord-webhook", async (c) => {
   if (url && !/^https:\/\/(discord\.com|discordapp\.com)\/api\/webhooks\//.test(url)) throw fail(400, "That isn't a Discord webhook URL.");
   if (url) await setSetting("discord_webhook", url);
   else await q(`DELETE FROM settings WHERE key = 'discord_webhook'`);
-  if (url) notify(`${HUB_NAME} is connected to this channel.`);
+  if (url) notify`${HUB_NAME} is connected to this channel.`;
   return c.json({ ok: true });
 });
 
 admin.post("/installs/:id/block", async (c) => {
   const { blocked } = await c.req.json();
   await q(`UPDATE installs SET blocked = $2 WHERE id = $1`, [c.req.param("id"), Boolean(blocked)]);
+  await sellerBlocked(c.req.param("id"), Boolean(blocked));
   return c.json({ ok: true });
 });
 
@@ -742,7 +825,7 @@ admin.post("/import", async (c) => c.json(await importStream(c.req.raw.body)));
 
 // Parts cross-reference, marketplace and parts usage (src/parts.mjs, src/market.mjs, src/usage.mjs; docs/parts-and-marketplace.md).
 registerParts({ member, admin, fail, newId, writeLimit, validUrl });
-registerMarket({ member, fail, newId, writeLimit, notify });
+registerMarket({ member, fail, newId, writeLimit, notify, feedPage });
 registerUsage({ member, fail, writeLimit: usageLimit });
 registerPartners({ app, member, fail, newId, allow, clientIp, sha, hubName: HUB_NAME, createInstall });
 
@@ -754,16 +837,21 @@ app.route("/v1", member);
 
 await migrate(path.join(ROOT, "migrations"));
 await startFeeds();
-if (!(await getSetting("join_key")) && process.env.JOIN_KEY) await setSetting("join_key", process.env.JOIN_KEY);
+if (!(await getSetting("join_key")) && process.env.JOIN_KEY?.trim()) await setSetting("join_key", process.env.JOIN_KEY.trim());
 if (process.env.LINK_CHECKER !== "off") startChecker();
 const port = Number(process.env.PORT ?? 8080);
-serve({ fetch: app.fetch, port, hostname: "0.0.0.0" }, () => console.log(`${HUB_NAME} listening on :${port}`));
+const server = serve({ fetch: app.fetch, port, hostname: "0.0.0.0" }, () => console.log(`${HUB_NAME} listening on :${port}`));
 
 // Something left running in the background that fails (a Discord post, a last-seen update) is logged; it mustn't stop
 // the hub for everyone.
 process.on("unhandledRejection", (e) => console.error("unhandled:", e));
 
+// A stop (a deploy, a restart): no new requests, and the ones running get a few seconds to finish, so a write that has
+// taken its change number isn't cut off half way while the next hub starts.
 process.on("SIGTERM", async () => {
+  const drained = new Promise((r) => server.close(r));
+  server.closeIdleConnections?.();
+  await Promise.race([drained, new Promise((r) => setTimeout(r, 8000))]);
   await pool.end().catch(() => {});
   process.exit(0);
 });
