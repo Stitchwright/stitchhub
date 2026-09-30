@@ -11,8 +11,8 @@ import { getConnInfo } from "@hono/node-server/conninfo";
 import { pool, q, one, tx, migrate, getSetting, setSetting, startFeeds, feedLimit, staleCursor } from "./db.mjs";
 import { startChecker, privateAddress } from "./checker.mjs";
 import { exportStream, importStream } from "./transfer.mjs";
-import { registerParts, partsByIds } from "./parts.mjs";
-import { registerMarket, listingsByIds } from "./market.mjs";
+import { registerParts, partsByIds, partSizes } from "./parts.mjs";
+import { registerMarket, listingsByIds, sellerBlocked } from "./market.mjs";
 import { registerUsage } from "./usage.mjs";
 import { registerPartners } from "./partners.mjs";
 
@@ -316,6 +316,8 @@ const linkOut = (l) => ({
   updatedAt: l.updated_at,
 });
 
+const FEED_BYTES = 32 * MB;
+
 // Everything that changed after `since` (a number from the previous answer), oldest first.
 member.get("/changes", async (c) => {
   const since = BigInt(c.req.query("since") || "0");
@@ -330,6 +332,16 @@ member.get("/changes", async (c) => {
      ) x ORDER BY seq LIMIT $2`,
     [since.toString(), limit, (await feedLimit()).change],
   );
+  let more = rows.length === limit;
+  // A page stops short of FEED_BYTES: a run of very large parts (thousands of fits each) would otherwise make one
+  // answer too big to build, and every install's sync would stop at that page for good. The first row always goes.
+  const sizes = await partSizes(rows.filter((r) => r.t === "xpart").map((r) => r.id));
+  let bytes = 0;
+  const cut = rows.findIndex((r, i) => (bytes += r.t === "xpart" ? sizes.get(r.id) ?? 2000 : 8000) > FEED_BYTES && i > 0);
+  if (cut > 0) {
+    rows.length = cut;
+    more = true;
+  }
   const ids = (t) => rows.filter((r) => r.t === t).map((r) => r.id);
   const links = ids("link").length ? (await q(`SELECT * FROM links WHERE id = ANY($1)`, [ids("link")])).rows.map(linkOut) : [];
   let posts = [];
@@ -349,6 +361,7 @@ member.get("/changes", async (c) => {
       body: p.body,
       deleted: p.deleted,
       mine: p.install_id === c.get("install").id,
+      shopRef: p.shop_ref || null,
       createdAt: p.created_at,
       photos: photos.filter((ph) => ph.post_id === p.id).map((ph) => ({ id: ph.id, kind: ph.kind, caption: ph.caption, mime: ph.mime, sortOrder: ph.sort_order })),
     }));
@@ -363,7 +376,7 @@ member.get("/changes", async (c) => {
     xparts: await partsByIds(ids("xpart")),
     listings: await listingsByIds(ids("listing"), c.get("install").id),
     next: rows.length ? rows[rows.length - 1].seq : since.toString(),
-    more: rows.length === limit,
+    more,
   });
 });
 
@@ -515,15 +528,18 @@ member.post("/posts", async (c) => {
   const id = newId();
   const inst = c.get("install");
   const clientId = p.clientId ? String(p.clientId).slice(0, 64) : null;
+  // The company sharing it, on a StitchBench that holds several (installs that don't say share as the install).
+  const shopRef = String(p.shopRef ?? "").trim().slice(0, 64);
+  const shopName = (shopRef && String(p.shopName ?? "").trim().slice(0, 120)) || inst.name;
   if (clientId) {
     const had = await one(`SELECT id FROM posts WHERE install_id = $1 AND client_id = $2`, [inst.id, clientId]);
     if (had) return c.json({ id: had.id });
   }
   const made = await tx(async (client) => {
     const r = await client.query(
-      `INSERT INTO posts (id, install_id, shop_name, author_name, brand, model, model_key, kind, title, body, client_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (install_id, client_id) WHERE client_id IS NOT NULL DO NOTHING`,
-      [id, inst.id, inst.name, String(p.authorName ?? "").slice(0, 80) || null, brand, model, model.toUpperCase().replace(/[^A-Z0-9]/g, ""), kind, title, body, clientId],
+      `INSERT INTO posts (id, install_id, shop_name, author_name, brand, model, model_key, kind, title, body, client_id, shop_ref)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (install_id, client_id) WHERE client_id IS NOT NULL DO NOTHING`,
+      [id, inst.id, shopName, String(p.authorName ?? "").slice(0, 80) || null, brand, model, model.toUpperCase().replace(/[^A-Z0-9]/g, ""), kind, title, body, clientId, shopRef],
     );
     if (!r.rowCount) return false; // the same upload, made by a retry a moment ago
     for (const [i, f] of files.entries()) {
@@ -541,7 +557,7 @@ member.post("/posts", async (c) => {
     return true;
   });
   if (!made) return c.json({ id: (await one(`SELECT id FROM posts WHERE install_id = $1 AND client_id = $2`, [inst.id, clientId])).id });
-  notify(`🛠️ ${inst.name}: **${title}** (${brand} ${model})${files.length ? ` · ${files.length} photo${files.length > 1 ? "s" : ""}` : ""}\n${body.slice(0, 400)}`);
+  notify(`🛠️ ${shopName}: **${title}** (${brand} ${model})${files.length ? ` · ${files.length} photo${files.length > 1 ? "s" : ""}` : ""}\n${body.slice(0, 400)}`);
   return c.json({ id });
 });
 
@@ -672,6 +688,7 @@ admin.put("/discord-webhook", async (c) => {
 admin.post("/installs/:id/block", async (c) => {
   const { blocked } = await c.req.json();
   await q(`UPDATE installs SET blocked = $2 WHERE id = $1`, [c.req.param("id"), Boolean(blocked)]);
+  await sellerBlocked(c.req.param("id"), Boolean(blocked));
   return c.json({ ok: true });
 });
 

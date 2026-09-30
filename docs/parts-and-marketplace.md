@@ -24,13 +24,16 @@ Part {
 | Call | Body | Answer |
 |---|---|---|
 | `POST /v1/xparts` | `{ name, kind, category, specs, notes, numbers, fits, sources, byName, note }` | `Part`. **409** `{ error, partId }` if a number already belongs to another part |
-| `PUT /v1/xparts/:id` | same, replaces the whole entry | `Part` |
+| `GET /v1/xparts/:id` | | `Part` as it is now |
+| `PUT /v1/xparts/:id` | same, replaces the whole entry; `baseUpdatedAt` (the `updatedAt` the edit started from) → **409** `{ error, partId }` when the part changed since | `Part` |
 | `POST /v1/xparts/:id/merge` | `{ intoId, byName, note }` (the two are the same part) | the merged `Part` (`:id` becomes deleted) |
 | `DELETE /v1/xparts/:id` / `POST /v1/xparts/:id/restore` | `{ byName, note }` | `Part` |
 | `GET /v1/xparts/:id/history` | | `[{ id, action, snapshot: Part, byName, byShop, note, createdAt }]` newest first |
 | `POST /v1/xparts/:id/revert` | `{ revisionId, byName }` | `Part` |
 
 Each change stores a revision holding the whole entry (`action`: added, edited, merged, removed, restored, reverted).
+A merge records which part it took in: rolling the merged part back to a version from before the merge makes that
+part its own again, as it was just before (merges from before this was recorded: 409, roll back to a later version).
 
 Admin: `POST /v1/admin/xparts/import` with a JSON array of
 `{ name, kind, category, numbers, fits }` adds parts whose numbers aren't on the hub yet;
@@ -58,7 +61,7 @@ install's own).
 |---|---|---|
 | `POST /v1/listings` | multipart: `listing` (JSON of the fields above) + `photo` files (≤ 8, ≤ 3 MB each) | `Listing` |
 | `PUT /v1/listings/:id` | JSON: any of title, description, condition, priceCents, qty, shippingCents, shippingNote, shipsFrom, status (ACTIVE / PAUSED) | `Listing` (own only) |
-| `DELETE /v1/listings/:id` | | `{ ok }` (status REMOVED; own only) |
+| `DELETE /v1/listings/:id` | | `{ ok }` (status REMOVED; own only). Orders still REQUESTED on it are declined ("The seller took the listing down.") |
 | `GET /v1/listing-photos/:id` | | the image |
 
 ### Orders (only the buyer and the seller see an order)
@@ -97,8 +100,10 @@ message.
 
 After an order, each side rates the other with 1–5 stars and an optional comment.
 
-- The **buyer rates the seller** once the order is SHIPPED or RECEIVED. The **seller rates the buyer** once it is
-  PAID, SHIPPED or RECEIVED. Rating again replaces the earlier rating (one per side per order).
+- Either side rates the other once the order is PAID, SHIPPED or RECEIVED; the buyer can also answer a seller who
+  rated them on an order cancelled after. Rating again replaces the earlier rating (one per side per order).
+- A shop's standing counts the latest rating from each shop that rated it (not one per order), and none from $0
+  orders.
 - Wrong status (or not your order) → 409 / 404 with a plain message; stars outside 1..5 → 400.
 - Each rating adds an order event (`action: "rated"`, `note: "4 stars"`) and bumps the order's `seq`. When the
   buyer rates the seller, every non-REMOVED listing of that seller is bumped too, so the new seller rating reaches
@@ -170,3 +175,24 @@ the community's totals. Only counts are stored: no customers, ticket ids or pric
 - Blocked installs are left out of everything.
 
 Export/import carries `part_usage`; the admin summary counts its rows (`usage`).
+
+## Per company (a StitchBench holding several companies)
+
+A hosted StitchBench serves several companies through one install key. Each call can say which company it is for,
+as the partner channel does; installs that don't say act as the whole install, as before (`shopRef` '' on the hub).
+
+- `POST /v1/listings` (`listing` JSON), `POST /v1/orders` and `POST /v1/posts` (`post` JSON) take `shopRef` (the
+  company's id on that install) and `shopName`. The listing's `shopName`, the order's `sellerShop` / `buyerShop` and
+  the note's `shopName` are then the company's. Listing, order and note carry `shopRef`, `sellerShopRef`,
+  `buyerShopRef` (null when not given).
+- Reputation is per (install, shopRef): `GET /v1/reputation/:installId?shopRef=`; listings' `sellerRating` and
+  orders' reputations use it.
+- Two companies on one install can't order from each other (409).
+- `clientId` on a listing or an order: sent again (a lost answer), the hub returns the one already made.
+- `PUT /v1/listings/:id` takes `expectedQty` with `qty`: 409 when orders changed the quantity since.
+- `POST /v1/shops/claim` `{ shopRef }`: a one-company install names its company; what it listed, ordered, was rated
+  for and shared without a `shopRef` becomes that company's.
+- `POST /v1/usage` takes `shopRef` / `shopName` (per company; the install's earlier reports without one are dropped)
+  and `{ shopRef, off: true }` (that company's reports are taken back). `shops` counts companies.
+- A blocked install's listings show PAUSED to everyone and take no orders; its REQUESTED orders are declined.
+- `GET /v1/changes` stops a page short of about 32 MB (a run of very large parts), with `more: true`.
