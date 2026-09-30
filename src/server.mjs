@@ -435,11 +435,22 @@ function linkFields(body) {
   return f;
 }
 
+/**
+ * Who is making this change, from the request body: the person (byName) and, on an install that holds several
+ * companies, which company (shopRef, the company's id on that install, and its name). Installs from before
+ * per-company identity send neither; the revision then shows the install's name.
+ */
+function byWhom(c, body) {
+  c.byName = String(body?.byName ?? "").slice(0, 80) || null;
+  c.shopRef = String(body?.shopRef ?? "").trim().slice(0, 64);
+  c.shopName = (c.shopRef && String(body?.shopName ?? "").trim().slice(0, 120)) || null;
+}
+
 async function saveRevision(client, linkId, action, f, c, note) {
   await client.query(
-    `INSERT INTO link_revisions (id, link_id, action, brand, models, doc_type, title, url, by_name, by_shop, install_id, note)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-    [newId(), linkId, action, f.brand, f.models, f.docType, f.title, f.url, c.byName, c.get("install")?.name ?? "hub admin", c.get("install")?.id ?? null, note ?? null],
+    `INSERT INTO link_revisions (id, link_id, action, brand, models, doc_type, title, url, by_name, by_shop, install_id, note, shop_ref, shop_name)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+    [newId(), linkId, action, f.brand, f.models, f.docType, f.title, f.url, c.byName, c.get("install")?.name ?? "hub admin", c.get("install")?.id ?? null, note ?? null, c.shopRef ?? "", c.shopName ?? null],
   );
 }
 
@@ -466,7 +477,7 @@ member.post("/links", async (c) => {
   writeLimit(c);
   const body = await c.req.json();
   const f = linkFields(body);
-  c.byName = String(body.byName ?? "").slice(0, 80) || null;
+  byWhom(c, body);
   await checkLinkFree(pool, f.url, f.fileName);
   const id = newId();
   await whenAddressTaken(() => tx(async (client) => {
@@ -503,7 +514,7 @@ async function applyEdit(c, id, f, action, note) {
 member.put("/links/:id", async (c) => {
   writeLimit(c);
   const body = await c.req.json();
-  c.byName = String(body.byName ?? "").slice(0, 80) || null;
+  byWhom(c, body);
   const link = await applyEdit(c, c.req.param("id"), linkFields(body), "edited", body.note);
   notify`✏️ ${c.get("install").name} fixed a manual link: ${link.brand} ${link.models} — ${link.title}`;
   return c.json(link);
@@ -521,7 +532,8 @@ member.get("/links/:id/history", async (c) => {
       title: r.title,
       url: r.url,
       byName: r.by_name,
-      byShop: r.by_shop,
+      // The company that made it, when its install said which; otherwise the install (as every revision was before)
+      byShop: r.shop_name || r.by_shop,
       note: r.note,
       createdAt: r.created_at,
     })),
@@ -530,10 +542,10 @@ member.get("/links/:id/history", async (c) => {
 
 member.post("/links/:id/revert", async (c) => {
   writeLimit(c);
-  const { revisionId, byName } = await c.req.json();
-  const r = await one(`SELECT * FROM link_revisions WHERE id = $1 AND link_id = $2`, [revisionId, c.req.param("id")]);
+  const body = await c.req.json();
+  const r = await one(`SELECT * FROM link_revisions WHERE id = $1 AND link_id = $2`, [String(body.revisionId ?? ""), c.req.param("id")]);
   if (!r) throw fail(404, "That version isn't in this link's history.");
-  c.byName = String(byName ?? "").slice(0, 80) || null;
+  byWhom(c, body);
   const f = { brand: r.brand, models: r.models, docType: r.doc_type, title: r.title, url: r.url, category: null, fileName: null };
   if (!validUrl(f.url)) throw fail(409, "That version's address can't be used any more.");
   return c.json(await applyEdit(c, c.req.param("id"), f, "reverted", `back to the version from ${r.created_at.toISOString().slice(0, 10)}`));
@@ -544,7 +556,7 @@ async function setDeleted(c, deleted) {
   const body = await c.req.json().catch(() => ({}));
   const cur = await one(`SELECT * FROM links WHERE id = $1`, [c.req.param("id")]);
   if (!cur) throw fail(404, "That link isn't on the hub.");
-  c.byName = String(body.byName ?? "").slice(0, 80) || null;
+  byWhom(c, body);
   await tx(async (client) => {
     await client.query(`UPDATE links SET deleted = $2, updated_at = now(), seq = nextval('change_seq') WHERE id = $1`, [cur.id, deleted]);
     const f = { brand: cur.brand, models: cur.models, docType: cur.doc_type, title: cur.title, url: cur.url };

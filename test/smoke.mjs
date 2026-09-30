@@ -74,11 +74,14 @@ console.log("join: ok");
 // Links: add, edit, history, revert, remove, restore.
 const link = await (await ok(await call("/v1/links", { key: installKey, method: "POST", json: { brand: "Janome", models: "MC6700P", docType: "ServiceManual", title: "Smoke test link", url: `https://example.com/${RUN}/a.pdf`, byName: "Tester" } }))).json();
 assert.deepEqual(link.modelKeys, ["MC6700P"]);
-const edited = await (await ok(await call(`/v1/links/${link.id}`, { key: installKey, method: "PUT", json: { ...link, url: `https://example.com/${RUN}/b.pdf`, byName: "Tester", note: "moved" } }))).json();
+// The fix names the company on the install that made it (a hosted install holds several); the add didn't, as older
+// installs don't: that revision shows the install's name.
+const edited = await (await ok(await call(`/v1/links/${link.id}`, { key: installKey, method: "PUT", json: { ...link, url: `https://example.com/${RUN}/b.pdf`, byName: "Tester", note: "moved", shopRef: "co1", shopName: "Smoke Company" } }))).json();
 assert.equal(edited.url, `https://example.com/${RUN}/b.pdf`);
 assert.equal(edited.status, "unchecked");
 const history = await (await ok(await call(`/v1/links/${link.id}/history`, { key: installKey }))).json();
 assert.deepEqual(history.map((h) => h.action), ["edited", "added"]);
+assert.deepEqual(history.map((h) => h.byShop), ["Smoke Company", "Smoke Test Shop"]);
 const reverted = await (await ok(await call(`/v1/links/${link.id}/revert`, { key: installKey, method: "POST", json: { revisionId: history[1].id, byName: "Tester" } }))).json();
 assert.equal(reverted.url, `https://example.com/${RUN}/a.pdf`);
 await ok(await call(`/v1/links/${link.id}`, { key: installKey, method: "DELETE", json: { byName: "Tester" } }));
@@ -166,7 +169,7 @@ assert.equal((await dupPart.json()).partId, part.id);
 const partEdited = await send(
   `/v1/xparts/${part.id}`,
   installKey,
-  { ...part, name: "Smoke screw M3x6", fits: [...part.fits, { brand: "Baby Lock", model: "BMP9" }], byName: "Tester", note: "fits the BMP9 too" },
+  { ...part, name: "Smoke screw M3x6", fits: [...part.fits, { brand: "Baby Lock", model: "BMP9" }], byName: "Tester", note: "fits the BMP9 too", shopRef: "co1", shopName: "Smoke Company" },
   "PUT",
 );
 assert.equal((await call(`/v1/xparts/${part.id}`, { key: installKey, method: "PUT", json: { ...part, sources: [{ vendor: "Typo", priceCents: 3_000_000_000 }] } })).status, 400); // a price no int can hold
@@ -176,6 +179,8 @@ assert.equal(partEdited.fits.find((f) => f.modelKey === "BMP9").evidence, "teste
 assert.equal(partEdited.sources[0].id, part.sources[0].id); // unchanged source keeps its id
 const partHistory = await get(`/v1/xparts/${part.id}/history`, installKey);
 assert.deepEqual(partHistory.map((h) => h.action), ["edited", "added"]);
+// The edit named its company; the add didn't (as older installs don't) and shows the install.
+assert.deepEqual(partHistory.map((h) => h.byShop), ["Smoke Company", "Smoke Test Shop"]);
 assert.equal(partHistory[1].snapshot.name, "Smoke screw");
 const partReverted = await send(`/v1/xparts/${part.id}/revert`, installKey, { revisionId: partHistory[1].id, byName: "Tester" });
 assert.equal(partReverted.name, "Smoke screw");
