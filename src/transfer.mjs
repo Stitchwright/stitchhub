@@ -18,7 +18,7 @@ export const TABLES = [
     table: "links",
     cols: ["id", "category", "brand", "models", "model_keys", "doc_type", "title", "file_name", "url", "source", "status", "http_status", "checked_at", "fail_count", "deleted", "created_at", "updated_at"],
   },
-  { t: "revision", table: "link_revisions", cols: ["id", "link_id", "action", "brand", "models", "doc_type", "title", "url", "by_name", "by_shop", "install_id", "note", "created_at"] },
+  { t: "revision", table: "link_revisions", cols: ["id", "link_id", "action", "brand", "models", "doc_type", "title", "url", "by_name", "by_shop", "install_id", "note", "created_at", "shop_ref", "shop_name"] },
   { t: "post", table: "posts", cols: ["id", "install_id", "client_id", "shop_name", "shop_ref", "author_name", "brand", "model", "model_key", "kind", "title", "body", "deleted", "created_at", "updated_at"] },
   { t: "photo", table: "photos", cols: ["id", "post_id", "kind", "caption", "mime", "data", "sort_order"] },
   { t: "figure", table: "figures", cols: ["id", "mime", "data", "width", "height", "install_id", "deleted", "created_at"] },
@@ -39,7 +39,7 @@ export const TABLES = [
     conflict: ["xpart_id", "brand_key", "model_key"],
   },
   { t: "xpart_source", table: "xpart_sources", cols: ["id", "xpart_id", "vendor", "url", "price_cents", "currency", "note", "by_shop", "updated_at"] },
-  { t: "xpart_revision", table: "xpart_revisions", cols: ["id", "xpart_id", "action", "snapshot", "by_name", "by_shop", "install_id", "note", "merged_from", "created_at"] },
+  { t: "xpart_revision", table: "xpart_revisions", cols: ["id", "xpart_id", "action", "snapshot", "by_name", "by_shop", "install_id", "note", "merged_from", "created_at", "shop_ref", "shop_name"] },
   {
     t: "listing",
     table: "listings",
