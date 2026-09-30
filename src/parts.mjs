@@ -9,6 +9,7 @@ const EVIDENCE = new Set(["listed", "tested", "maker"]);
 // never trimmed on the quiet: a universal bobbin fits thousands of machines, and every one of them should stay.
 const LIMITS = { numbers: 50, fits: 10000, sources: 30 };
 const LABEL = { numbers: "part numbers", fits: "machines it fits", sources: "places to buy it" };
+const MAX_CENTS = 100_000_000; // the most a price may be ($1,000,000.00): a typo is refused with a reason
 
 /** Upper-case letters and digits only: how brands, numbers and models are matched. */
 export const key = (s) =>
@@ -63,6 +64,25 @@ export async function partsByIds(ids, db = pool) {
   return ids.map((id) => byId.get(id)).filter(Boolean);
 }
 
+/**
+ * About how many bytes each part takes in the change feed, without loading it: the feed stops a page short of its
+ * size limit using these (a part with thousands of machines it fits is megabytes).
+ */
+export async function partSizes(ids, db = pool) {
+  const out = new Map();
+  if (!ids.length) return out;
+  const { rows } = await db.query(
+    `SELECT p.id, 2000 + octet_length(coalesce(p.name, '')) + octet_length(coalesce(p.specs, '')) + octet_length(coalesce(p.notes, ''))
+       + coalesce((SELECT sum(120 + octet_length(f.brand) + 2 * octet_length(f.model) + octet_length(coalesce(f.source, ''))) FROM xpart_fits f WHERE f.xpart_id = p.id), 0)
+       + coalesce((SELECT sum(250 + octet_length(s.vendor) + octet_length(coalesce(s.url, '')) + octet_length(coalesce(s.note, '')) + octet_length(coalesce(s.by_shop, ''))) FROM xpart_sources s WHERE s.xpart_id = p.id), 0)
+       + (SELECT count(*) * 150 FROM xpart_numbers n WHERE n.xpart_id = p.id) AS bytes
+     FROM xparts p WHERE p.id = ANY($1)`,
+    [ids],
+  );
+  for (const r of rows) out.set(r.id, Number(r.bytes));
+  return out;
+}
+
 export function registerParts({ member, admin, fail, newId, writeLimit, validUrl }) {
   /** Validate and tidy a part entry sent by an install. */
   function cleanPart(body, defaultEvidence) {
@@ -102,7 +122,7 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
       const url = str(s.url, 1000);
       if (url && !validUrl(url)) throw fail(400, "A buying link must start with http:// or https://");
       const price = s.priceCents == null || s.priceCents === "" ? null : Number(s.priceCents);
-      if (price != null && (!Number.isInteger(price) || price < 0)) throw fail(400, "Prices are whole cents, 0 or more.");
+      if (price != null && (!Number.isInteger(price) || price < 0 || price > MAX_CENTS)) throw fail(400, "Prices are whole cents, 0 or more (up to $1,000,000.00).");
       sources.push({
         id: str(s.id, 40),
         vendor,
@@ -131,13 +151,13 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
 
   const who = (c) => ({ byName: c.byName ?? null, byShop: c.get("install")?.name ?? "hub admin", installId: c.get("install")?.id ?? null });
 
-  async function saveRevision(client, id, action, c, note) {
+  async function saveRevision(client, id, action, c, note, mergedFrom) {
     const [snapshot] = await partsByIds([id], client);
     const w = who(c);
     await client.query(
-      `INSERT INTO xpart_revisions (id, xpart_id, action, snapshot, by_name, by_shop, install_id, note, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, clock_timestamp())`,
-      [newId(), id, action, JSON.stringify(snapshot), w.byName, w.byShop, w.installId, note ?? null],
+      `INSERT INTO xpart_revisions (id, xpart_id, action, snapshot, by_name, by_shop, install_id, note, merged_from, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, clock_timestamp())`,
+      [newId(), id, action, JSON.stringify(snapshot), w.byName, w.byShop, w.installId, note ?? null, mergedFrom ?? null],
     );
   }
 
@@ -269,15 +289,26 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
     return c.json(await current(id));
   });
 
+  // One entry as it is now (a shop whose copy was out of date fetches it before trying its change again).
+  member.get("/xparts/:id", async (c) => c.json(await current(c.req.param("id"))));
+
   member.put("/xparts/:id", entry, async (c) => {
     writeLimit(c);
     const id = c.req.param("id");
     const body = await c.req.json();
     const f = cleanPart(body, "tested");
     c.byName = byNameOf(body);
+    // The version the shop edited (its updatedAt). The whole entry is replaced, so an edit made from an older copy
+    // would silently undo whatever changed since: another shop's fix, an import, the supplier scan's links.
+    const base = body.baseUpdatedAt ? new Date(body.baseUpdatedAt).getTime() : NaN;
     await tx(async (client) => {
-      const cur = (await client.query(`SELECT id FROM xparts WHERE id = $1 FOR UPDATE`, [id])).rows[0];
+      const cur = (await client.query(`SELECT id, updated_at FROM xparts WHERE id = $1 FOR UPDATE`, [id])).rows[0];
       if (!cur) throw fail(404, "That part isn't on the hub.");
+      if (!Number.isNaN(base) && cur.updated_at.getTime() !== base) {
+        const e = fail(409, "Someone changed this part since you opened it. Its page now shows their change: make yours again on that.");
+        e.partId = id;
+        throw e;
+      }
       await checkNumbers(client, f.numbers, id);
       await client.query(
         `UPDATE xparts SET name = $2, kind = $3, category = $4, specs = $5, notes = $6, updated_at = now(), seq = nextval('change_seq') WHERE id = $1`,
@@ -340,7 +371,7 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
       );
       await client.query(`UPDATE xparts SET deleted = true, updated_at = now(), seq = nextval('change_seq') WHERE id = $1`, [id]);
       await saveRevision(client, id, "merged", c, body.note ?? `merged into ${into.name}`);
-      await saveRevision(client, intoId, "merged", c, body.note ?? `${from.name} merged into this`);
+      await saveRevision(client, intoId, "merged", c, body.note ?? `${from.name} merged into this`, id);
     });
     return c.json(await current(intoId));
   });
@@ -360,8 +391,24 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
   member.delete("/xparts/:id", small, (c) => setDeleted(c, true));
   member.post("/xparts/:id/restore", small, (c) => setDeleted(c, false));
 
+  // A part's versions, newest first. Each one holds the whole entry (close to 1 MB for a part that fits thousands of
+  // machines) and one shop can add hundreds an hour, so an answer holds at most 50 versions (`limit`, up to 200) and
+  // about 8 MB. X-History-More: 1 says older ones exist; ask for them with before=<id of the oldest one you have>. A
+  // roll back names the version by its id and is done here, so it needs nothing from the older ones.
+  const HISTORY_BYTES = 8 * 1024 * 1024;
   member.get("/xparts/:id/history", async (c) => {
-    const { rows } = await q(`SELECT * FROM xpart_revisions WHERE xpart_id = $1 ORDER BY created_at DESC, id DESC`, [c.req.param("id")]);
+    const asked = Math.floor(Number(c.req.query("limit")));
+    const limit = Math.min(200, asked >= 1 ? asked : 50);
+    const { rows: sizes } = await q(
+      `SELECT id, octet_length(snapshot::text) AS bytes FROM xpart_revisions
+       WHERE xpart_id = $1 AND ($3::text IS NULL OR (created_at, id) < (SELECT created_at, id FROM xpart_revisions WHERE id = $3 AND xpart_id = $1))
+       ORDER BY created_at DESC, id DESC LIMIT $2`,
+      [c.req.param("id"), limit + 1, c.req.query("before") ?? null],
+    );
+    let n = 0;
+    for (let bytes = 0; n < Math.min(limit, sizes.length) && (n === 0 || bytes + sizes[n].bytes <= HISTORY_BYTES); n++) bytes += sizes[n].bytes;
+    if (n < sizes.length) c.header("X-History-More", "1");
+    const { rows } = await q(`SELECT * FROM xpart_revisions WHERE id = ANY($1) ORDER BY created_at DESC, id DESC`, [sizes.slice(0, n).map((r) => r.id)]);
     return c.json(
       rows.map((r) => ({ id: r.id, action: r.action, snapshot: r.snapshot, byName: r.by_name, byShop: r.by_shop, note: r.note, createdAt: r.created_at })),
     );
@@ -376,6 +423,23 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
     c.byName = byNameOf(body);
     const snap = r.snapshot;
     const f = cleanPart(snap, "listed");
+    // Parts merged into this one after that version: going back would drop their numbers, fits and links, so each
+    // becomes its own part again as it was before the merge. A merge from before merges were recorded can't be undone
+    // that way, so the roll-back stops there.
+    // (Times are compared in SQL, by revision: a time read into JavaScript loses its microseconds, and two revisions of
+    // one merge can be written within the same millisecond.)
+    const merges = (
+      await q(
+        `SELECT id, merged_from FROM xpart_revisions
+         WHERE xpart_id = $1 AND action = 'merged' AND created_at > (SELECT created_at FROM xpart_revisions WHERE id = $2)
+           AND (merged_from IS NOT NULL OR NOT coalesce((snapshot->>'deleted')::boolean, false))
+         ORDER BY created_at DESC`,
+        [id, r.id],
+      )
+    ).rows;
+    if (merges.some((m) => !m.merged_from)) {
+      throw fail(409, "Another part was merged into this one after that version, and going back would drop what it brought. Roll back to a version after the merge.");
+    }
     await tx(async (client) => {
       const cur = (await client.query(`SELECT id FROM xparts WHERE id = $1 FOR UPDATE`, [id])).rows[0];
       if (!cur) throw fail(404, "That part isn't on the hub.");
@@ -386,9 +450,34 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
       );
       await writeEntry(client, id, f, c);
       await saveRevision(client, id, "reverted", c, `back to the version from ${new Date(r.created_at).toISOString().slice(0, 10)}`);
+      for (const m of merges) await unmerge(client, m.merged_from, m.id, c);
     });
     return c.json(await current(id));
   });
+
+  /** The part merged away by the merge that `mergeRevisionId` records comes back as it was just before (when it's still removed). */
+  async function unmerge(client, fromId, mergeRevisionId, c) {
+    const from = (await client.query(`SELECT id, deleted FROM xparts WHERE id = $1 FOR UPDATE`, [fromId])).rows[0];
+    if (!from?.deleted) return;
+    const before = (
+      await client.query(
+        `SELECT snapshot FROM xpart_revisions WHERE xpart_id = $1
+           AND created_at < (SELECT max(created_at) FROM xpart_revisions WHERE xpart_id = $1 AND action = 'merged'
+             AND created_at <= (SELECT created_at FROM xpart_revisions WHERE id = $2))
+         ORDER BY created_at DESC, id DESC LIMIT 1`,
+        [fromId, mergeRevisionId],
+      )
+    ).rows[0];
+    if (!before) return;
+    const f = cleanPart(before.snapshot, "listed");
+    await checkNumbers(client, f.numbers, fromId);
+    await client.query(
+      `UPDATE xparts SET name = $2, kind = $3, category = $4, specs = $5, notes = $6, deleted = false, updated_at = now(), seq = nextval('change_seq') WHERE id = $1`,
+      [fromId, f.name, f.kind, f.category, f.specs, f.notes],
+    );
+    await writeEntry(client, fromId, f, c);
+    await saveRevision(client, fromId, "restored", c, "its own part again: the part it was merged into was rolled back");
+  }
 
   // Bulk seed: [{ name, kind, category, numbers, fits }]. A new number makes a new part; an entry whose numbers
   // are already on a live part adds its new numbers and fits to that part. `full` (only when it happened) counts
@@ -560,7 +649,7 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
         const vendor = str(raw?.vendor, 120);
         const url = str(raw?.url, 1000);
         const price = raw?.priceCents == null || raw.priceCents === "" ? null : Number(raw.priceCents);
-        if (!numberKey || !vendor || !url || !validUrl(url) || (price != null && (!Number.isInteger(price) || price < 0))) {
+        if (!numberKey || !vendor || !url || !validUrl(url) || (price != null && (!Number.isInteger(price) || price < 0 || price > MAX_CENTS))) {
           unmatched++;
           continue;
         }
