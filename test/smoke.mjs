@@ -295,6 +295,90 @@ assert.deepEqual([screw.qty, screw.shops, screw.xpartId, screw.name], [3, 2, par
 assert.equal(top.items[0].xpartId, null);
 console.log("usage: ok");
 
+// One install holding several companies: each lists, orders, is rated and reports usage under its own name.
+{
+  const lf = (json) => {
+    const f = new FormData();
+    f.set("listing", JSON.stringify(json));
+    return f;
+  };
+  const coList = { title: `Company B foot ${RUN}`, priceCents: 700, qty: 2, shippingCents: 0, shopRef: "coB", shopName: "Company B", clientId: `cl-${RUN}` };
+  const coL = await (await ok(await call("/v1/listings", { key: installKey, method: "POST", body: lf(coList) }))).json();
+  assert.deepEqual([coL.shopName, coL.shopRef, coL.mine], ["Company B", "coB", true]);
+  const coAgain = await (await ok(await call("/v1/listings", { key: installKey, method: "POST", body: lf(coList) }))).json();
+  assert.equal(coAgain.id, coL.id); // sent again after a lost answer: the same listing
+  assert.equal((await call("/v1/orders", { key: installKey, method: "POST", json: { listingId: coL.id, qty: 1, shopRef: "coA", ...ship } })).status, 409); // same install
+  const coOrder = { listingId: coL.id, qty: 1, shopRef: "buyerCo", shopName: "Buyer Company", clientId: `oc-${RUN}`, ...ship };
+  let co = await send("/v1/orders", buyerKey, coOrder);
+  assert.deepEqual([co.sellerShop, co.sellerShopRef, co.buyerShop, co.buyerShopRef], ["Company B", "coB", "Buyer Company", "buyerCo"]);
+  assert.equal((await send("/v1/orders", buyerKey, coOrder)).id, co.id);
+  // A quantity typed over one an accept changed is refused.
+  co = await send(`/v1/orders/${co.id}/accept`, installKey, { payInstructions: "Zelle B" });
+  assert.equal((await call(`/v1/listings/${coL.id}`, { key: installKey, method: "PUT", json: { qty: 5, expectedQty: 2 } })).status, 409);
+  assert.equal((await send(`/v1/listings/${coL.id}`, installKey, { qty: 5, expectedQty: 1 }, "PUT")).qty, 5);
+  // The seller marks it paid and rates the buyer, then cancels: the buyer can still answer.
+  co = await send(`/v1/orders/${co.id}/paid`, installKey, {});
+  co = await send(`/v1/orders/${co.id}/rate`, installKey, { stars: 1, comment: "never paid" });
+  co = await send(`/v1/orders/${co.id}/cancel`, installKey, { reason: "smoke" });
+  co = await send(`/v1/orders/${co.id}/rate`, buyerKey, { stars: 2, comment: "marked paid without it" });
+  assert.equal(co.ratings.buyer.stars, 2);
+  const coRep = await get(`/v1/reputation/${sellerId}?shopRef=coB`, buyerKey);
+  assert.deepEqual(coRep.asSeller, { avg: 2, count: 1 });
+  assert.deepEqual((await get(`/v1/reputation/${sellerId}`, buyerKey)).asSeller, { avg: 3, count: 1 }); // the install's own, apart
+  assert.deepEqual((await get(`/v1/reputation/${buyerId}?shopRef=buyerCo`, installKey)).asBuyer, { avg: 1, count: 1 });
+  // Taking a listing down declines the orders still waiting on it.
+  let waiting = await send("/v1/orders", buyerKey, { listingId: coL.id, qty: 1, ...ship });
+  await ok(await call(`/v1/listings/${coL.id}`, { key: installKey, method: "DELETE" }));
+  waiting = (await get("/v1/orders?since=0", buyerKey)).orders.find((o) => o.id === waiting.id);
+  assert.equal(waiting.status, "DECLINED");
+  // A blocked seller's listings show paused and take no orders; its waiting orders are declined.
+  const sellerKey2 = thirdKey;
+  const sellerId2 = (await get("/v1/me", sellerKey2)).installId;
+  const bl = await (await ok(await call("/v1/listings", { key: sellerKey2, method: "POST", body: lf({ title: `Blocked ${RUN}`, priceCents: 100, qty: 3 }) }))).json();
+  const pending = await send("/v1/orders", buyerKey, { listingId: bl.id, qty: 1, ...ship });
+  await send(`/v1/admin/installs/${sellerId2}/block`, ADMIN, { blocked: true });
+  assert.equal((await call("/v1/orders", { key: buyerKey, method: "POST", json: { listingId: bl.id, qty: 1, ...ship } })).status, 409);
+  const fromFeed = (await get("/v1/changes?since=0&limit=2000", buyerKey)).listings.find((l) => l.id === bl.id);
+  if (fromFeed) assert.equal(fromFeed.status, "PAUSED");
+  assert.equal((await get("/v1/orders?since=0", buyerKey)).orders.find((o) => o.id === pending.id).status, "DECLINED");
+  await send(`/v1/admin/installs/${sellerId2}/block`, ADMIN, { blocked: false });
+  // Usage per company; a company that stops sharing takes its counts back.
+  const uc = `UC-${RUN}`;
+  await send("/v1/usage", installKey, { month: ym(0), shopRef: "coB", items: [{ number: uc, brand: UB, qty: 2, tickets: 1 }] });
+  await send("/v1/usage", installKey, { month: ym(0), shopRef: "coC", items: [{ number: uc, brand: UB, qty: 3, tickets: 1 }] });
+  let ucTop = (await get(`/v1/usage/top?months=1&brand=${UB}`, buyerKey)).items.find((i) => i.numberKey === nk(uc));
+  assert.deepEqual([ucTop.qty, ucTop.shops], [5, 2]);
+  await send("/v1/usage", installKey, { shopRef: "coC", off: true });
+  ucTop = (await get(`/v1/usage/top?months=1&brand=${UB}`, buyerKey)).items.find((i) => i.numberKey === nk(uc));
+  assert.deepEqual([ucTop.qty, ucTop.shops], [2, 1]);
+  // A one-company install claims what it did before it said which company it is.
+  const claimKey = await register("Smoke Claim Shop");
+  const cl = await (await ok(await call("/v1/listings", { key: claimKey, method: "POST", body: lf({ title: `Claim ${RUN}`, priceCents: 100, qty: 1 }) }))).json();
+  assert.equal(cl.shopRef, null);
+  assert.equal((await send("/v1/shops/claim", claimKey, { shopRef: "only" })).listings, 1);
+  assert.equal((await get("/v1/changes?since=0&limit=2000", claimKey)).listings.find((l) => l.id === cl.id)?.shopRef ?? "only", "only");
+}
+console.log("companies: ok");
+
+// Cross-reference safeguards: an edit from an out-of-date copy is refused; rolling back past a merge gives the
+// merged-away part back.
+{
+  const xa = await send("/v1/xparts", installKey, { name: "Guard A", numbers: [{ brand: "Juki", number: `GA${RUN}` }], byName: "Tester" });
+  const fresh = await get(`/v1/xparts/${xa.id}`, installKey);
+  assert.equal(fresh.updatedAt, xa.updatedAt);
+  await send(`/v1/xparts/${xa.id}`, installKey, { ...xa, specs: "first", baseUpdatedAt: xa.updatedAt }, "PUT");
+  const stale = await call(`/v1/xparts/${xa.id}`, { key: installKey, method: "PUT", json: { ...xa, specs: "second", baseUpdatedAt: xa.updatedAt } });
+  assert.equal(stale.status, 409);
+  const xb = await send("/v1/xparts", installKey, { name: "Guard B", numbers: [{ brand: "Juki", number: `GB${RUN}` }], fits: [{ brand: "Juki", model: "TL2010Q" }], byName: "Tester" });
+  const before = (await get(`/v1/xparts/${xa.id}/history`, installKey))[0];
+  await send(`/v1/xparts/${xb.id}/merge`, installKey, { intoId: xa.id, byName: "Tester" });
+  const back = await send(`/v1/xparts/${xa.id}/revert`, installKey, { revisionId: before.id, byName: "Tester" });
+  assert.equal(back.numbers.length, 1);
+  const xbBack = await get(`/v1/xparts/${xb.id}`, installKey);
+  assert.deepEqual([xbBack.deleted, xbBack.numbers.length, xbBack.fits.length], [false, 1, 1]);
+}
+console.log("parts safeguards: ok");
+
 // Changes: everything above comes back, in order, with a cursor (orders never do).
 let since = "0";
 const seen = { links: new Map(), posts: new Map(), figures: new Set(), xparts: new Map(), listings: new Map() };
