@@ -284,6 +284,53 @@ export function registerPartners({ app, member, fail, newId, allow, clientIp, sh
     return c.json({ ok: true, duplicate: !row, seq: row ? String(row.seq) : null });
   });
 
+  // The rows of the feed for the messages `seqs`, as this install's shops get them: a hub message goes to both sides,
+  // and when both shops of a link live in this same install each gets its own copy.
+  async function messagesFor(installId, seqs) {
+    if (!seqs.length) return [];
+    const rows = (
+      await q(
+        `SELECT m.*, s.to_side, CASE s.to_side WHEN 'repair' THEN l.repair_shop_ref ELSE l.retail_shop_ref END AS to_shop_ref
+         FROM partner_messages m JOIN partner_links l ON l.id = m.link_id
+         CROSS JOIN (VALUES ('repair'), ('retail')) AS s(to_side)
+         WHERE m.seq = ANY($2::bigint[]) AND m.from_side <> s.to_side AND (CASE s.to_side WHEN 'repair' THEN l.repair_install_id ELSE l.retail_install_id END) = $1
+         ORDER BY m.seq, s.to_side`,
+        [installId, seqs],
+      )
+    ).rows;
+    return rows.map((m) => ({
+      seq: String(m.seq),
+      id: m.id,
+      linkId: m.link_id,
+      fromSide: m.from_side,
+      toSide: m.to_side,
+      toShopRef: m.to_shop_ref,
+      type: m.type,
+      data: m.data,
+      createdAt: m.created_at,
+    }));
+  }
+
+  // One message again, whole, for a shop that set it aside and wants to apply it once more (StitchBench keeps only a
+  // preview of one it couldn't apply): by its number in the feed, or by its own key (the partnership, the sender's
+  // side and the sender's id) for one set aside before the number was kept. Only as the feed would give it: a shop
+  // gets nothing it sent itself, and nothing of a partnership it isn't on.
+  member.get("/partners/messages/:seq", async (c) => {
+    const seq = c.req.param("seq");
+    if (!/^\d{1,18}$/.test(seq)) throw fail(400, "seq is the message's number from the feed.");
+    const rows = await messagesFor(c.get("install").id, [seq]);
+    if (!rows.length) throw fail(404, "No such message for this install.");
+    return c.json({ messages: rows });
+  });
+  member.get("/partners/links/:id/messages/:from/:msgId", async (c) => {
+    const from = c.req.param("from");
+    if (!SIDES.has(from) && from !== "hub") throw fail(400, "from is repair, retail or hub.");
+    const m = await one(`SELECT seq FROM partner_messages WHERE link_id = $1 AND from_side = $2 AND id = $3`, [c.req.param("id"), from, c.req.param("msgId")]);
+    const rows = m ? await messagesFor(c.get("install").id, [m.seq]) : [];
+    if (!rows.length) throw fail(404, "No such message for this install.");
+    return c.json({ messages: rows });
+  });
+
   // Messages for this install's shops after `since`, oldest first. A hub message goes to both sides; when both shops
   // of a link live in this same install each gets its own copy.
   member.get("/partners/messages", async (c) => {
@@ -305,34 +352,8 @@ export function registerPartners({ app, member, fail, newId, allow, clientIp, sh
     let n = 0;
     for (let bytes = 0; n < page.length && (n === 0 || bytes + page[n].bytes <= MAX_PAGE_BYTES); n++) bytes += page[n].bytes;
     const seqs = page.slice(0, n).map((r) => r.seq);
-    const rows = seqs.length
-      ? (
-          await q(
-            `SELECT m.*, s.to_side, CASE s.to_side WHEN 'repair' THEN l.repair_shop_ref ELSE l.retail_shop_ref END AS to_shop_ref
-             FROM partner_messages m JOIN partner_links l ON l.id = m.link_id
-             CROSS JOIN (VALUES ('repair'), ('retail')) AS s(to_side)
-             WHERE m.seq = ANY($2::bigint[]) AND m.from_side <> s.to_side AND (CASE s.to_side WHEN 'repair' THEN l.repair_install_id ELSE l.retail_install_id END) = $1
-             ORDER BY m.seq, s.to_side`,
-            [id, seqs],
-          )
-        ).rows
-      : [];
     const next = seqs.length ? String(seqs[seqs.length - 1]) : since;
-    return c.json({
-      messages: rows.map((m) => ({
-        seq: String(m.seq),
-        id: m.id,
-        linkId: m.link_id,
-        fromSide: m.from_side,
-        toSide: m.to_side,
-        toShopRef: m.to_shop_ref,
-        type: m.type,
-        data: m.data,
-        createdAt: m.created_at,
-      })),
-      next,
-      more: page.length >= limit || n < page.length,
-    });
+    return c.json({ messages: await messagesFor(id, seqs), next, more: page.length >= limit || n < page.length });
   });
 
   // Either side can end the partnership; both keep their records, and messages can still pass for the final statement.
