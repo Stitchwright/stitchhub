@@ -17,6 +17,14 @@ export const TABLES = [
   // browsers: a move keeps everyone signed in and every link they were sent working.
   { t: "account", table: "accounts", cols: ["id", "email", "password_hash", "verified_at", "terms_version", "terms_at", "stripe_customer_id", "disabled", "created_at", "last_sign_in_at"] },
   { t: "shop", table: "shops", cols: ["id", "install_id", "shop_ref", "name", "kind", "program", "version", "account_id", "comp_until", "comp_note", "lapsed_at", "created_at", "last_seen_at"] },
+  // Companies moving between installs: the move tokens out (hashed) and the record of each move, so a company's old
+  // install still hears where it went after the hub itself moved (src/moves.mjs).
+  {
+    t: "shop_move",
+    table: "shop_moves",
+    cols: ["id", "shop_id", "shop_ref", "token_hash", "from_install_id", "to_install_id", "expires_at", "used_at", "cancelled_at", "by_admin", "moved", "created_at"],
+    json: ["moved"],
+  },
   { t: "account_token", table: "account_tokens", cols: ["token_hash", "kind", "account_id", "shop_id", "expires_at", "used_at", "created_at"], key: "token_hash" },
   { t: "session", table: "sessions", cols: ["id_hash", "account_id", "created_at", "last_seen_at", "expires_at"], key: "id_hash" },
   // Billing: each shop's subscription as Stripe last reported it, the webhook events handled (a replay on the new hub
@@ -243,6 +251,8 @@ function checkRow(table, row) {
   } else if (table === "accounts") {
     if (!/^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/.test(row.email ?? "")) refuse("an account needs an email address");
     if (row.password_hash != null && !/^scrypt\$\d+\$\d+\$\d+\$[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+$/.test(row.password_hash)) refuse("an account's password must be a scrypt hash");
+  } else if (table === "shop_moves") {
+    if (row.token_hash != null && !/^[0-9a-f]{64}$/.test(row.token_hash)) refuse("a move token must be a SHA-256 hash");
   } else if (table === "account_tokens" || table === "sessions") {
     if (!/^[0-9a-f]{64}$/.test((table === "sessions" ? row.id_hash : row.token_hash) ?? "")) refuse("a token or session must be a SHA-256 hash");
   } else if (table === "links" || table === "link_revisions") {
