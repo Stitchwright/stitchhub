@@ -18,6 +18,7 @@ import { sendMail, mailProblem } from "./mail.mjs";
 import { standingOf, claimAnswer, billingOpen, billingProblem, FOREVER } from "./billing.mjs";
 import { signer as hubSigner } from "./license.mjs";
 import { stripeMode } from "./stripe.mjs";
+import { refuseIfMoved } from "./moves.mjs";
 
 const SESSION_DAYS = 30;
 const SET_PASSWORD_HOURS = 24; // a link to set the first password, or to verify an address
@@ -209,6 +210,9 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
   async function upsertShop(client, install, body) {
     const shopRef = str(body.shopRef, 64);
     if (!shopRef) throw fail(400, "Send shopRef.");
+    // A company that moved to another install isn't made again on the one it left: that copy hears where it went
+    // (410 { moved, to, at }; src/moves.mjs).
+    if (!(await client.query(`SELECT 1 FROM shops WHERE install_id = $1 AND shop_ref = $2`, [install.id, shopRef])).rowCount) await refuseIfMoved(fail, install.id, shopRef);
     const kind = KINDS.has(body.kind) ? body.kind : null;
     const program = PROGRAMS.has(body.program) ? body.program : null;
     const r = await client.query(
@@ -254,7 +258,10 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
   member.get("/shops/:ref/standing", async (c) => {
     shopsLimit(c);
     const shop = await one(`SELECT * FROM shops WHERE install_id = $1 AND shop_ref = $2`, [c.get("install").id, c.req.param("ref")]);
-    if (!shop) throw fail(404, "That shop hasn't told the hub about itself yet (it does at its next sync).");
+    if (!shop) {
+      await refuseIfMoved(fail, c.get("install").id, c.req.param("ref"));
+      throw fail(404, "That shop hasn't told the hub about itself yet (it does at its next sync).");
+    }
     return c.json(await standingAnswer(shop));
   });
 

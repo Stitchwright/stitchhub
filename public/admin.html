@@ -80,6 +80,13 @@
     </section>
 
     <section>
+      <h2>Moves</h2>
+      <p class="muted">Companies moving from one install to another (Settings → Company → Move this company, in StitchBench). The program the company leaves gets a move token for the move file; the install it moves to redeems it, and the company's partner links, listings, orders, ratings, notes and parts usage follow it. Partner shops see nothing change. "Move this shop" does the same by hand, onto an install already on the hub: for a move file made while the hub was down, or one whose token expired (14 days).</p>
+      <form class="row" id="moveForm"><label for="moveShop" class="muted">Shop</label><select id="moveShop"></select><label for="moveTo" class="muted">to the install</label><select id="moveTo"></select><button>Move this shop</button></form>
+      <div class="scroll"><table><thead><tr><th>Shop</th><th>From</th><th>To</th><th>State</th><th>Token made</th><th>Moved</th><th>Rows moved</th></tr></thead><tbody id="moves"></tbody></table></div>
+    </section>
+
+    <section>
       <h2>Figure snapshots</h2>
       <p class="muted">A wrong or unwanted figure can be taken down: installs drop their copy, and any shop can share that figure again. Its id is the end of the picture's address in StitchBench (right-click the figure, Copy image address). To take down every figure one shop shared, use Remove figures under Members.</p>
       <form class="row" id="figForm"><label for="figId" class="muted">Figure id</label><input id="figId" required pattern="[0-9a-f]{24}" placeholder="24 letters and digits"><button>Remove figure</button></form>
@@ -144,7 +151,24 @@
       tr.append(c); return tr;
     }));
     $("datasets").textContent = s.datasets.length ? s.datasets.map((d) => `${d.name}: version ${d.version}, ${(d.size / 1e6).toFixed(1)} MB`).join(" · ") : "None yet.";
+    window.hubInstalls = s.installs;
     await loadAccounts();
+    await loadMoves();
+  }
+
+  async function loadMoves() {
+    const m = await (await api("/moves")).json();
+    const shops = window.hubShops || [];
+    const installs = (window.hubInstalls || []).filter((i) => !i.blocked);
+    const option = (value, text) => { const o = document.createElement("option"); o.value = value; o.textContent = text; return o; };
+    $("moveShop").replaceChildren(...shops.map((s) => option(s.id, `${s.name} (on ${s.installName})`)));
+    $("moveTo").replaceChildren(...installs.map((i) => option(i.id, i.name)));
+    $("moves").replaceChildren(...m.moves.map((x) => {
+      const tr = document.createElement("tr");
+      const rows = x.moved ? Object.entries(x.moved).filter(([, n]) => n).map(([k, n]) => `${k} ${n}`).join(", ") : "";
+      tr.append(td(x.shopName), td(x.from.name), td(x.to ? x.to.name : ""), td(x.state + (x.byAdmin ? " (by hand)" : "")), td(when(x.createdAt)), td(x.usedAt ? when(x.usedAt) : ""), td(rows));
+      return tr;
+    }));
   }
 
   const post = (path, body) => api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -185,6 +209,7 @@
     const a = await (await api("/accounts")).json();
     $("accountsProblem").hidden = !a.problem; $("accountsProblem").textContent = a.problem || "";
     stripeMode = a.billing?.stripeMode ?? null;
+    window.hubShops = a.shops;
     const signing = a.billing?.signing ? `Keys are signed as ${a.billing.signing.kid} (public x ${a.billing.signing.x}: this line must be in license-keys.ts in both programs).` : a.billing?.signingProblem || "";
     $("billingState").textContent = `${a.billing?.open ? `Subscriptions are open (Stripe ${a.billing.stripeMode} mode).` : a.billing?.problem || ""} ${signing}`;
     $("accounts").replaceChildren(...a.accounts.map((x) => {
@@ -213,6 +238,13 @@
   $("inviteForm").onsubmit = async (e) => { e.preventDefault(); try { await api("/discord-invite", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: $("dInvite").value.trim() }) }); say("Discord invite link saved."); load(); } catch (err) { say(err.message, true); } };
   $("copyInvite").onclick = async () => { try { await navigator.clipboard.writeText($("inviteCode").value); say("Invite code copied."); } catch { $("inviteCode").select(); say("Select the code and copy it.", true); } };
   $("saveInvite").onclick = () => { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([JSON.stringify(window.hubInvite, null, 2)], { type: "application/json" })); a.download = (window.hubInvite.name || "StitchHub").replace(/[^\w-]+/g, "-") + ".stitchhub"; a.click(); };
+  $("moveForm").onsubmit = async (e) => {
+    e.preventDefault();
+    const shop = $("moveShop").selectedOptions[0]; const to = $("moveTo").selectedOptions[0];
+    if (!shop || !to) return say("Choose the shop and the install it moved to.", true);
+    if (!confirm(`Move ${shop.textContent} to ${to.textContent}? Its partner links, listings, orders, ratings, notes and usage go with it; the install it leaves is told it moved.`)) return;
+    try { const r = await (await post(`/shops/${shop.value}/move`, { toInstallId: to.value })).json(); say(`Moved to ${r.to}.`); load(); } catch (err) { say(err.message, true); }
+  };
   $("figForm").onsubmit = async (e) => { e.preventDefault(); try { const r = await (await api(`/figures/${$("figId").value.trim()}`, { method: "DELETE" })).json(); say(r.removed ? "Figure removed." : "No figure with that id is on the hub.", !r.removed); $("figId").value = ""; load(); } catch (err) { say(err.message, true); } };
   $("hookForm").onsubmit = async (e) => { e.preventDefault(); try { await api("/discord-webhook", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: $("hook").value.trim() }) }); $("hook").value = ""; say("Discord setting saved."); load(); } catch (err) { say(err.message, true); } };
   $("export").onclick = async () => { try { say("Preparing export..."); const b = await (await api("/export")).blob(); const a = document.createElement("a"); a.href = URL.createObjectURL(b); a.download = `stitchhub-export-${new Date().toISOString().slice(0, 10)}.ndjson.gz`; a.click(); say("Export downloaded."); } catch (err) { say(err.message, true); } };

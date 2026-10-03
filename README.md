@@ -243,6 +243,13 @@ limits.
 note, link, part, usage report and figure made under a company's name shows that name (and the install's when none is
 named), two companies on one install are kept apart in ratings and usage counts, and one can't change the other's rows.
 
+`DATABASE_URL=<a fresh scratch database> npm run test:move` walks a company moving from one install to another: the move
+token (answered once, replaced, cancelled, expired, wrong, used), every table rewritten for that company only (legacy
+rows with no company and the install's other companies stay), the old install told `410 moved` at its claim and
+standing, the new install receiving the moved listings, notes and orders and the partner backlog once from the old
+install's place, a move to a program on no hub (an install made), a stray row on the new install, the admin's list
+and move by hand, and the export carrying `shop_moves`.
+
 `DATABASE_URL=<a scratch database> npm run test:billing` starts a hub with the Stripe mock (`test/stripe-mock.mjs`:
 Checkout in subscription mode, the Portal, signed webhooks, refunds and disputes, with hooks to fail or renew a payment)
 and a throwaway `hub1` key, and walks a shop from its trial through subscribe → active → past_due → lapsed → paid again,
@@ -282,11 +289,13 @@ Members send `Authorization: Bearer <install key>`.
 | `POST /v1/partners/join` (no key) | `{ code, shopRef, shopName, contact }` → an install key for the partner channel only, and the link |
 | `GET /v1/partners/links` | every link this install's shops are on |
 | `POST /v1/partners/links/:id/messages` | `{ id, shopRef, type, data }`: send to the other shop (a repeated `id` is stored once) |
-| `GET /v1/partners/messages?since=N` | messages for this install's shops after `N` |
+| `GET /v1/partners/messages?since=N&shopRef=` | messages for this install's shops after `N`; `shopRef` keeps one company's (a company that just moved here pulls its backlog once from the old install's place) |
 | `POST /v1/partners/links/:id/end` | end a partnership (both shops are told) |
 | `POST /v1/upgrade` | `{ joinKey }`: a partner-only install becomes a member |
 | `POST /v1/shops/claim` | `{ shopRef, shopName, kind: "repair" \| "retail" \| "both", program: "StitchBench" \| "StitchShop", version, sole }` → `{ ok, listings, shop, account: { email, verified } \| null, standing: "trial" \| "active" \| "past_due" \| "waived" \| "comped" \| "lapsed", lastDay, message, key: "SB1.…" \| null, revokeKeyIds: [] }`. Sent for every company at every sync; the first time starts its trial. `key` is the hub-signed key for the module `base` the program should hold (its current one, or a fresh one when the standing changed; null when the hub has no signing key, or billing is closed and the shop is on its trial); `revokeKeyIds` names hub keys to drop (a refund, a chargeback, "Lapse now"). `sole: true` (or a body with only `shopRef`, as older programs send) hands what the install listed, ordered and shared before it named its company to that company |
-| `GET /v1/shops/:ref/standing` | the same answer without the claim (404 until the shop has claimed itself) |
+| `GET /v1/shops/:ref/standing` | the same answer without the claim (404 until the shop has claimed itself). For a company that moved to another install, the install it left gets `410 { error, moved: true, to: <the install's name>, at }` here and at the claim |
+| `POST /v1/shops/:ref/move-token`, `DELETE` | the install the company is on, making a move file: `{ shopName, kind, program, version }` → `{ token, expiresAt, shopRef }`, answered once (only its hash is kept), one use, 14 days; a second call replaces the first. `DELETE` cancels it (the owner cancelled the move) |
+| `POST /v1/shops/move` (key optional) | `{ shopRef, token, shopName, kind, program, version }`: the install the company moved to redeems the token from the move file; every row of that company (shop, partner links, unused partner codes, listings, orders, ratings, notes, link and part revisions, parts usage) moves to it in one transaction, and listings, notes and orders are numbered again in the feeds. → the claim's answer plus `{ moved: { table: rows }, partner: { shopRef, links }, hubName }`; without a key (a program on no hub yet) the hub makes it an install with the old install's scope and adds `{ installId, installKey, scope }`. 404 wrong token, 409 used (the same install asking again gets the same answer), 410 replaced, cancelled or expired |
 | `POST /v1/stripe` (no key: Stripe's webhook) | `Stripe-Signature` checked against `STRIPE_WEBHOOK_SECRET` (400 otherwise); the event id is kept, so a replay answers `{ ok, replay: true }` and does nothing; the object is re-read from Stripe before anything is written (502 when that fails, so Stripe sends the event again). Body up to 256 KB |
 | `POST /v1/accounts/start` | `{ shopRef, shopName, kind, program, version, email, termsVersion }` → `{ ok, account: { email, verified: false }, shop }`: the hub makes the account (or mails the link again for one not finished), ties the shop to it and mails a set-password link. 409 when the address already has a finished account (use a link code). Without an install key (an install on no hub yet; `contact` optional) the answer adds `{ installId, installKey, hubName, scope: "pending" }` |
 | `POST /v1/accounts/link-code` | `{ shopRef, shopName, kind, program, version }` → `{ code, expiresAt }`: a 10-character code the owner types in on the hub within 15 minutes (409 when the shop already has an account) |
@@ -302,7 +311,10 @@ asked for from another site (the browser's `Origin`) is refused. The admin API a
 `billing`: open or why not, the Stripe mode and the signing kid and public x), `POST /v1/admin/shops/:id/comp { until:
 "YYYY-MM-DD" | "forever" | "", note }` (a comp also takes back a "Lapse now"), `POST /v1/admin/shops/:id/lapse { lapsed:
 true | false }` ("Lapse now" and its undo), `GET /v1/admin/shops/:id/keys`, `POST /v1/admin/accounts/:id/resend`,
-`POST /v1/admin/accounts/:id/disable { disabled }` and `DELETE /v1/admin/accounts/:id`.
+`POST /v1/admin/accounts/:id/disable { disabled }` and `DELETE /v1/admin/accounts/:id`. Moves (the admin page's
+"Moves"): `GET /v1/admin/moves` (every move token and move, newest first, with its state: waiting, moved, cancelled,
+expired) and `POST /v1/admin/shops/:id/move { toInstallId }` ("Move this shop" by hand onto an install already on the
+hub, as a token would have moved it: for a move file made while the hub was down, or one whose token expired).
 
 The feeds (`/v1/changes`, `/v1/orders`, `/v1/partners/messages`) answer with `X-Feed-Reset: 1` when `since` was past
 what this hub holds (it was restored from an older export): that answer starts again from the beginning.

@@ -285,8 +285,8 @@ export function registerPartners({ app, member, fail, newId, allow, clientIp, sh
   });
 
   // The rows of the feed for the messages `seqs`, as this install's shops get them: a hub message goes to both sides,
-  // and when both shops of a link live in this same install each gets its own copy.
-  async function messagesFor(installId, seqs) {
+  // and when both shops of a link live in this same install each gets its own copy. `shopRef`: only that shop's copies.
+  async function messagesFor(installId, seqs, shopRef = null) {
     if (!seqs.length) return [];
     const rows = (
       await q(
@@ -298,7 +298,7 @@ export function registerPartners({ app, member, fail, newId, allow, clientIp, sh
         [installId, seqs],
       )
     ).rows;
-    return rows.map((m) => ({
+    return rows.filter((m) => shopRef == null || m.to_shop_ref === shopRef).map((m) => ({
       seq: String(m.seq),
       id: m.id,
       linkId: m.link_id,
@@ -332,10 +332,12 @@ export function registerPartners({ app, member, fail, newId, allow, clientIp, sh
   });
 
   // Messages for this install's shops after `since`, oldest first. A hub message goes to both sides; when both shops
-  // of a link live in this same install each gets its own copy.
+  // of a link live in this same install each gets its own copy. `shopRef`: one shop's messages only (a company that
+  // just moved here pulls its backlog once from the old install's place in the feed: src/moves.mjs).
   member.get("/partners/messages", async (c) => {
     const id = c.get("install").id;
     const since = /^\d+$/.test(c.req.query("since") ?? "") ? c.req.query("since") : "0";
+    const shopRef = str(c.req.query("shopRef"), 64);
     const limit = Math.min(Math.max(Number(c.req.query("limit")) || 200, 1), 500);
     // A page is cut by size as well as by count. Messages can be 4 MB each: a page of hundreds would be more JSON
     // than the hub can build or the shop can take in before it gives up, and it would stay stuck on that page for
@@ -344,16 +346,18 @@ export function registerPartners({ app, member, fail, newId, allow, clientIp, sh
     const page = (
       await q(
         `SELECT m.seq, coalesce(m.bytes, octet_length(m.data::text)) AS bytes FROM partner_messages m JOIN partner_links l ON l.id = m.link_id
-         WHERE m.seq > $2 AND m.seq <= $4 AND ((l.repair_install_id = $1 AND m.from_side <> 'repair') OR (l.retail_install_id = $1 AND m.from_side <> 'retail'))
+         WHERE m.seq > $2 AND m.seq <= $4
+           AND ((l.repair_install_id = $1 AND m.from_side <> 'repair' AND ($5::text IS NULL OR l.repair_shop_ref = $5))
+             OR (l.retail_install_id = $1 AND m.from_side <> 'retail' AND ($5::text IS NULL OR l.retail_shop_ref = $5)))
          ORDER BY m.seq LIMIT $3`,
-        [id, since, limit, (await feedLimit()).partner],
+        [id, since, limit, (await feedLimit()).partner, shopRef],
       )
     ).rows;
     let n = 0;
     for (let bytes = 0; n < page.length && (n === 0 || bytes + page[n].bytes <= MAX_PAGE_BYTES); n++) bytes += page[n].bytes;
     const seqs = page.slice(0, n).map((r) => r.seq);
     const next = seqs.length ? String(seqs[seqs.length - 1]) : since;
-    return c.json({ messages: await messagesFor(id, seqs), next, more: page.length >= limit || n < page.length });
+    return c.json({ messages: await messagesFor(id, seqs, shopRef), next, more: page.length >= limit || n < page.length });
   });
 
   // Either side can end the partnership; both keep their records, and messages can still pass for the final statement.
