@@ -71,6 +71,8 @@ export const retrieveCustomer = (id) => call("GET", `/v1/customers/${enc(id)}`);
 /**
  * A Checkout Session that starts a subscription (Stripe's hosted page). The hub runs the trial itself, so Checkout
  * always takes a card. Automatic tax is off (the owner's decision 8). Promotion codes are allowed; comps are not codes.
+ * `trialEnd` (unix seconds, at least 48 hours ahead as Stripe requires): subscribing inside the hub's trial, the
+ * subscription starts on Stripe's trial (status trialing) and its first charge falls then; the card is still taken now.
  */
 export const createSubscriptionCheckout = (a) =>
   call(
@@ -84,7 +86,7 @@ export const createSubscriptionCheckout = (a) =>
       cancel_url: a.cancelUrl,
       client_reference_id: a.reference,
       metadata: a.metadata,
-      subscription_data: { metadata: a.metadata },
+      subscription_data: { metadata: a.metadata, ...(a.trialEnd ? { trial_end: a.trialEnd } : {}) },
       allow_promotion_codes: true,
     },
     a.idempotencyKey,
@@ -103,6 +105,8 @@ export const switchSubscriptionPrice = (a) =>
 export const retrievePrice = (id) => call("GET", `/v1/prices/${enc(id)}`);
 export const retrieveInvoice = (id) => call("GET", `/v1/invoices/${enc(id)}`);
 export const retrieveCharge = (id) => call("GET", `/v1/charges/${enc(id)}`);
+/** A dispute (chargeback), re-read before the hub acts on charge.dispute.closed: its status (won | lost | ...) and charge. */
+export const retrieveDispute = (id) => call("GET", `/v1/disputes/${enc(id)}`);
 
 /**
  * Checks a webhook's Stripe-Signature (t=...,v1=...: HMAC-SHA256 of "t.body" with the endpoint secret, within five

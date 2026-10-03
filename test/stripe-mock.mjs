@@ -11,16 +11,20 @@
 //
 // Bearer auth with any sk_/rk_ key (STRIPE_MOCK_KEY to insist on one). The API: POST /v1/customers, POST
 // /v1/checkout/sessions (mode=subscription; the session's url is this mock's own payment page /pay/{id}: "Pay" starts
-// the subscription, pays its first invoice, posts the signed webhooks and sends the browser to success_url), GET
-// /v1/checkout/sessions/{id}, GET /v1/subscriptions/{id}, POST /v1/subscriptions/{id} (items[0][id] + items[0][price]:
-// a plan switch; proration_behavior is kept as last_proration_behavior; customer.subscription.updated goes out), GET
-// /v1/prices/{id}, GET /v1/invoices/{id}, GET /v1/charges/{id}, POST /v1/billing/portal/sessions, POST /v1/refunds
-// (charge.refunded goes out).
+// the subscription, pays its first invoice, posts the signed webhooks and sends the browser to success_url;
+// subscription_data[trial_end], at least 48 hours ahead as Stripe requires, starts it trialing with a $0 first invoice
+// and nothing charged until the trial ends), GET /v1/checkout/sessions/{id}, GET /v1/subscriptions/{id}, POST
+// /v1/subscriptions/{id} (items[0][id] + items[0][price]: a plan switch; proration_behavior is kept as
+// last_proration_behavior; customer.subscription.updated goes out), GET /v1/prices/{id}, GET /v1/invoices/{id} (with
+// billing_reason: subscription_create for the first, subscription_cycle after), GET /v1/charges/{id}, GET
+// /v1/disputes/{id}, POST /v1/billing/portal/sessions, POST /v1/refunds (amount for a partial one; charge.refunded goes
+// out).
 // Test hooks (no auth): POST /__pay/{sessionId}; POST /__subscriptions/{id} { status, cancel_at_period_end,
 // current_period_end, price } (price: put the subscription on any price id, one the hub may not know); POST
-// /__subscriptions/{id}/renew { paid: true|false } (a new invoice: paid advances the period,
-// unpaid puts the subscription past_due); POST /__subscriptions/{id}/cancel { at_period_end }; POST
-// /__charges/{id}/dispute; POST /__replay/{eventId}; GET /__events, /__webhooks, /__state; DELETE /__state.
+// /__subscriptions/{id}/renew { paid: true|false } (a new invoice: paid advances the period, and ends a trial with the
+// first charge; unpaid puts the subscription past_due); POST /__subscriptions/{id}/cancel { at_period_end }; POST
+// /__charges/{id}/dispute (charge.dispute.created); POST /__disputes/{id}/close { status: "won" | "lost" }
+// (charge.dispute.closed); POST /__replay/{eventId}; GET /__events, /__webhooks, /__state; DELETE /__state.
 // Every hook waits for its webhooks to be answered and reports each delivery's status, so a test can check the hub
 // right after.
 import crypto from "node:crypto";
@@ -169,17 +173,18 @@ export async function startStripeMock(o = {}) {
     return ch;
   }
 
-  function invoiceFor(sub, paid) {
-    const price = sub.items.data[0].price;
+  /** A subscription's invoice: the price's amount (0 for the first invoice of a trial: nothing is charged). */
+  function invoiceFor(sub, paid, reason = "subscription_cycle", amount = sub.items.data[0].price.unit_amount) {
     const inv = {
       id: `in_${hex(12)}`,
       object: "invoice",
       customer: sub.customer,
       subscription: sub.id,
+      billing_reason: reason,
       status: paid ? "paid" : "open",
       paid,
-      amount_due: price.unit_amount,
-      amount_paid: paid ? price.unit_amount : 0,
+      amount_due: amount,
+      amount_paid: paid ? amount : 0,
       period_start: sub.current_period_start,
       period_end: sub.current_period_end,
       charge: null,
@@ -188,7 +193,7 @@ export async function startStripeMock(o = {}) {
       created: now(),
     };
     invoices.set(inv.id, inv);
-    if (paid) charge(sub, inv, price.unit_amount);
+    if (paid && amount > 0) charge(sub, inv, amount);
     sub.latest_invoice = inv.id;
     return inv;
   }
@@ -199,22 +204,26 @@ export async function startStripeMock(o = {}) {
     if (s.status === "complete") return { session: s, delivered: [] };
     const price = priceOf(s.line_items.data[0].price.id);
     const start = now();
+    // subscription_data[trial_end]: trialing until then, the period is the trial, the first invoice is $0.
+    const trialEnd = s.subscription_data?.trial_end ? Number(s.subscription_data.trial_end) : null;
     const sub = {
       id: `sub_${hex(12)}`,
       object: "subscription",
       customer: s.customer,
-      status: "active",
+      status: trialEnd ? "trialing" : "active",
       cancel_at_period_end: false,
       canceled_at: null,
+      trial_start: trialEnd ? start : null,
+      trial_end: trialEnd,
       current_period_start: start,
-      current_period_end: addInterval(start, price.recurring.interval),
+      current_period_end: trialEnd ?? addInterval(start, price.recurring.interval),
       items: { object: "list", data: [{ id: `si_${hex(8)}`, object: "subscription_item", price, quantity: 1 }] },
       metadata: s.subscription_data?.metadata ?? {},
       latest_invoice: null,
       created: start,
     };
     subscriptions.set(sub.id, sub);
-    const inv = invoiceFor(sub, true);
+    const inv = invoiceFor(sub, true, "subscription_create", trialEnd ? 0 : price.unit_amount);
     s.status = "complete";
     s.payment_status = "paid";
     s.subscription = sub.id;
@@ -300,7 +309,16 @@ export async function startStripeMock(o = {}) {
         if (!ch) return json(res, 404, { error: "no such charge" });
         const dp = { id: `dp_${hex(12)}`, object: "dispute", charge: ch.id, amount: ch.amount, currency: "usd", status: "needs_response", reason: "fraudulent", created: now() };
         disputes.push(dp);
+        ch.disputed = true;
         return json(res, 200, { dispute: dp, delivered: [await emit("charge.dispute.created", dp)] });
+      }
+      m = /^\/__disputes\/(dp_[A-Za-z0-9_]+)\/close$/.exec(p);
+      if (m && req.method === "POST") {
+        const dp = disputes.find((x) => x.id === m[1]);
+        if (!dp) return json(res, 404, { error: "no such dispute" });
+        const b = parseJson(await readBody(req));
+        dp.status = b.status === "lost" ? "lost" : "won";
+        return json(res, 200, { dispute: dp, delivered: [await emit("charge.dispute.closed", dp)] });
       }
       m = /^\/__replay\/(evt_[A-Za-z0-9_]+)$/.exec(p);
       if (m && req.method === "POST") {
@@ -335,6 +353,11 @@ export async function startStripeMock(o = {}) {
         const lines = Array.isArray(f.line_items) ? f.line_items : [];
         if (!lines.length || !lines[0].price) return stripeError(res, 400, "Missing required param: line_items[0][price].");
         if (!catalog.has(lines[0].price)) return stripeError(res, 400, `No such price: '${lines[0].price}'`);
+        // Stripe: a Checkout subscription's trial_end has to be at least 48 hours in the future.
+        const trialEnd = f.subscription_data?.trial_end;
+        if (trialEnd !== undefined && !(Number.isInteger(Number(trialEnd)) && Number(trialEnd) >= now() + 48 * 3600)) {
+          return stripeError(res, 400, "subscription_data[trial_end] has to be at least 48 hours in the future.");
+        }
         const idem = req.headers["idempotency-key"];
         const prior = idem ? [...sessions.values()].find((s) => s.idempotency_key === idem) : null;
         if (prior) return json(res, 200, prior);
@@ -387,6 +410,11 @@ export async function startStripeMock(o = {}) {
       if (m && req.method === "GET") return invoices.has(m[1]) ? json(res, 200, invoices.get(m[1])) : stripeError(res, 404, `No such invoice: '${m[1]}'`);
       m = /^\/v1\/charges\/(ch_[A-Za-z0-9_]+)$/.exec(p);
       if (m && req.method === "GET") return charges.has(m[1]) ? json(res, 200, charges.get(m[1])) : stripeError(res, 404, `No such charge: '${m[1]}'`);
+      m = /^\/v1\/disputes\/(dp_[A-Za-z0-9_]+)$/.exec(p);
+      if (m && req.method === "GET") {
+        const dp = disputes.find((x) => x.id === m[1]);
+        return dp ? json(res, 200, dp) : stripeError(res, 404, `No such dispute: '${m[1]}'`);
+      }
       if (p === "/v1/billing/portal/sessions" && req.method === "POST") {
         const f = parseForm(await readBody(req));
         if (!f.customer || !customers.has(f.customer)) return stripeError(res, 400, `No such customer: '${f.customer ?? ""}'`);
@@ -426,6 +454,7 @@ export async function startStripeMock(o = {}) {
     invoices,
     charges,
     refunds,
+    disputes,
     events,
     webhooks,
     pay,

@@ -195,12 +195,17 @@ many of the 25 are used and refuses a 26th). A founding account gets the foundin
 to or switches to. The mark stays while the account's subscriptions run without a gap: when the last one stops (its paid
 period ends, or a payment is refunded or disputed) the hub writes down when the gap started (`accounts.founding_gap_since`);
 an account that subscribes again within 60 days keeps the founding prices, and after 60 days the mark goes by itself
-(`founding_lost_at`) and its place is free again. A subscription already on a founding price keeps it in Stripe; taking
+(`founding_lost_at`) and its place is free again (a chargeback the shop later wins gives back a mark its gap cost, while a
+place is free). A subscription already on a founding price keeps it in Stripe; taking
 the mark off by hand changes only what the account is offered next. A trial, a comp and a partnered (waived) shop are
 Shop, so a shop can try the program with its staff.
 
 The owner subscribes on `/account` → Your shops → Solo or Shop, yearly or monthly (Stripe Checkout, a card is always
-taken: the hub runs the trial itself), moves between the plans with **Switch to Shop / Switch to Solo** on the same page
+taken: the hub runs the trial itself). **Subscribing during the 30-day trial** charges nothing until the trial ends: when
+more than about 48 hours of it are left (Stripe's minimum), Checkout gets `subscription_data.trial_end` = the trial's end,
+so the subscription starts on Stripe's trial (`trialing`), the shop shows as subscribed with full use, and the first charge
+falls the day the trial ends (the account page says which day, before and after subscribing); with less left it is
+charged at once. The owner moves between the plans with **Switch to Shop / Switch to Solo** on the same page
 (the subscription item moves to the other plan's price, same interval, founding if the account is, with Stripe's
 proration: the difference for the rest of the period goes on the next invoice), and changes the card, cancels or
 downloads invoices under Manage billing (Stripe's Customer Portal). The hub never sees a card number.
@@ -227,25 +232,32 @@ A shop's **standing**, worked out at every claim:
 | standing | when | the key |
 |---|---|---|
 | `trial` | 30 days from the shop's first claim | plan `t`, from the first claim through the trial's last day; `l: "shop"` |
-| `active` | Stripe says the subscription is paid (`active`/`trialing`), or it is cancelled but paid through the period end | plan `m` or `y`, through the current period end; `l` the subscription's plan |
+| `active` | Stripe says the subscription is paid (`active`), or on its trial (`trialing`: subscribed inside the hub's trial, the first charge on the trial's last day), or it is cancelled but paid through the period end | plan `m` or `y`, through the current period end (the trial's last day while `trialing`); `l` the subscription's plan |
 | `past_due` | the last payment failed; 14 days' grace past the period end while Stripe retries | the same key (it already carries 14 days of grace) |
 | `waived` | a **retail** shop (StitchShop, `kind: "retail"`) that is the retail side of an `ACTIVE` partner link whose repair shop is `trial`, `active`, `past_due` or `comped`. A repair shop is never waived, and a `both` shop counts as repair and pays | plan `w`, a 35-day key signed fresh each day the waiver holds, so an offline install works about a month past the end of its partnership and no longer |
 | `comped` | the admin's "Comp": free through a day, or for good (`2099-12-31`) | plan `c` through that day |
-| `lapsed` | the trial ended; the subscription ended or its grace ran out; a refund or chargeback; the admin's "Lapse now"; a waiver that ended more than 35 days ago | a key that is over: the trial's or period's own (grace from its last day); after a refund, a chargeback or "Lapse now", a one-day key with no grace, so the program is read-only from its next sync |
+| `lapsed` | the trial ended; the subscription ended or its grace ran out; a refund or chargeback (but see below: a full refund of the first payment inside the trial, a chargeback won); the admin's "Lapse now"; a waiver that ended more than 35 days ago | a key that is over: the trial's or period's own (grace from its last day); after a refund, a chargeback or "Lapse now", a one-day key with no grace, so the program is read-only from its next sync |
 
 Rules of thumb: a key is re-signed only when the plan, the login plan or last day changes (a renewal, a switch, a new comp date), and the current
 key is sent at every claim so a program that lost it gets it back; a lapsed shop's key is never cut shorter than the one
 it holds (a comp that ran out keeps its 14 days of grace), but a key the program believes is still live when the standing
 has ended (a comp taken away) is replaced by one ending today, so the grace runs from today; `revokeKeyIds` names the
 keys of a refunded or charged-back period (and of a "Lapse now") for the program to drop. A refund or chargeback lapses
-the shop at once, even inside its trial. When a subscription ends while the trial still runs, the shop is back on its
-trial. A partnered shop that also pays is told it can cancel and stay free; the hub never cancels for it. Dunning mail
+the shop at once, with two exceptions. **A full refund of the subscription's first payment while the trial's original end
+is still ahead** puts the shop back on its trial until that day (the trial key comes back, the paid period's key is still
+named for removal; after that day it is a trial that ended); a partial refund, a refund of a later payment or a chargeback
+inside the trial still lapses it. **A chargeback the shop wins** (`charge.dispute.closed` with status `won`, the dispute
+re-read from Stripe) is undone: the period counts again, the subscription is re-read, the admin's dispute flag goes, a
+founding mark the dispute's gap cost comes back while a place is free, the next sync gets a fresh key (the revoked ones
+stay revoked), and the hub's log says so. A lost dispute (or one that closed any other way) changes nothing, and a won one
+whose period was also refunded is left as it is. When a subscription ends while the trial still runs, the shop is back on
+its trial. A partnered shop that also pays is told it can cancel and stay free; the hub never cancels for it. Dunning mail
 goes once per period: when a payment fails, 7 days into the grace, the day the shop lapses, and 30 days before a yearly
 renewal (Stripe sends the receipts).
 
-Variables: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` (the endpoint `https://<hub>/v1/stripe` with the events
+Variables: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` (the endpoint `https://<hub>/v1/stripe` with these nine events:
 `checkout.session.completed`, `customer.subscription.created|updated|deleted`, `invoice.paid`,
-`invoice.payment_failed`, `charge.refunded`, `charge.dispute.created`), the prices (recurring prices made in the Stripe
+`invoice.payment_failed`, `charge.refunded`, `charge.dispute.created`, `charge.dispute.closed`), the prices (recurring prices made in the Stripe
 dashboard, one product): `STRIPE_PRICE_SOLO_MONTHLY`, `STRIPE_PRICE_SOLO_YEARLY`, `STRIPE_PRICE_SHOP_MONTHLY`,
 `STRIPE_PRICE_SHOP_YEARLY`, and for founding shops `STRIPE_PRICE_SOLO_MONTHLY_FOUNDING`,
 `STRIPE_PRICE_SOLO_YEARLY_FOUNDING`, `STRIPE_PRICE_SHOP_MONTHLY_FOUNDING`, `STRIPE_PRICE_SHOP_YEARLY_FOUNDING`, and
@@ -356,15 +368,20 @@ mock and checks the pages (the version in force, older and newer versions, 404s,
 escaping), `GET /v1/terms/current`, acceptance from the program, at sign-up, on `/account` and at Checkout (refused
 without the tick while the account is behind), the claim answer's `terms`, the export, and a `TERMS_VERSION` with no files.
 
-`DATABASE_URL=<a scratch database> npm run test:billing` starts a hub with the Stripe mock (`test/stripe-mock.mjs`:
-Checkout in subscription mode, the Portal, signed webhooks, refunds and disputes, with hooks to fail or renew a payment)
+`DATABASE_URL=<a database on a server where the role may create databases> npm run test:billing` makes a fresh database
+beside it for the run (dropped at the end), starts a hub with the Stripe mock (`test/stripe-mock.mjs`:
+Checkout in subscription mode with Stripe's `trial_end` and its 48 hours, the Portal, signed webhooks, refunds (whole or
+partial) and disputes (opened, then won or lost), with hooks to fail or renew a payment)
 and a throwaway `hub1` key, and walks a shop from its trial through subscribe → active → past_due → lapsed → paid again,
 cancelling, a yearly plan, a refund and a chargeback (keys revoked), Solo and Shop (Switch with proration, an older price
 still counted, the old single price and an unknown price counted as Shop, lapsed keeping its plan, the key's `l`),
 founding shops (the admin's mark and the 26th refused, founding prices at Checkout and Switch, back within 60 days, the
-mark lost after), a partnered retail shop waived and the waiver ending, comps, "Lapse now", replayed and badly signed
-webhooks, one account unable to subscribe another's shop, the export, and a hub with billing closed. Run it on a fresh
-database (the founding places are counted across it). Every key the hub sends is verified with the program's own verify logic (a copy of
+mark lost after), the trial's edges (subscribing inside the trial is `trialing` and charged when it ends, no `trial_end`
+under 48 hours, a partial refund lapses, a full refund of the first payment goes back to the trial and then ends with it,
+a lost dispute changes nothing, a won one restores the period, a fresh key and the founding mark its gap cost), a
+partnered retail shop waived and the waiver ending, comps, "Lapse now", replayed and badly signed
+webhooks, one account unable to subscribe another's shop, the export, and a hub with billing closed. The database must be
+fresh because the founding places are counted across it; the test makes its own each run. Every key the hub sends is verified with the program's own verify logic (a copy of
 `license.ts`'s `verifyLicense`) and checked to be for the right shop. The mock also runs on its own
 (`node test/stripe-mock.mjs`, `STRIPE_MOCK_PORT`, `STRIPE_MOCK_WEBHOOK_URL`) for a local test hub: set
 `STRIPE_API_BASE` to it (on its own it offers the prices named in the hub's `STRIPE_PRICE_*` variables).
@@ -415,8 +432,10 @@ Members send `Authorization: Bearer <install key>`.
 The hub's own pages use a session cookie and JSON under `/account/api`: `GET me`, `POST signup { email, password,
 acceptTerms, termsVersion }`, `terms { acceptTerms, termsVersion }` ("We updated our terms"), `verify { token }`, `signin { email, password }`, `signout`, `signout-all`, `forgot { email }`,
 `resend { email }`, `set-password { token, password }`, `password { current, password }`, `connect { code }`,
-`shops/:id/checkout { plan: "solo" | "shop", interval: "monthly" | "yearly", termsVersion, acceptTerms }` → `{ url }` (a
-Stripe Checkout Session for one of the account's own shops, at the founding price for a founding account; 404 for
+`shops/:id/checkout { plan: "solo" | "shop", interval: "monthly" | "yearly", termsVersion, acceptTerms }` → `{ url,
+firstChargeOn }` (a Stripe Checkout Session for one of the account's own shops, at the founding price for a founding
+account, on Stripe's trial to the end of the hub's when more than 48 hours of it are left: `firstChargeOn` is that day,
+null when charged at once; 404 for
 another account's, 409 when it already has a subscription, 503 while subscriptions are closed or when a founding price
 isn't set, 400 without `acceptTerms` while the account accepted an older terms version; `termsVersion` is the version the
 page showed: 409 when it isn't the one in force), `shops/:id/switch { plan: "solo" | "shop" }` → `{ plan, standing,
@@ -426,7 +445,8 @@ running or it is already on that plan) and
 `hosted { program, shopName, ownerName, timeZone }` → `{ shopRef, setPasswordUrl, expiresAt, appUrl, tied }` (503 for a
 program this hub doesn't offer, 429 within 10 minutes of the last) and `shops/:id/reset-owner` → `{ id, expiresAt }`
 (409 while the program doesn't allow it, 503 without a signing key). `me` carries each shop's `standing`, `lastDay`,
-`message`, `plan`, `subscription` (`plan`, `interval`, `founding`, `status`, ...), `canSubscribe`, `canSwitch`,
+`message`, `plan`, `subscription` (`plan`, `interval`, `founding`, `status`, `trialEnd` while `trialing`, ...),
+`canSubscribe`, `firstChargeOn` (subscribing now is first charged that day, when the trial ends; null: at once), `canSwitch`,
 `canManage`, `resetOptIn` and `resetRequest`, `billing: { open, prices: { solo: { monthly, yearly }, shop: { ... } },
 soloLogins, founding: { on, gapSince, losesOn } }`, `hosted`,
 `canSignResets` and `terms: { current, draft, accepted, acceptedAt, needsAccept }`. A change

@@ -4,8 +4,11 @@
 // ($150 / $300 a year) while their subscription runs without a gap over 60 days. Several Stripe prices count as one plan
 // (a price rise adds new prices and the old ones keep working): each configured price id maps to a plan, an interval and
 // founding or not (priceBook). A shop's standing at any moment is worked out here from what the hub holds:
-//   lapsed   the admin's "Lapse now"; a refund or chargeback; a subscription that ended; a trial or waiver long over
-//   active   a subscription Stripe says is paid (or cancelled but paid through the period end)
+//   lapsed   the admin's "Lapse now"; a refund or chargeback (a full refund of the first payment inside the trial goes
+//            back to the trial instead; a chargeback the shop wins is undone); a subscription that ended; a trial or
+//            waiver long over
+//   active   a subscription Stripe says is paid (or cancelled but paid through the period end), or on Stripe's trial
+//            (subscribed inside the hub's trial: the first charge falls when the trial ends)
 //   past_due the last payment failed; 14 days' grace past the period end while Stripe retries
 //   comped   the admin's "free until"
 //   waived   a retail shop (StitchShop) partnered, through an ACTIVE partner link, with a repair shop in good standing
@@ -30,6 +33,8 @@ export const FOREVER = new Date(`${NO_END}T00:00:00Z`);
 const WAIVER_GOOD = new Set(["trial", "active", "past_due", "comped"]); // the repair side's standing that waives its retail partner
 const PLAN_WORDS = { m: "monthly", y: "yearly" };
 const REVOKED_FOR_DAYS = 90; // how long a revoked key is still named to the program (an install that was offline)
+// Stripe wants a Checkout subscription's trial_end at least 48 hours ahead; an hour more covers clocks and a slow Checkout.
+const TRIAL_END_MIN_MS = 49 * 3600_000;
 
 export const day = (d) => (d instanceof Date ? d : new Date(d)).toISOString().slice(0, 10);
 export const addDays = (ymd, n) => new Date(Date.parse(`${ymd}T00:00:00Z`) + n * 86400_000).toISOString().slice(0, 10);
@@ -135,6 +140,24 @@ export async function priceList(founding) {
   return out;
 }
 
+// ----- the trial at Checkout -----
+
+/** The moment a shop's own trial ends: 30 days after its first claim (the key's last day is the day it falls on). */
+const trialEndMs = (shop) => shop.created_at.getTime() + TRIAL_DAYS * 86400_000;
+
+/**
+ * When a subscription started now would first be charged, if not at once: subscribing inside the trial, the
+ * subscription runs on Stripe's trial until the hub's trial ends, so the shop keeps its free days and shows as
+ * subscribed. { unix, day }, or null (charged at once): less than about 48 hours of the trial left (Stripe's minimum), the
+ * trial over, a shop the admin lapsed, or one whose last payment was charged back (it pays before it is back).
+ */
+export function trialChargeStart(shop, sub = null) {
+  if (shop.lapsed_at || (sub?.disputed_at && sub?.unpaid_since)) return null;
+  const end = trialEndMs(shop);
+  if (end - Date.now() <= TRIAL_END_MIN_MS) return null;
+  return { unix: Math.floor(end / 1000), day: day(new Date(end)) };
+}
+
 // ----- founding shops -----
 
 const RUNNING = new Set(["active", "trialing", "past_due"]);
@@ -203,6 +226,8 @@ const subOut = (s) =>
         cancelAtPeriodEnd: s.cancel_at_period_end,
         unpaidSince: s.unpaid_since ? day(s.unpaid_since) : null,
         disputedAt: s.disputed_at ? day(s.disputed_at) : null,
+        // Subscribed inside the trial: Stripe's trial ends, and the first charge falls, on this day.
+        trialEnd: s.status === "trialing" && s.current_period_end ? day(s.current_period_end) : null,
       }
     : null;
 
@@ -237,10 +262,18 @@ function fromSubscription(shop, sub, t) {
     case "active":
     case "trialing":
       if (!periodEnd) return null;
+      // trialing: subscribed inside the hub's trial; Stripe's trial ends with it and the first charge falls then.
       return {
         standing: "active",
         lastDay: periodEnd,
-        message: sub.cancel_at_period_end ? `Your ${words} subscription is cancelled and runs through ${periodEnd}.` : `Subscribed to ${words}, paid through ${periodEnd}.`,
+        message:
+          sub.status === "trialing"
+            ? sub.cancel_at_period_end
+              ? `Your ${words} subscription is cancelled: the free trial runs through ${periodEnd} and nothing will be charged.`
+              : `Subscribed to ${words}. The free trial runs through ${periodEnd}; the first charge is on ${periodEnd}.`
+            : sub.cancel_at_period_end
+              ? `Your ${words} subscription is cancelled and runs through ${periodEnd}.`
+              : `Subscribed to ${words}, paid through ${periodEnd}.`,
         want: key(t, periodEnd),
       };
     case "past_due": {
@@ -311,8 +344,11 @@ export async function standingOf(shop, { noWaiver = false } = {}) {
   const lastFounding = sub?.stripe_subscription_id ? Boolean(sub.founding) : false;
   const out = (fields) => ({ lastDay: null, waivedBy: null, plan: "shop", interval: null, founding: false, ...fields, subscription: subOut(sub) });
   const fromSub = (fields) => out({ ...fields, plan: subTier(sub), interval: PLAN_WORDS[sub.plan] ?? null, founding: Boolean(sub.founding) });
-  const trialLast = day(new Date(shop.created_at.getTime() + TRIAL_DAYS * 86400_000));
+  const trialLast = day(new Date(trialEndMs(shop)));
   const trialKey = { plan: "t", f: day(shop.created_at), u: trialLast, g: GRACE_DAYS, tier: "shop" };
+  // The whole first payment was refunded while the trial still ran (and not charged back): the subscription is set aside
+  // and the shop is back on its trial through the trial's original last day, then a trial that ended.
+  const trialRefund = Boolean(sub?.unpaid_since && sub.refunded_in_trial && !sub.disputed_at);
 
   // 1. The admin ended it.
   if (shop.lapsed_at) {
@@ -356,8 +392,9 @@ export async function standingOf(shop, { noWaiver = false } = {}) {
       want: billingOpen() ? { plan: "w", f: t, u: addDays(t, WAIVER_DAYS - 1), g: GRACE_DAYS, tier: "shop" } : null,
     });
   }
-  // 5. A subscription that ended (unless the trial is still running; a refund or chargeback lapses the shop even then).
-  if (subState && (trialLast < t || sub.unpaid_since)) return fromSub({ ...subState, source: "subscription" });
+  // 5. A subscription that ended (unless the trial is still running; a refund or chargeback lapses the shop even then,
+  // except a full refund of the first payment inside the trial, which goes back to the trial).
+  if (subState && !trialRefund && (trialLast < t || sub.unpaid_since)) return fromSub({ ...subState, source: "subscription" });
   // 6. A waiver that ended while its last key still runs: notice, then lapsed (the key the program holds does the rest).
   if (!noWaiver) {
     const w = await one(`SELECT last_day::text AS last_day FROM license_issues WHERE shop_id = $1 AND plan = 'w' AND revoked_at IS NULL ORDER BY issued_at DESC LIMIT 1`, [shop.id]);
@@ -366,7 +403,12 @@ export async function standingOf(shop, { noWaiver = false } = {}) {
     }
   }
   // 7. The trial, running or over.
-  if (trialLast >= t) return out({ standing: "trial", source: "trial", lastDay: trialLast, message: `Free trial through ${trialLast}.`, want: billingOpen() ? trialKey : null });
+  if (trialLast >= t) {
+    const message = trialRefund
+      ? `The payment for this shop was refunded on ${day(sub.unpaid_since)}, so it's back on its free trial through ${trialLast}. Subscribe on your StitchHub account page to keep working after that.`
+      : `Free trial through ${trialLast}.`;
+    return out({ standing: "trial", source: "trial", lastDay: trialLast, message, want: billingOpen() ? trialKey : null });
+  }
   if (!billingOpen()) {
     // Nobody can pay yet, so nothing lapses for want of payment: the words say so and no key is signed.
     return out({ standing: "trial", source: "trial", lastDay: trialLast, message: `The free trial ended on ${trialLast}. Subscriptions aren't open yet, so nothing changes until they are.`, want: null });
@@ -498,6 +540,9 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
     const { founding } = await refreshFounding(null, a.id);
     const price = priceFor(tier, interval, founding);
     if (!price) throw foundingPriceMissing(tier, interval);
+    // Inside the trial (more than about 48 hours of it left), the subscription starts on Stripe's trial ending when the
+    // hub's does: nothing is charged until then, and the shop shows as subscribed meanwhile.
+    const trial = trialChargeStart(shop, await one(`SELECT unpaid_since, disputed_at FROM subscriptions WHERE shop_id = $1`, [shop.id]));
     // Subscribing is agreeing to the terms (Terms, section 2): the version in force is written down with each Checkout,
     // on the account and in terms_acceptances, and goes to Stripe with the subscription's metadata. An account that
     // accepted an older version, or none, ticks the box on the page first.
@@ -513,6 +558,7 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
         successUrl: `${hubUrl}/account/shops?done=1`,
         cancelUrl: `${hubUrl}/account/shops?cancelled=1`,
         reference: shop.id,
+        trialEnd: trial?.unix ?? null,
         metadata: { hub_shop_id: shop.id, hub_account_id: a.id, ...(terms ? { hub_terms_version: terms } : {}) },
         idempotencyKey: `checkout:${shop.id}:${crypto.randomBytes(8).toString("hex")}`,
       });
@@ -520,7 +566,7 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
       throw stripeFail(e);
     }
     await tx((client) => recordAcceptance(client, { accountId: a.id, version: terms, via: "checkout", shopId: shop.id, checkoutId: session.id ?? null }));
-    return c.json({ ok: true, url: session.url, sessionId: session.id });
+    return c.json({ ok: true, url: session.url, sessionId: session.id, firstChargeOn: trial?.day ?? null });
   });
 
   // "Switch to Shop" / "Switch to Solo": the subscription item moves to the other plan's price, same interval (the
@@ -606,6 +652,8 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
          tier = EXCLUDED.tier, founding = EXCLUDED.founding, price_id = EXCLUDED.price_id,
          unpaid_since = CASE WHEN subscriptions.stripe_subscription_id = EXCLUDED.stripe_subscription_id THEN subscriptions.unpaid_since ELSE NULL END,
          disputed_at = CASE WHEN subscriptions.stripe_subscription_id = EXCLUDED.stripe_subscription_id THEN subscriptions.disputed_at ELSE NULL END,
+         unpaid_charge_id = CASE WHEN subscriptions.stripe_subscription_id = EXCLUDED.stripe_subscription_id THEN subscriptions.unpaid_charge_id ELSE NULL END,
+         refunded_in_trial = CASE WHEN subscriptions.stripe_subscription_id = EXCLUDED.stripe_subscription_id THEN subscriptions.refunded_in_trial ELSE false END,
          mailed = CASE WHEN subscriptions.stripe_subscription_id = EXCLUDED.stripe_subscription_id THEN subscriptions.mailed ELSE '{}'::jsonb END,
          updated_at = now()`,
       [shop.id, s.id, customer ?? null, plan, s.status, periodEnd, Boolean(s.cancel_at_period_end), tier, founding, priceId],
@@ -619,18 +667,88 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
   /** The subscription an invoice or charge belongs to (by id), or null. */
   const invoiceSub = (inv) => (typeof inv?.subscription === "string" ? inv.subscription : inv?.subscription?.id ?? null);
 
-  /** A refund or chargeback: the period is unpaid, the shop lapses at once, its subscription keys are named for removal. */
-  async function tookBack(client, chargeId, disputed) {
+  /** A charge as Stripe has it, with its invoice and the subscription that invoice is for; null (logged) when it isn't one. */
+  async function chargeOfSubscription(chargeId) {
     const ch = await stripe.retrieveCharge(chargeId);
     const invoiceId = typeof ch.invoice === "string" ? ch.invoice : ch.invoice?.id;
-    if (!invoiceId) return console.warn(`stripe: charge ${chargeId} isn't for an invoice; ignored`);
-    const subId = invoiceSub(await stripe.retrieveInvoice(invoiceId));
-    if (!subId) return console.warn(`stripe: invoice ${invoiceId} isn't for a subscription; ignored`);
-    const row = (await client.query(`SELECT sub.shop_id, s.account_id FROM subscriptions sub JOIN shops s ON s.id = sub.shop_id WHERE sub.stripe_subscription_id = $1`, [subId])).rows[0];
+    if (!invoiceId) {
+      console.warn(`stripe: charge ${chargeId} isn't for an invoice; ignored`);
+      return null;
+    }
+    const inv = await stripe.retrieveInvoice(invoiceId);
+    const subId = invoiceSub(inv);
+    if (!subId) {
+      console.warn(`stripe: invoice ${invoiceId} isn't for a subscription; ignored`);
+      return null;
+    }
+    return { ch, inv, subId };
+  }
+
+  /**
+   * A refund or chargeback: the period is unpaid, the shop lapses at once, its subscription keys are named for removal.
+   * A full refund of the subscription's first payment, made while the shop's trial still runs, sends the shop back to its
+   * trial instead (standingOf: refunded_in_trial); a partial refund, a later payment or a chargeback lapses it.
+   */
+  async function tookBack(client, chargeId, disputed) {
+    const found = await chargeOfSubscription(chargeId);
+    if (!found) return;
+    const { ch, inv, subId } = found;
+    const row = (await client.query(`SELECT sub.shop_id, s.account_id, s.created_at FROM subscriptions sub JOIN shops s ON s.id = sub.shop_id WHERE sub.stripe_subscription_id = $1`, [subId])).rows[0];
     if (!row) return console.warn(`stripe: subscription ${subId} isn't on the hub; ignored`);
-    await client.query(`UPDATE subscriptions SET unpaid_since = coalesce(unpaid_since, now()), disputed_at = CASE WHEN $2 THEN coalesce(disputed_at, now()) ELSE disputed_at END, updated_at = now() WHERE shop_id = $1`, [row.shop_id, disputed]);
+    const full = ch.refunded === true || (Number.isInteger(ch.amount) && ch.amount > 0 && ch.amount_refunded >= ch.amount);
+    const trialEnd = trialEndMs(row);
+    const inTrial = !disputed && full && inv.billing_reason === "subscription_create" && Date.now() < trialEnd && (!ch.created || ch.created * 1000 < trialEnd);
+    // The first charge taken back is the one named (a won chargeback restores the period only when it was this charge);
+    // a refund of that same charge decides whether the shop is back on its trial (the rest of a partial refund, say).
+    await client.query(
+      `UPDATE subscriptions SET unpaid_since = coalesce(unpaid_since, now()),
+         unpaid_charge_id = CASE WHEN unpaid_since IS NULL THEN $3 ELSE unpaid_charge_id END,
+         refunded_in_trial = CASE WHEN unpaid_since IS NULL OR unpaid_charge_id = $3 THEN $4 ELSE refunded_in_trial END,
+         disputed_at = CASE WHEN $2 THEN coalesce(disputed_at, now()) ELSE disputed_at END, updated_at = now()
+       WHERE shop_id = $1`,
+      [row.shop_id, disputed, ch.id ?? chargeId, inTrial],
+    );
     await revokeLiveKeys(client, row.shop_id, ["m", "y"]);
+    if (inTrial) console.log(`billing: the first payment of subscription ${subId} was refunded inside the trial; shop ${row.shop_id} is back on its trial`);
     if (row.account_id) await refreshFounding(client, row.account_id);
+  }
+
+  /**
+   * A chargeback the shop won (charge.dispute.closed, status won): what charge.dispute.created took away comes back. The
+   * period counts again (unless a refund also took it back), the subscription is re-read from Stripe, a founding mark the
+   * dispute's gap cost is given back while a place is free, and the next claim signs a fresh key (the revoked ones stay
+   * revoked). Logged.
+   */
+  async function disputeWon(client, dp) {
+    const chargeId = typeof dp.charge === "string" ? dp.charge : dp.charge?.id;
+    if (!chargeId) return console.warn(`stripe: dispute ${dp.id} names no charge; ignored`);
+    const found = await chargeOfSubscription(chargeId);
+    if (!found) return;
+    const { ch, subId } = found;
+    const row = (await client.query(`SELECT sub.*, s.account_id FROM subscriptions sub JOIN shops s ON s.id = sub.shop_id WHERE sub.stripe_subscription_id = $1 FOR UPDATE OF sub`, [subId])).rows[0];
+    if (!row) return console.warn(`stripe: dispute ${dp.id} was won, but subscription ${subId} isn't on the hub (the shop has subscribed again since); nothing to restore`);
+    if (!row.disputed_at) return console.log(`billing: dispute ${dp.id} on charge ${chargeId} was won; shop ${row.shop_id} had nothing taken away by it`);
+    if ((row.unpaid_charge_id && row.unpaid_charge_id !== chargeId) || ch.amount_refunded > 0) {
+      return console.warn(`billing: dispute ${dp.id} on charge ${chargeId} was won, but shop ${row.shop_id}'s period was also taken back by a refund${row.unpaid_charge_id && row.unpaid_charge_id !== chargeId ? ` (charge ${row.unpaid_charge_id})` : ""}; left as it is`);
+    }
+    await client.query(`UPDATE subscriptions SET unpaid_since = NULL, unpaid_charge_id = NULL, refunded_in_trial = false, disputed_at = NULL, updated_at = now() WHERE shop_id = $1`, [row.shop_id]);
+    let foundingBack = "";
+    if (row.account_id) {
+      // The dispute's gap may have cost the account its founding mark (disputes take weeks; the mark goes after 60 days).
+      await client.query(`SELECT pg_advisory_xact_lock(hashtext('stitchhub:founding'))`);
+      const acc = (await client.query(`SELECT founding_at, founding_gap_since, founding_lost_at FROM accounts WHERE id = $1 FOR UPDATE`, [row.account_id])).rows[0];
+      const sinceDispute = (d) => d && d.getTime() >= row.disputed_at.getTime() - 60_000;
+      if (acc && !acc.founding_at && sinceDispute(acc.founding_lost_at) && sinceDispute(acc.founding_gap_since)) {
+        if ((await foundingUsed(client)) < FOUNDING_LIMIT) {
+          await client.query(`UPDATE accounts SET founding_at = now(), founding_gap_since = NULL, founding_lost_at = NULL WHERE id = $1`, [row.account_id]);
+          foundingBack = "; the founding mark the dispute cost is back";
+        } else {
+          foundingBack = `; the founding mark the dispute cost isn't given back: all ${FOUNDING_LIMIT} places are taken (the admin decides)`;
+        }
+      }
+    }
+    await syncSubscription(client, subId); // the subscription as Stripe has it now (it may have ended meanwhile)
+    console.log(`billing: dispute ${dp.id} on charge ${chargeId} was won; shop ${row.shop_id}'s subscription ${subId} counts again${foundingBack}`);
   }
 
   async function mailAccount(shopId, kind, periodKey, subject, text) {
@@ -672,7 +790,7 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
         const r = await syncSubscription(client, subId);
         if (!r) return;
         // Paid: a period that was taken back, or ended by the admin, is good again.
-        await client.query(`UPDATE subscriptions SET unpaid_since = NULL, updated_at = now() WHERE shop_id = $1 AND stripe_subscription_id = $2`, [r.shop.id, subId]);
+        await client.query(`UPDATE subscriptions SET unpaid_since = NULL, unpaid_charge_id = NULL, refunded_in_trial = false, updated_at = now() WHERE shop_id = $1 AND stripe_subscription_id = $2`, [r.shop.id, subId]);
         await client.query(`UPDATE shops SET lapsed_at = NULL WHERE id = $1 AND lapsed_at IS NOT NULL`, [r.shop.id]);
         if (r.shop.account_id) await refreshFounding(client, r.shop.account_id);
         return;
@@ -701,6 +819,13 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
       case "charge.dispute.created":
         await tookBack(client, typeof o.charge === "string" ? o.charge : o.charge?.id, true);
         return;
+      case "charge.dispute.closed": {
+        // Re-read: only a dispute Stripe says was won undoes anything (lost, or an inquiry closed: what it did stands).
+        const dp = await stripe.retrieveDispute(o.id);
+        if (dp.status === "won") await disputeWon(client, dp);
+        else console.log(`billing: dispute ${dp.id} closed (${dp.status}); nothing changes`);
+        return;
+      }
       default:
         return; // an event the hub doesn't act on (invoice.created, customer.updated, ...)
     }

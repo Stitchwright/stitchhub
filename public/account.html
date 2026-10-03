@@ -227,6 +227,7 @@
         if (!p.yearly && !p.monthly) row.append(Object.assign(document.createElement("span"), { className: "muted", textContent: "not set up on this hub yet" }));
         c.append(row);
       }
+      if (s.firstChargeOn) c.append(Object.assign(document.createElement("div"), { className: "muted", textContent: `Subscribe now and keep the rest of your free trial: the card is taken now and first charged on ${s.firstChargeOn}, when the trial ends.` }));
       if (billing.founding?.on) c.append(Object.assign(document.createElement("div"), { className: "muted", textContent: "Founding-shop prices." }));
       if (s.standing === "waived") c.append(Object.assign(document.createElement("div"), { className: "muted", textContent: "Free while partnered: no need to subscribe." }));
     }
