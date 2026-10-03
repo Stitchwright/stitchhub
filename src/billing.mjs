@@ -5,8 +5,8 @@
 // (a price rise adds new prices and the old ones keep working): each configured price id maps to a plan, an interval and
 // founding or not (priceBook). A shop's standing at any moment is worked out here from what the hub holds:
 //   lapsed   the admin's "Lapse now"; a refund or chargeback (a full refund of the first payment inside the trial goes
-//            back to the trial instead; a chargeback the shop wins is undone); a subscription that ended; a trial or
-//            waiver long over
+//            back to the trial instead; a chargeback the shop wins is undone; a card-company inquiry, no money taken
+//            yet, only flags the shop for the admin); a subscription that ended; a trial or waiver long over
 //   active   a subscription Stripe says is paid (or cancelled but paid through the period end), or on Stripe's trial
 //            (subscribed inside the hub's trial: the first charge falls when the trial ends)
 //   past_due the last payment failed; 14 days' grace past the period end while Stripe retries
@@ -226,6 +226,8 @@ const subOut = (s) =>
         cancelAtPeriodEnd: s.cancel_at_period_end,
         unpaidSince: s.unpaid_since ? day(s.unpaid_since) : null,
         disputedAt: s.disputed_at ? day(s.disputed_at) : null,
+        // A card-company inquiry is open (no chargeback yet): shown to the admin; the shop keeps working.
+        inquiryAt: s.inquiry_at ? day(s.inquiry_at) : null,
         // Subscribed inside the trial: Stripe's trial ends, and the first charge falls, on this day.
         trialEnd: s.status === "trialing" && s.current_period_end ? day(s.current_period_end) : null,
       }
@@ -654,6 +656,8 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
          disputed_at = CASE WHEN subscriptions.stripe_subscription_id = EXCLUDED.stripe_subscription_id THEN subscriptions.disputed_at ELSE NULL END,
          unpaid_charge_id = CASE WHEN subscriptions.stripe_subscription_id = EXCLUDED.stripe_subscription_id THEN subscriptions.unpaid_charge_id ELSE NULL END,
          refunded_in_trial = CASE WHEN subscriptions.stripe_subscription_id = EXCLUDED.stripe_subscription_id THEN subscriptions.refunded_in_trial ELSE false END,
+         inquiry_at = CASE WHEN subscriptions.stripe_subscription_id = EXCLUDED.stripe_subscription_id THEN subscriptions.inquiry_at ELSE NULL END,
+         inquiry_dispute_id = CASE WHEN subscriptions.stripe_subscription_id = EXCLUDED.stripe_subscription_id THEN subscriptions.inquiry_dispute_id ELSE NULL END,
          mailed = CASE WHEN subscriptions.stripe_subscription_id = EXCLUDED.stripe_subscription_id THEN subscriptions.mailed ELSE '{}'::jsonb END,
          updated_at = now()`,
       [shop.id, s.id, customer ?? null, plan, s.status, periodEnd, Boolean(s.cancel_at_period_end), tier, founding, priceId],
@@ -751,6 +755,53 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
     console.log(`billing: dispute ${dp.id} on charge ${chargeId} was won; shop ${row.shop_id}'s subscription ${subId} counts again${foundingBack}`);
   }
 
+  /**
+   * A dispute event (created, updated or closed), the dispute re-read from Stripe. An inquiry (status warning_*: the card
+   * company asking, a retrieval request, no money taken yet) is recorded on the subscription, shown to the admin and
+   * logged; the shop keeps working. A chargeback (needs_response, under_review), opened as one or an inquiry the hub
+   * recorded escalating into one, lapses the shop as before (tookBack); other updates to a chargeback (evidence, review)
+   * change nothing more. Closed: won undoes the chargeback (disputeWon), warning_closed clears the inquiry (nothing was
+   * taken), lost changes nothing (unless the hub still had it as an inquiry: then the money is gone and the shop lapses).
+   */
+  async function disputeEvent(client, type, dp) {
+    const chargeId = typeof dp.charge === "string" ? dp.charge : dp.charge?.id;
+    if (!chargeId) return console.warn(`stripe: dispute ${dp.id} names no charge; ignored`);
+    const status = String(dp.status ?? "");
+    const found = await chargeOfSubscription(chargeId);
+    if (!found) return;
+    const row = (await client.query(`SELECT shop_id, inquiry_dispute_id FROM subscriptions WHERE stripe_subscription_id = $1 FOR UPDATE`, [found.subId])).rows[0];
+    if (!row) return console.warn(`stripe: dispute ${dp.id} is on subscription ${found.subId}, which isn't on the hub; ignored`);
+    const known = row.inquiry_dispute_id === dp.id; // the hub has it as an open inquiry
+    const clearInquiry = () => client.query(`UPDATE subscriptions SET inquiry_at = NULL, inquiry_dispute_id = NULL, updated_at = now() WHERE shop_id = $1 AND inquiry_dispute_id = $2`, [row.shop_id, dp.id]);
+    const chargeback = async (why) => {
+      await clearInquiry();
+      await tookBack(client, chargeId, true);
+      console.log(`billing: dispute ${dp.id} on charge ${chargeId} ${why} (${status}); shop ${row.shop_id} is read-only`);
+    };
+    if (status === "warning_closed") {
+      await clearInquiry();
+      return console.log(`billing: inquiry ${dp.id} on charge ${chargeId} closed without a chargeback; shop ${row.shop_id}'s inquiry flag is cleared`);
+    }
+    if (type === "charge.dispute.closed") {
+      if (status === "won") {
+        await clearInquiry();
+        return disputeWon(client, dp);
+      }
+      if (status === "lost" && known) return chargeback("was an inquiry and is lost");
+      return console.log(`billing: dispute ${dp.id} closed (${status}); nothing changes`);
+    }
+    if (status.startsWith("warning_")) {
+      await client.query(
+        `UPDATE subscriptions SET inquiry_at = CASE WHEN inquiry_dispute_id = $2 THEN inquiry_at ELSE now() END, inquiry_dispute_id = $2, updated_at = now() WHERE shop_id = $1`,
+        [row.shop_id, dp.id],
+      );
+      if (!known) console.log(`billing: card-company inquiry ${dp.id} on charge ${chargeId} (${status}) for shop ${row.shop_id}: recorded for the admin; the shop keeps working (no chargeback yet)`);
+      return;
+    }
+    if (type === "charge.dispute.created") return chargeback("opened");
+    if (known) return chargeback("escalated from an inquiry");
+  }
+
   async function mailAccount(shopId, kind, periodKey, subject, text) {
     const r = await one(
       `SELECT a.email, s.name, sub.mailed FROM shops s JOIN accounts a ON a.id = s.account_id JOIN subscriptions sub ON sub.shop_id = s.id WHERE s.id = $1 AND a.verified_at IS NOT NULL AND NOT a.disabled`,
@@ -817,15 +868,11 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
         await tookBack(client, o.id, false);
         return;
       case "charge.dispute.created":
-        await tookBack(client, typeof o.charge === "string" ? o.charge : o.charge?.id, true);
+      case "charge.dispute.updated":
+      case "charge.dispute.closed":
+        // Re-read: the dispute's status as Stripe has it decides (an inquiry, a chargeback, won, lost, an inquiry closed).
+        await disputeEvent(client, ev.type, await stripe.retrieveDispute(o.id));
         return;
-      case "charge.dispute.closed": {
-        // Re-read: only a dispute Stripe says was won undoes anything (lost, or an inquiry closed: what it did stands).
-        const dp = await stripe.retrieveDispute(o.id);
-        if (dp.status === "won") await disputeWon(client, dp);
-        else console.log(`billing: dispute ${dp.id} closed (${dp.status}); nothing changes`);
-        return;
-      }
       default:
         return; // an event the hub doesn't act on (invoice.created, customer.updated, ...)
     }

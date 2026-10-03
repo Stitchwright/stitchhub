@@ -23,8 +23,10 @@
 // current_period_end, price } (price: put the subscription on any price id, one the hub may not know); POST
 // /__subscriptions/{id}/renew { paid: true|false } (a new invoice: paid advances the period, and ends a trial with the
 // first charge; unpaid puts the subscription past_due); POST /__subscriptions/{id}/cancel { at_period_end }; POST
-// /__charges/{id}/dispute (charge.dispute.created); POST /__disputes/{id}/close { status: "won" | "lost" }
-// (charge.dispute.closed); POST /__replay/{eventId}; GET /__events, /__webhooks, /__state; DELETE /__state.
+// /__charges/{id}/dispute { status } (charge.dispute.created; needs_response, or warning_needs_response for an inquiry);
+// POST /__disputes/{id}/update { status } (charge.dispute.updated: an inquiry escalating to needs_response, a review);
+// POST /__disputes/{id}/close { status: "won" | "lost" | "warning_closed" } (charge.dispute.closed); POST
+// /__replay/{eventId}; GET /__events, /__webhooks, /__state; DELETE /__state.
 // Every hook waits for its webhooks to be answered and reports each delivery's status, so a test can check the hub
 // right after.
 import crypto from "node:crypto";
@@ -307,17 +309,22 @@ export async function startStripeMock(o = {}) {
       if (m && req.method === "POST") {
         const ch = charges.get(m[1]);
         if (!ch) return json(res, 404, { error: "no such charge" });
-        const dp = { id: `dp_${hex(12)}`, object: "dispute", charge: ch.id, amount: ch.amount, currency: "usd", status: "needs_response", reason: "fraudulent", created: now() };
+        const b = parseJson(await readBody(req));
+        const dp = { id: `dp_${hex(12)}`, object: "dispute", charge: ch.id, amount: ch.amount, currency: "usd", status: b.status ?? "needs_response", reason: "fraudulent", created: now() };
         disputes.push(dp);
         ch.disputed = true;
         return json(res, 200, { dispute: dp, delivered: [await emit("charge.dispute.created", dp)] });
       }
-      m = /^\/__disputes\/(dp_[A-Za-z0-9_]+)\/close$/.exec(p);
+      m = /^\/__disputes\/(dp_[A-Za-z0-9_]+)\/(close|update)$/.exec(p);
       if (m && req.method === "POST") {
         const dp = disputes.find((x) => x.id === m[1]);
         if (!dp) return json(res, 404, { error: "no such dispute" });
         const b = parseJson(await readBody(req));
-        dp.status = b.status === "lost" ? "lost" : "won";
+        if (m[2] === "update") {
+          if (typeof b.status === "string") dp.status = b.status;
+          return json(res, 200, { dispute: dp, delivered: [await emit("charge.dispute.updated", dp)] });
+        }
+        dp.status = ["lost", "warning_closed"].includes(b.status) ? b.status : "won";
         return json(res, 200, { dispute: dp, delivered: [await emit("charge.dispute.closed", dp)] });
       }
       m = /^\/__replay\/(evt_[A-Za-z0-9_]+)$/.exec(p);

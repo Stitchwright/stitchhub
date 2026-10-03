@@ -249,15 +249,20 @@ named for removal; after that day it is a trial that ended); a partial refund, a
 inside the trial still lapses it. **A chargeback the shop wins** (`charge.dispute.closed` with status `won`, the dispute
 re-read from Stripe) is undone: the period counts again, the subscription is re-read, the admin's dispute flag goes, a
 founding mark the dispute's gap cost comes back while a place is free, the next sync gets a fresh key (the revoked ones
-stay revoked), and the hub's log says so. A lost dispute (or one that closed any other way) changes nothing, and a won one
-whose period was also refunded is left as it is. When a subscription ends while the trial still runs, the shop is back on
+stay revoked), and the hub's log says so. A lost dispute changes nothing, and a won one whose period was also refunded is
+left as it is. **A card-company inquiry** (a dispute whose status starts with `warning_`: a retrieval request, no money
+taken yet) doesn't lock the shop: the hub records it on the subscription, the admin page shows it as INQUIRY and the
+log says so, and the shop keeps full use. Only a real chargeback (`needs_response`, `under_review`) lapses the shop,
+whether it opens as one or an inquiry escalates into one (`charge.dispute.updated` with the new status; a lost inquiry
+the hub still holds counts too); an inquiry that closes as `warning_closed` just clears the flag, since nothing was taken. When a subscription ends while the trial still runs, the shop is back on
 its trial. A partnered shop that also pays is told it can cancel and stay free; the hub never cancels for it. Dunning mail
 goes once per period: when a payment fails, 7 days into the grace, the day the shop lapses, and 30 days before a yearly
 renewal (Stripe sends the receipts).
 
-Variables: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` (the endpoint `https://<hub>/v1/stripe` with these nine events:
+Variables: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` (the endpoint `https://<hub>/v1/stripe` with these ten events:
 `checkout.session.completed`, `customer.subscription.created|updated|deleted`, `invoice.paid`,
-`invoice.payment_failed`, `charge.refunded`, `charge.dispute.created`, `charge.dispute.closed`), the prices (recurring prices made in the Stripe
+`invoice.payment_failed`, `charge.refunded`, `charge.dispute.created`, `charge.dispute.updated`,
+`charge.dispute.closed`), the prices (recurring prices made in the Stripe
 dashboard, one product): `STRIPE_PRICE_SOLO_MONTHLY`, `STRIPE_PRICE_SOLO_YEARLY`, `STRIPE_PRICE_SHOP_MONTHLY`,
 `STRIPE_PRICE_SHOP_YEARLY`, and for founding shops `STRIPE_PRICE_SOLO_MONTHLY_FOUNDING`,
 `STRIPE_PRICE_SOLO_YEARLY_FOUNDING`, `STRIPE_PRICE_SHOP_MONTHLY_FOUNDING`, `STRIPE_PRICE_SHOP_YEARLY_FOUNDING`, and
@@ -371,14 +376,15 @@ without the tick while the account is behind), the claim answer's `terms`, the e
 `DATABASE_URL=<a database on a server where the role may create databases> npm run test:billing` makes a fresh database
 beside it for the run (dropped at the end), starts a hub with the Stripe mock (`test/stripe-mock.mjs`:
 Checkout in subscription mode with Stripe's `trial_end` and its 48 hours, the Portal, signed webhooks, refunds (whole or
-partial) and disputes (opened, then won or lost), with hooks to fail or renew a payment)
+partial) and disputes (chargebacks and inquiries, opened, updated, then won, lost or closed), with hooks to fail or renew a payment)
 and a throwaway `hub1` key, and walks a shop from its trial through subscribe → active → past_due → lapsed → paid again,
 cancelling, a yearly plan, a refund and a chargeback (keys revoked), Solo and Shop (Switch with proration, an older price
 still counted, the old single price and an unknown price counted as Shop, lapsed keeping its plan, the key's `l`),
 founding shops (the admin's mark and the 26th refused, founding prices at Checkout and Switch, back within 60 days, the
 mark lost after), the trial's edges (subscribing inside the trial is `trialing` and charged when it ends, no `trial_end`
 under 48 hours, a partial refund lapses, a full refund of the first payment goes back to the trial and then ends with it,
-a lost dispute changes nothing, a won one restores the period, a fresh key and the founding mark its gap cost), a
+a lost dispute changes nothing, a won one restores the period, a fresh key and the founding mark its gap cost; an
+inquiry keeps full use and shows to the admin, closes with the flag cleared, or escalates and lapses the shop), a
 partnered retail shop waived and the waiver ending, comps, "Lapse now", replayed and badly signed
 webhooks, one account unable to subscribe another's shop, the export, and a hub with billing closed. The database must be
 fresh because the founding places are counted across it; the test makes its own each run. Every key the hub sends is verified with the program's own verify logic (a copy of
