@@ -55,7 +55,9 @@ variables in the environment; a variable that is set wins over the file), `npm s
 created on first start.
 
 ### One hub process only
-Run **exactly one** hub process per database. The hub keeps track of the writes in progress in its own memory so
+Run **exactly one** hub process per database; the hub now enforces it: at start it takes a lock in the database, and a
+second process answers 503 ("The hub is restarting") to writes and feeds, while health checks and plain reads go on,
+until the first one stops (a deploy's overlap is a few seconds of that). The hub keeps track of the writes in progress in its own memory so
 that a shop never skips a change in its sync, and a second process on the same database (Railway's replicas set
 above 1, `docker compose up --scale hub=2`, a manual `npm start` beside the container) doesn't know about them.
 `railway.json` pins Railway to one replica. (A deploy briefly runs the old and the new hub side by side; the old one
@@ -120,8 +122,9 @@ Either side can cancel before it ships, and the quantity goes back on the listin
 buyer and the seller. The full contract is in [docs/parts-and-marketplace.md](docs/parts-and-marketplace.md).
 
 **Ratings.** After an order each side rates the other, 1–5 stars with an optional comment:
-- The buyer rates the seller once it has shipped; the seller rates the buyer once they've paid. Rating again
-  replaces the earlier one.
+- The buyer rates the seller once it has shipped; the seller rates the buyer once the buyer has said they paid
+  ("Payment sent") or the order has shipped: marking it paid alone isn't enough. Rating again replaces the earlier
+  one.
 - Every listing shows its seller's average, and orders show both shops' reputations.
 - `GET /v1/reputation/:installId` gives a shop's averages as seller and as buyer, and its last 10 ratings (without
   the raters' names).

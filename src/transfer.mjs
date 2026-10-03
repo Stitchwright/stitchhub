@@ -285,8 +285,11 @@ export async function importStream(webStream) {
   const counts = {};
   const meta = {};
   const linkIds = new Map(); // an imported link whose address is already here under another id: merged into that one
-  const client = await pool.connect();
-  const release = holdFeeds(); // members' feeds wait until the import has committed
+  const release = holdFeeds(); // members' feeds wait until the import has committed (refuses while waiting for the writer lock)
+  const client = await pool.connect().catch((e) => {
+    release();
+    throw e;
+  });
   let lineNo = 0;
   let table = null;
   try {
