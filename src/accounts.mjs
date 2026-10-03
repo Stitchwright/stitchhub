@@ -15,7 +15,7 @@ import { Hono } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { one, q, tx } from "./db.mjs";
 import { sendMail, mailProblem } from "./mail.mjs";
-import { standingOf, claimAnswer, billingOpen, billingProblem, FOREVER, FOUNDING_LIMIT, foundingMissing, foundingUsed, priceList, refreshFounding, SOLO_LOGINS } from "./billing.mjs";
+import { standingOf, claimAnswer, billingOpen, billingProblem, FOREVER, FOUNDING_LIMIT, foundingMissing, foundingUsed, priceList, refreshFounding, SOLO_LOGINS, trialChargeStart } from "./billing.mjs";
 import { signer as hubSigner } from "./license.mjs";
 import { stripeMode } from "./stripe.mjs";
 import { refuseIfMoved } from "./moves.mjs";
@@ -206,6 +206,8 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
       waivedBy: st.waivedBy ? { name: st.waivedBy.shopName } : null,
       subscription: st.subscription,
       lapsedAt: s.lapsed_at ?? null,
+      // A subscription started now is first charged on this day, when the trial ends (null: at once).
+      firstChargeOn: trialChargeStart(s, st.subscription ? { unpaid_since: st.subscription.unpaidSince, disputed_at: st.subscription.disputedAt } : null)?.day ?? null,
     };
   }
 
@@ -375,6 +377,7 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
       shops: (await Promise.all(shops.map(withStanding))).map((s) => ({
         ...s,
         canSubscribe: open && !(s.source === "subscription" && s.standing !== "lapsed"),
+        firstChargeOn: open && !(s.source === "subscription" && s.standing !== "lapsed") ? s.firstChargeOn : null,
         // Switch to Shop / Solo: a running subscription (paid, or retrying a payment), not one that has ended.
         canSwitch: open && s.source === "subscription" && s.standing !== "lapsed" && ["active", "trialing", "past_due"].includes(s.subscription?.status),
         canManage: open && Boolean(a.stripe_customer_id),

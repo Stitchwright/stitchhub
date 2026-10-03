@@ -5,9 +5,12 @@
 // and badly signed webhooks, the tenant rule (one account can't subscribe another's shop), the two plans (Solo and Shop,
 // Switch with proration, several prices as one plan, an unknown price counted as Shop, lapsed keeps the last plan, the
 // key's l), founding shops (the admin's mark, 25 at most, founding prices, kept across a gap under 60 days and lost
-// after), the export, and a hub with billing closed. Every key the hub sends is verified here with the program's own
-// verify logic (license.ts, copied). Run it on a fresh database: the founding places are counted across the database.
-// usage: DATABASE_URL=postgresql://... (a scratch database) node test/billing.mjs
+// after), the trial's edges (subscribing inside the trial is charged when it ends, Stripe's 48 hours, a full refund of
+// the first payment inside the trial goes back to the trial, a won chargeback is undone with the founding mark its gap
+// cost), the export, and a hub with billing closed. Every key the hub sends is verified here with the program's own
+// verify logic (license.ts, copied). Each run makes a fresh database beside the one named (the founding places are
+// counted across a database, so a reused one fails) and drops it at the end.
+// usage: DATABASE_URL=postgresql://... (any database on a server where the role may create databases) node test/billing.mjs
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import net from "node:net";
@@ -17,11 +20,24 @@ import { spawn } from "node:child_process";
 import pg from "pg";
 import { startStripeMock } from "./stripe-mock.mjs";
 
-const DB = process.env.DATABASE_URL;
-assert.ok(DB, "set DATABASE_URL to a scratch database");
+const BASE_DB = process.env.DATABASE_URL;
+assert.ok(BASE_DB, "set DATABASE_URL to a database on a server where the role may create databases (the test makes a fresh one beside it)");
 const ADMIN = process.env.ADMIN_TOKEN ?? "billing-test-admin-token";
 const JOIN = "join-billing-test";
 const RUN = Date.now().toString(36);
+// A fresh database for this run, dropped at the end.
+const FRESH_DB = `stitchhub_billing_${RUN}`;
+const DB = (() => {
+  const u = new URL(BASE_DB);
+  u.pathname = `/${FRESH_DB}`;
+  return u.toString();
+})();
+{
+  const c = new pg.Client({ connectionString: BASE_DB });
+  await c.connect();
+  await c.query(`CREATE DATABASE ${FRESH_DB}`);
+  await c.end();
+}
 const ROOT = path.resolve(import.meta.dirname, "..");
 const WEBHOOK_SECRET = "whsec_billingtest1234567890";
 // The two plans' prices, founding or not (src/billing.mjs priceBook), an older Solo price still counted (decision 12: a
@@ -156,6 +172,10 @@ const stop = async () => {
   await db.end().catch(() => {});
   await stopHub();
   await mock.close();
+  const c = new pg.Client({ connectionString: BASE_DB });
+  await c.connect();
+  await c.query(`DROP DATABASE IF EXISTS ${FRESH_DB} WITH (FORCE)`);
+  await c.end();
 };
 process.on("exit", () => hub?.kill());
 await startHub(ENV);
@@ -260,6 +280,9 @@ try {
   console.log("tenant: ok");
 
   // ----- 4. Subscribe monthly: Checkout at the mock, paid, webhooks in; active with a monthly key. -----
+  // A's trial is long over, so it is charged at once (subscribing inside the trial is section 9d; a subscription that
+  // ends inside the trial falls back to the trial).
+  await db.query(`UPDATE shops SET created_at = now() - interval '40 days' WHERE id = $1`, [shopA]);
   // A's account accepted an older terms version (from the program), so Subscribe carries the tick (test/terms.mjs).
   const co = await ok(await page(a, `/shops/${shopA}/checkout`, { plan: "solo", interval: "monthly", acceptTerms: true }));
   assert.ok(co.url.startsWith(`${mock.url}/pay/cs_`), co.url);
@@ -313,8 +336,6 @@ try {
   console.log("webhooks: ok");
 
   // ----- 6. A failed payment: past_due inside 14 days' grace, the key unchanged, the owner mailed; then lapsed; then paid again. -----
-  // A's trial is long over (a subscription that ends inside the trial falls back to the trial).
-  await db.query(`UPDATE shops SET created_at = now() - interval '40 days' WHERE id = $1`, [shopA]);
   const failed = await mockPost(`/__subscriptions/${subA}/renew`, { paid: false });
   allDelivered(failed, "failed payment");
   st = await standing(keyA, "shopA");
@@ -364,6 +385,8 @@ try {
   const shopA2 = claimA2.shop.id;
   const lc = await ok(await call("/v1/accounts/link-code", { key: keyA, json: { shopRef: "shopA2", shopName: "A Second Company", program: "StitchBench" } }));
   await ok(await page(a, "/connect", { code: lc.code }));
+  // Its trial is over: charged at once, and the refund lapses it (a refund inside the trial is section 9d).
+  await db.query(`UPDATE shops SET created_at = now() - interval '40 days' WHERE id = $1`, [shopA2]);
   const co2 = await ok(await page(a, `/shops/${shopA2}/checkout`, { plan: "shop", interval: "yearly" }));
   assert.equal(mock.sessions.get(co2.sessionId).line_items.data[0].price.id, PRICES.shopYearly);
   assert.equal(mock.sessions.get(co2.sessionId).customer, session.customer, "the account's one customer again");
@@ -396,7 +419,8 @@ try {
   allDelivered(paid3, "subscribed again");
   assert.equal((await standing(keyA, "shopA")).standing, "active");
   const monthlyKeyId = checkKey((await standing(keyA, "shopA")).key, shopA, "new monthly key").id;
-  allDelivered(await mockPost(`/__charges/${paid3.invoice.charge}/dispute`), "dispute");
+  const dpA = await mockPost(`/__charges/${paid3.invoice.charge}/dispute`);
+  allDelivered(dpA, "dispute");
   st = await standing(keyA, "shopA");
   assert.equal(st.standing, "lapsed");
   assert.match(st.message, /disputed with the card company/);
@@ -424,6 +448,8 @@ try {
   await status(await page(pj, `/shops/${shopP}/checkout`, { plan: "monthly" }), 400, "an interval alone names no plan");
   await status(await page(pj, `/shops/${shopP}/checkout`, { plan: "team", interval: "monthly" }), 400, "not a plan");
   await status(await page(pj, `/shops/${shopP}/switch`, { plan: "shop" }), 409, "nothing to switch before subscribing");
+  // P's trial is over: charged at once (subscribing inside the trial is section 9d).
+  await db.query(`UPDATE shops SET created_at = now() - interval '40 days' WHERE id = $1`, [shopP]);
   // Solo, monthly: the first id of STRIPE_PRICE_SOLO_MONTHLY is the one sold.
   const coP = await ok(await page(pj, `/shops/${shopP}/checkout`, { plan: "solo", interval: "monthly" }));
   assert.equal(mock.sessions.get(coP.sessionId).line_items.data[0].price.id, PRICES.soloMonthly);
@@ -470,7 +496,6 @@ try {
   assert.match(hubLog, new RegExp(`price the hub doesn't know \\(price_unknown_${RUN}\\); treated as Shop`));
   allDelivered(await mockPost(`/__subscriptions/${subP}`, { price: PRICES.soloMonthly }), "back on Solo");
   // Lapsed keeps the last plan; an ended subscription isn't switched.
-  await db.query(`UPDATE shops SET created_at = now() - interval '40 days' WHERE id = $1`, [shopP]);
   allDelivered(await mockPost(`/__subscriptions/${subP}/cancel`, { at_period_end: false }), "P cancelled");
   allDelivered(await mockPost(`/__subscriptions/${subP}`, { current_period_end: Math.floor(Date.now() / 1000) - 86400 }), "P's period over");
   st = await standing(keyP, "shopP");
@@ -541,6 +566,137 @@ try {
   assert.ok(list.accounts.find((x) => x.id === accP.id).founding.lostAt);
   await db.query(`DELETE FROM accounts WHERE id = ANY($1)`, [fillers]);
   console.log("founding shops: ok");
+
+  // ----- 9d. Inside the trial: subscribing charges nothing until the trial ends (Stripe's trial_end, 48 hours ahead at
+  // least); a full refund of the first payment inside the trial goes back to the trial; a won chargeback is undone. -----
+  // B is a founding shop (the places are free again), so the won chargeback can give back the mark its gap cost.
+  fnd = await ok(await adminCall(`/accounts/${accB.id}/founding`, { founding: true }));
+  assert.equal(fnd.founding.founding, true);
+  const connectTo = async (jar, key, shopRef, shopName) => {
+    const lc = await ok(await call("/v1/accounts/link-code", { key, json: { shopRef, shopName, program: "StitchBench" } }));
+    await ok(await page(jar, "/connect", { code: lc.code }));
+  };
+  const keyE = await register("Billing Test Trial E");
+  const claimE = await claim(keyE, { shopRef: "shopE", shopName: "E Repair", kind: "repair", program: "StitchBench", version: "1.8.0", sole: true });
+  const shopE = claimE.shop.id;
+  await connectTo(b, keyE, "shopE", "E Repair");
+  const createdE = (await db.query(`SELECT created_at FROM shops WHERE id = $1`, [shopE])).rows[0].created_at;
+  const trialEndE = Math.floor((createdE.getTime() + 30 * 86400_000) / 1000);
+  const trialLastE = day(trialEndE * 1000);
+  assert.equal(trialLastE, plusDays(30));
+  me = await ok(await page(b, "/me"));
+  assert.equal(me.shops.find((s) => s.id === shopE).firstChargeOn, trialLastE, "the account page says when a subscription would first be charged");
+  // Case 1: subscribed inside the trial, Stripe's trial ends when the hub's does: nothing is charged now.
+  const coE = await ok(await page(b, `/shops/${shopE}/checkout`, { plan: "solo", interval: "monthly" }));
+  assert.equal(coE.firstChargeOn, trialLastE);
+  const sessE = mock.sessions.get(coE.sessionId);
+  assert.equal(Number(sessE.subscription_data.trial_end), trialEndE, "trial_end is the trial's end, as a Unix time");
+  assert.equal(sessE.line_items.data[0].price.id, PRICES.soloMonthlyFounding);
+  const paidE = await mockPost(`/__pay/${coE.sessionId}`);
+  allDelivered(paidE, "subscribed inside the trial");
+  const subE = paidE.subscription.id;
+  assert.deepEqual([paidE.subscription.status, paidE.subscription.current_period_end, paidE.invoice.amount_paid, paidE.invoice.charge], ["trialing", trialEndE, 0, null], "nothing charged until the trial ends");
+  st = await standing(keyE, "shopE");
+  assert.deepEqual([st.standing, st.lastDay, st.plan, st.interval, st.founding], ["active", trialLastE, "solo", "monthly", true], "trialing counts as subscribed: full use");
+  assert.equal(st.message, `Subscribed to Solo (monthly, founding price). The free trial runs through ${trialLastE}; the first charge is on ${trialLastE}.`);
+  k = checkKey(st.key, shopE, "trialing key");
+  assert.deepEqual([k.p, k.f, k.u, k.g, k.l], ["m", today(), trialLastE, 14, "solo"]);
+  me = await ok(await page(b, "/me"));
+  const rowE = me.shops.find((s) => s.id === shopE);
+  assert.deepEqual(
+    [rowE.standing, rowE.subscription.status, rowE.subscription.trialEnd, rowE.canSubscribe, rowE.canSwitch, rowE.firstChargeOn],
+    ["active", "trialing", trialLastE, false, true, null],
+  );
+  assert.equal((await db.query(`SELECT status FROM subscriptions WHERE shop_id = $1`, [shopE])).rows[0].status, "trialing");
+  // The trial ends: Stripe charges the first month, and the period runs on from the trial's end.
+  const firstE = await mockPost(`/__subscriptions/${subE}/renew`, { paid: true });
+  allDelivered(firstE, "the first charge, at the trial's end");
+  assert.deepEqual([firstE.invoice.amount_paid, firstE.invoice.billing_reason, Boolean(firstE.invoice.charge)], [1500, "subscription_cycle", true]);
+  st = await standing(keyE, "shopE");
+  assert.deepEqual([st.standing, st.lastDay], ["active", day(firstE.subscription.current_period_end * 1000)]);
+  assert.match(st.message, /^Subscribed to Solo \(monthly, founding price\), paid through/);
+  const paidKeyE = checkKey(st.key, shopE, "E's paid key");
+  // Stripe's 48 hours: with a day of its trial left, Checkout has no trial_end and the shop is charged at once.
+  const claimF = await claim(keyE, { shopRef: "shopF", shopName: "F Repair", kind: "repair", program: "StitchBench", version: "1.8.0" });
+  const shopF = claimF.shop.id;
+  await connectTo(b, keyE, "shopF", "F Repair");
+  await db.query(`UPDATE shops SET created_at = now() - interval '29 days' WHERE id = $1`, [shopF]);
+  const trialLastF = plusDays(1);
+  me = await ok(await page(b, "/me"));
+  assert.equal(me.shops.find((s) => s.id === shopF).firstChargeOn, null, "under 48 hours of trial left: charged at once");
+  const coF2 = await ok(await page(b, `/shops/${shopF}/checkout`, { plan: "shop", interval: "monthly" }));
+  assert.equal(coF2.firstChargeOn, null);
+  assert.equal(mock.sessions.get(coF2.sessionId).subscription_data.trial_end, undefined, "no trial_end under 48 hours");
+  const paidF2 = await mockPost(`/__pay/${coF2.sessionId}`);
+  allDelivered(paidF2, "F subscribes with a day of its trial left");
+  assert.deepEqual([paidF2.subscription.status, paidF2.invoice.amount_paid, paidF2.invoice.billing_reason], ["active", 3000, "subscription_create"]);
+  st = await standing(keyE, "shopF");
+  const paidKeyF = checkKey(st.key, shopF, "F's paid key");
+  assert.deepEqual([st.standing, paidKeyF.p], ["active", "m"]);
+  // Case 2: a partial refund lapses the shop, as before ...
+  assert.equal((await mockApi("/v1/refunds", { charge: paidF2.invoice.charge, amount: "1000" })).object, "refund");
+  assert.equal(mock.webhooks.at(-1).status, 200, "charge.refunded (partial) was taken");
+  st = await standing(keyE, "shopF");
+  assert.equal(st.standing, "lapsed", "a partial refund lapses the shop");
+  assert.match(st.message, /refunded on/);
+  // ... and once the whole first payment is refunded while the trial still runs, the shop is back on its trial until the
+  // trial's original end; the paid period's key is named for removal and the trial key comes back.
+  assert.equal((await mockApi("/v1/refunds", { charge: paidF2.invoice.charge })).object, "refund");
+  assert.equal(mock.webhooks.at(-1).status, 200, "charge.refunded (the rest) was taken");
+  st = await standing(keyE, "shopF");
+  assert.deepEqual([st.standing, st.lastDay, st.plan], ["trial", trialLastF, "shop"]);
+  assert.equal(st.message, `The payment for this shop was refunded on ${today()}, so it's back on its free trial through ${trialLastF}. Subscribe on your StitchHub account page to keep working after that.`);
+  assert.ok(st.revokeKeyIds.includes(paidKeyF.id), "the refunded period's key is named for removal");
+  k = checkKey(st.key, shopF, "F back on its trial");
+  assert.deepEqual([k.p, k.u, k.g, k.l], ["t", trialLastF, 14, "shop"]);
+  me = await ok(await page(b, "/me"));
+  const rowF = me.shops.find((s) => s.id === shopF);
+  assert.deepEqual([rowF.standing, rowF.source, rowF.canSubscribe, rowF.subscription.unpaidSince], ["trial", "trial", true, today()]);
+  assert.match(hubLog, new RegExp(`the first payment of subscription ${paidF2.subscription.id} was refunded inside the trial`));
+  // Past the trial's original end, it is a trial that ended (with the trial key's grace), not a refund's cut.
+  await db.query(`UPDATE shops SET created_at = now() - interval '40 days' WHERE id = $1`, [shopF]);
+  st = await standing(keyE, "shopF");
+  assert.equal(st.standing, "lapsed");
+  assert.match(st.message, /^The free trial ended on/);
+  k = checkKey(st.key, shopF, "F's trial over");
+  assert.deepEqual([k.p, k.g], ["t", 14]);
+  // Case 3: a chargeback lapses E at once ...
+  const dpE = await mockPost(`/__charges/${firstE.invoice.charge}/dispute`);
+  allDelivered(dpE, "E's chargeback");
+  st = await standing(keyE, "shopE");
+  assert.equal(st.standing, "lapsed");
+  assert.match(st.message, /disputed with the card company/);
+  assert.ok(st.revokeKeyIds.includes(paidKeyE.id));
+  // ... and disputes take weeks: 61 days on, the gap has cost B its founding mark.
+  await db.query(`UPDATE subscriptions SET unpaid_since = now() - interval '61 days', disputed_at = now() - interval '61 days' WHERE shop_id = $1`, [shopE]);
+  await db.query(`UPDATE accounts SET founding_gap_since = now() - interval '61 days' WHERE id = $1`, [accB.id]);
+  me = await ok(await page(b, "/me"));
+  assert.equal(me.billing.founding.on, false, "the gap passed 60 days: the founding mark went");
+  // A lost dispute changes nothing: A's chargeback (section 9) stands.
+  allDelivered(await mockPost(`/__disputes/${dpA.dispute.id}/close`, { status: "lost" }), "A's dispute lost");
+  st = await standing(keyA, "shopA");
+  assert.equal(st.standing, "lapsed");
+  assert.match(st.message, /disputed with the card company/);
+  assert.match(hubLog, new RegExp(`dispute ${dpA.dispute.id} closed \\(lost\\); nothing changes`));
+  // Won: the period counts again with a fresh key, the founding mark is back, the admin's flag is gone; logged.
+  const wonE = await mockPost(`/__disputes/${dpE.dispute.id}/close`, { status: "won" });
+  allDelivered(wonE, "E's dispute won");
+  st = await standing(keyE, "shopE");
+  assert.deepEqual([st.standing, st.lastDay, st.plan, st.founding], ["active", day(firstE.subscription.current_period_end * 1000), "solo", true]);
+  assert.match(st.message, /^Subscribed to Solo \(monthly, founding price\), paid through/);
+  k = checkKey(st.key, shopE, "E's key after the won dispute");
+  assert.deepEqual([k.p, k.f, k.u, k.g, k.l, k.fs], ["m", today(), st.lastDay, 14, "solo", true]);
+  assert.notEqual(k.id, paidKeyE.id, "a fresh key: the revoked one stays revoked");
+  assert.ok(!st.revokeKeyIds.includes(k.id));
+  assert.match(hubLog, new RegExp(`dispute ${dpE.dispute.id} on charge ${firstE.invoice.charge} was won; shop ${shopE}'s subscription ${subE} counts again; the founding mark the dispute cost is back`));
+  me = await ok(await page(b, "/me"));
+  assert.equal(me.billing.founding.on, true, "the founding mark is back");
+  list = await ok(await adminCall("/accounts"));
+  const adminE = list.shops.find((s) => s.id === shopE);
+  assert.deepEqual([adminE.standing, adminE.subscription.disputedAt, adminE.subscription.unpaidSince], ["active", null, null]);
+  const closedEv = mock.events.filter((e) => e.type === "charge.dispute.closed").at(-1);
+  assert.match((await mockPost(`/__replay/${closedEv.id}`)).delivered[0].body, /"replay":true/, "a replayed close does nothing");
+  console.log("the trial's edges (subscribe inside it, a refund inside it, a won chargeback): ok");
 
   // ----- 10. Waived: a retail shop partnered with a repair shop in good standing; "both" pays; the waiver ends. -----
   const keyR = await register("Billing Test Repair R");
