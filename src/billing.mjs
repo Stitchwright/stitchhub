@@ -15,6 +15,7 @@ import { one, q, tx } from "./db.mjs";
 import { sendMail } from "./mail.mjs";
 import * as stripe from "./stripe.mjs";
 import { signer as hubSigner, signKey, NO_END } from "./license.mjs";
+import { checkShown, currentVersion, needsAccept, recordAcceptance } from "./terms.mjs";
 
 export const TRIAL_DAYS = 30;
 export const GRACE_DAYS = 14;
@@ -304,21 +305,29 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
     const shop = await ownShop(c, a);
     const st = await standingOf(shop);
     if (st.source === "subscription" && st.standing !== "lapsed") throw fail(409, "This shop already has a subscription. Use Manage billing to change it.");
+    // Subscribing is agreeing to the terms (Terms, section 2): the version in force is written down with each Checkout,
+    // on the account and in terms_acceptances, and goes to Stripe with the subscription's metadata. An account that
+    // accepted an older version, or none, ticks the box on the page first.
+    const terms = currentVersion();
+    checkShown(body, fail);
+    if (needsAccept(a.terms_version) && body.acceptTerms !== true) throw fail(400, "Tick the box to accept the updated terms and privacy policy first.");
+    let session;
     try {
       const customer = await customerFor(a);
-      const session = await stripe.createSubscriptionCheckout({
+      session = await stripe.createSubscriptionCheckout({
         customer,
         price: prices()[plan],
         successUrl: `${hubUrl}/account/shops?done=1`,
         cancelUrl: `${hubUrl}/account/shops?cancelled=1`,
         reference: shop.id,
-        metadata: { hub_shop_id: shop.id, hub_account_id: a.id },
+        metadata: { hub_shop_id: shop.id, hub_account_id: a.id, ...(terms ? { hub_terms_version: terms } : {}) },
         idempotencyKey: `checkout:${shop.id}:${crypto.randomBytes(8).toString("hex")}`,
       });
-      return c.json({ ok: true, url: session.url, sessionId: session.id });
     } catch (e) {
       throw stripeFail(e);
     }
+    await tx((client) => recordAcceptance(client, { accountId: a.id, version: terms, via: "checkout", shopId: shop.id, checkoutId: session.id ?? null }));
+    return c.json({ ok: true, url: session.url, sessionId: session.id });
   });
 
   // Manage billing: the Customer Portal (change the card or plan, cancel, invoices). Per account; reached from a shop row.

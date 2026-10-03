@@ -37,6 +37,8 @@ export const TABLES = [
     cols: ["id", "shop_id", "account_id", "email", "nonce", "grant_text", "expires_at", "fetched_at", "used_at", "result", "why", "created_at"],
   },
   { t: "hosted_start", table: "hosted_starts", cols: ["id", "account_id", "program", "shop_name", "kind", "shop_ref", "install_id", "shop_id", "error", "created_at"] },
+  // Each time an account accepted the terms (src/terms.mjs): which version, how, and for a Checkout the shop and session.
+  { t: "terms_acceptance", table: "terms_acceptances", cols: ["id", "account_id", "version", "via", "shop_id", "checkout_id", "created_at"] },
   { t: "account_token", table: "account_tokens", cols: ["token_hash", "kind", "account_id", "shop_id", "expires_at", "used_at", "created_at"], key: "token_hash" },
   { t: "session", table: "sessions", cols: ["id_hash", "account_id", "created_at", "last_seen_at", "expires_at"], key: "id_hash" },
   // Billing: each shop's subscription as Stripe last reported it, the webhook events handled (a replay on the new hub

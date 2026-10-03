@@ -13,13 +13,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { Hono } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
-import { one, q, tx, getSetting } from "./db.mjs";
+import { one, q, tx } from "./db.mjs";
 import { sendMail, mailProblem } from "./mail.mjs";
 import { standingOf, claimAnswer, billingOpen, billingProblem, FOREVER } from "./billing.mjs";
 import { signer as hubSigner } from "./license.mjs";
 import { stripeMode } from "./stripe.mjs";
 import { refuseIfMoved } from "./moves.mjs";
 import { hostedOffer, resetStateOf, withdrawGrants } from "./provisioning.mjs";
+import { checkShown, currentVersion, isDraft, recordAcceptance, termsFor } from "./terms.mjs";
 
 const SESSION_DAYS = 30;
 const SET_PASSWORD_HOURS = 24; // a link to set the first password, or to verify an address
@@ -203,8 +204,11 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
    * hold (signed now when the standing calls for a new one), and the ids of keys to drop.
    */
   async function standingAnswer(shop, account) {
-    const a = account === undefined && shop.account_id ? await one(`SELECT email, verified_at FROM accounts WHERE id = $1`, [shop.account_id]) : account;
-    return { shop: shopOut(shop), account: a ? { email: a.email, verified: Boolean(a.verified_at) } : null, ...(await claimAnswer(shop)) };
+    const a = account === undefined && shop.account_id ? await one(`SELECT email, verified_at, terms_version FROM accounts WHERE id = $1`, [shop.account_id]) : account;
+    // terms: the version in force (for the program's tick) and what the shop's account accepted (Settings → Account).
+    const now = currentVersion();
+    const terms = { version: now, draft: isDraft(now), accepted: a?.terms_version ?? null };
+    return { shop: shopOut(shop), account: a ? { email: a.email, verified: Boolean(a.verified_at) } : null, terms, ...(await claimAnswer(shop)) };
   }
 
   /** The shop row for (install, shopRef): made on first sight, its name, kind, program and version kept current. */
@@ -317,7 +321,10 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
       let accountId = existing?.id;
       if (!accountId) {
         accountId = newId();
-        await client.query(`INSERT INTO accounts (id, email, terms_version, terms_at) VALUES ($1, $2, $3, $4)`, [accountId, email, str(body.termsVersion, 40), body.termsVersion ? new Date() : null]);
+        await client.query(`INSERT INTO accounts (id, email) VALUES ($1, $2)`, [accountId, email]);
+        // The version the owner ticked in the program, as the program named it (an older program names its own
+        // constant; /account then asks for the version in force).
+        await recordAcceptance(client, { accountId, version: str(body.termsVersion, 40), via: "program" });
       }
       await tieShop(client, shop.id, accountId);
       const token = await issueToken(client, "reset", { accountId }, SET_PASSWORD_HOURS * 3600_000);
@@ -367,7 +374,23 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
       // "Start a hosted StitchShop / StitchBench" (src/provisioning.mjs): which this hub offers, and whether it can sign resets.
       hosted: hostedOffer(),
       canSignResets: Boolean(hubSigner().signer),
+      // The version in force and what this account accepted; needsAccept: "We updated our terms" (and Subscribe asks
+      // for the tick).
+      terms: termsFor(a),
     });
+  });
+
+  // "We updated our terms": the signed-in owner ticks the box for the version in force (the one the page showed).
+  acct.post("/terms", async (c) => {
+    const a = await requireAccount(c);
+    if (!allow(`acct-terms:${a.id}`, 30)) throw fail(429, "Too many tries. Wait an hour.");
+    const body = await c.req.json();
+    if (body.acceptTerms !== true) throw fail(400, "Tick the box to accept the terms.");
+    const terms = currentVersion();
+    if (!terms) throw fail(404, "No terms are published on this hub yet.");
+    checkShown(body, fail);
+    await tx((client) => recordAcceptance(client, { accountId: a.id, version: terms, via: "account" }));
+    return c.json({ ok: true, terms: termsFor({ terms_version: terms, terms_at: new Date() }) });
   });
 
   // Door 3: an account made here first. The password is set now; the account works once the emailed link is opened.
@@ -377,17 +400,19 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
     const email = emailOf(body.email);
     const password = passwordOf(body.password, email);
     if (body.acceptTerms !== true) throw fail(400, "Tick the box to accept the terms.");
-    const terms = (await getSetting("terms_version")) ?? "draft";
+    const terms = currentVersion();
+    checkShown(body, fail);
     const existing = await one(`SELECT id, verified_at, password_hash FROM accounts WHERE lower(email) = $1`, [email]);
     if (existing && (existing.verified_at || existing.password_hash)) throw fail(409, "That address already has an account. Sign in, or use \"Forgot your password\".");
     const hash = await hashPassword(password);
     const token = await tx(async (client) => {
       let id = existing?.id;
-      if (id) await client.query(`UPDATE accounts SET password_hash = $2, terms_version = $3, terms_at = now() WHERE id = $1`, [id, hash, terms]);
+      if (id) await client.query(`UPDATE accounts SET password_hash = $2 WHERE id = $1`, [id, hash]);
       else {
         id = newId();
-        await client.query(`INSERT INTO accounts (id, email, password_hash, terms_version, terms_at) VALUES ($1, $2, $3, $4, now())`, [id, email, hash, terms]);
+        await client.query(`INSERT INTO accounts (id, email, password_hash) VALUES ($1, $2, $3)`, [id, email, hash]);
       }
+      await recordAcceptance(client, { accountId: id, version: terms, via: "signup" });
       return issueToken(client, "verify", { accountId: id }, SET_PASSWORD_HOURS * 3600_000);
     });
     await verifyMail(email, token);

@@ -222,7 +222,8 @@ try {
   console.log("tenant: ok");
 
   // ----- 4. Subscribe monthly: Checkout at the mock, paid, webhooks in; active with a monthly key. -----
-  const co = await ok(await page(a, `/shops/${shopA}/checkout`, { plan: "monthly" }));
+  // A's account accepted an older terms version (from the program), so Subscribe carries the tick (test/terms.mjs).
+  const co = await ok(await page(a, `/shops/${shopA}/checkout`, { plan: "monthly", acceptTerms: true }));
   assert.ok(co.url.startsWith(`${mock.url}/pay/cs_`), co.url);
   const session = mock.sessions.get(co.sessionId);
   assert.equal(session.mode, "subscription");

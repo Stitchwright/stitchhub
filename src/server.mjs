@@ -20,6 +20,7 @@ import { registerAccounts } from "./accounts.mjs";
 import { registerBilling } from "./billing.mjs";
 import { registerMoves } from "./moves.mjs";
 import { registerProvisioning } from "./provisioning.mjs";
+import { registerTerms } from "./terms.mjs";
 import { discordBody } from "./discord.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
@@ -232,10 +233,14 @@ app.get("/", async (c) => {
 Manuals are never stored here, only links to where they are published.</p>
 <p>${s.links} manual links · ${s.posts} shared notes · ${s.installs} shops</p>
 <p>To join, open StitchBench → Settings → Community hub and enter this address and the join key you were given.</p>
-<p><a href="/account">Your account</a> · <a href="/admin">Hub admin</a></p></body>`);
+<p><a href="/account">Your account</a> · <a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · <a href="/admin">Hub admin</a></p></body>`);
 });
 
 app.get("/admin", (c) => c.html(fs.readFileSync(path.join(ROOT, "public", "admin.html"), "utf8")));
+
+// The Terms of Service and the Privacy Policy, every version on file (legal/, src/terms.mjs), and GET /v1/terms/current
+// for the programs (no key: registered before the member routes).
+registerTerms({ app, hubName: HUB_NAME });
 
 // Join: the community's join key gets an install its own key (shown once).
 app.post("/v1/register", async (c) => {

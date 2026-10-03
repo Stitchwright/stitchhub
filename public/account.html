@@ -23,6 +23,8 @@
   .bad { color: var(--bad); } .ok { color: var(--ok); } #msg { min-height: 1.5em; }
   .check { display: flex; gap: 8px; align-items: flex-start; margin: 10px 0; } .check input { width: auto; margin-top: 4px; }
   .scroll { overflow-x: auto; }
+  .check label a { color: var(--accent); } #termsPrompt { border-color: var(--accent); border-width: 2px; }
+  footer { margin-top: 24px; font-size: 13px; }
 </style>
 </head>
 <body>
@@ -48,7 +50,7 @@
       <label for="suEmail">Email</label><input id="suEmail" type="email" autocomplete="username" required>
       <label for="suPassword">Password (8 characters or more)</label><input id="suPassword" type="password" autocomplete="new-password" minlength="8" required>
       <label for="suPassword2">The same password again</label><input id="suPassword2" type="password" autocomplete="new-password" minlength="8" required>
-      <div class="check"><input id="suTerms" type="checkbox" required><label for="suTerms" style="margin:0">I accept the terms of use.</label></div>
+      <div class="check"><input id="suTerms" type="checkbox" required><label for="suTerms" style="margin:0">I accept the <a href="/terms" target="_blank" rel="noopener">Terms of Service</a> and the <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a><span id="suVersion"></span>.</label></div>
       <div class="row"><button>Create account</button><button type="button" class="plain" id="showSignin">I have an account</button></div>
     </form>
   </section>
@@ -78,6 +80,13 @@
 
   <div id="app" hidden>
     <nav><a href="/account/shops">Your shops</a><a href="/account/settings">Settings</a><a href="#" id="signout">Sign out</a></nav>
+
+    <section id="termsPrompt" hidden>
+      <h2 id="tpTitle">We updated our terms</h2>
+      <p id="tpText"></p>
+      <div class="check"><input id="tpTick" type="checkbox"><label for="tpTick" style="margin:0">I accept the <a id="tpTerms" href="/terms" target="_blank" rel="noopener">Terms of Service</a> and the <a id="tpPrivacy" href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>, version <span id="tpVersion"></span>.</label></div>
+      <button id="tpAccept">Accept</button>
+    </section>
 
     <section id="shops" hidden>
       <h2>Your shops</h2>
@@ -121,6 +130,7 @@
       <button class="plain" id="signoutAll">Sign out everywhere</button>
     </section>
   </div>
+  <footer class="muted"><a href="/terms">Terms of Service</a> · <a href="/privacy">Privacy Policy</a></footer>
 </main>
 <script>
   const $ = (id) => document.getElementById(id);
@@ -145,7 +155,8 @@
     document.title = `${me.hubName} account`; $("title").textContent = me.hubName;
     $("meEmail").textContent = me.account.email;
     $("shopsEmpty").hidden = me.shops.length > 0; $("shopsTable").hidden = !me.shops.length;
-    $("shopRows").replaceChildren(...me.shops.map((s) => { const tr = document.createElement("tr"); tr.append(td(s.name), td([s.program, s.version].filter(Boolean).join(" ") || s.installName), td(s.message), billingCell(s, me.billing), td(when(s.lastSeenAt)), resetCell(s, me)); return tr; }));
+    showTermsPrompt(me.terms);
+    $("shopRows").replaceChildren(...me.shops.map((s) => { const tr = document.createElement("tr"); tr.append(td(s.name), td([s.program, s.version].filter(Boolean).join(" ") || s.installName), td(s.message), billingCell(s, me.billing, me.terms), td(when(s.lastSeenAt)), resetCell(s, me)); return tr; }));
     // Start a hosted shop: for a verified account, when this hub offers one.
     const offered = Object.entries(me.hosted || {}).filter(([, on]) => on).map(([name]) => name);
     $("hosted").hidden = !me.account.verified || !offered.length;
@@ -156,12 +167,37 @@
     show("app", where === "settings" ? "settings" : "shops");
   }
 
+  // "We updated our terms" (or, for an account that never ticked, "Please accept our terms"): shown while the version in
+  // force is newer than the one this account accepted. Subscribe needs the same tick.
+  let termsNow = null;
+  function showTermsPrompt(t) {
+    termsNow = t || null;
+    $("termsPrompt").hidden = !t?.needsAccept;
+    if (!t?.needsAccept) return;
+    $("tpTitle").textContent = t.accepted ? "We updated our terms" : "Please accept our terms";
+    $("tpVersion").textContent = t.current + (t.draft ? " (a draft, not yet in force)" : "");
+    $("tpTerms").href = `/terms/${encodeURIComponent(t.current)}`; $("tpPrivacy").href = `/privacy/${encodeURIComponent(t.current)}`;
+    $("tpText").textContent = t.accepted
+      ? `This account accepted version ${t.accepted}${t.acceptedAt ? ` on ${new Date(t.acceptedAt).toLocaleDateString()}` : ""}. Please read the new version and accept it; subscribing a shop needs it.`
+      : "This account hasn't accepted the current Terms of Service and Privacy Policy yet. Please read them and accept them; subscribing a shop needs it.";
+    $("tpTick").checked = false;
+  }
+
   // Subscribe (Stripe Checkout) and Manage billing (Stripe's Customer Portal): the hub answers with the page to go to.
-  function billingCell(s, billing) {
+  // Checkout names the terms version the page showed, and the tick when the account must accept it first.
+  function billingCell(s, billing, terms) {
     const c = document.createElement("td");
     const go = (path, body, label) => {
       const b = document.createElement("button"); b.className = "plain"; b.style.marginTop = "0"; b.textContent = label;
-      b.onclick = async () => { b.disabled = true; try { const r = await api(`/shops/${s.id}${path}`, body); location.href = r.url; } catch (err) { say(err.message, true); b.disabled = false; } };
+      b.onclick = async () => {
+        let send = body;
+        if (path === "/checkout") {
+          if (terms?.needsAccept && !$("tpTick").checked) { say("Tick the box at the top to accept the updated terms first.", true); $("tpTick").focus(); return; }
+          send = { ...body, ...(terms?.current ? { termsVersion: terms.current } : {}), ...(terms?.needsAccept ? { acceptTerms: true } : {}) };
+        }
+        b.disabled = true;
+        try { const r = await api(`/shops/${s.id}${path}`, send); location.href = r.url; } catch (err) { say(err.message, true); b.disabled = false; }
+      };
       return b;
     };
     if (!billing.open) { c.textContent = s.standing === "comped" ? "free" : "coming soon"; c.className = "muted"; return c; }
@@ -211,6 +247,18 @@
     } catch (e) { say(e.message, true); }
   }
 
+  // The version in force, for the sign-up tick (the hub records it; a page left open over a new version is told to reload).
+  let signupTerms = null;
+  fetch("/v1/terms/current").then((r) => (r.ok ? r.json() : null)).then((t) => {
+    if (!t?.version) return;
+    signupTerms = t.version;
+    $("suVersion").textContent = `, version ${t.version}${t.draft ? " (a draft, not yet in force)" : ""}`;
+  }).catch(() => {});
+  $("tpAccept").onclick = async () => {
+    if (!$("tpTick").checked) return say("Tick the box to accept the terms.", true);
+    try { await api("/terms", { acceptTerms: true, termsVersion: termsNow?.current }); say("Thank you: your acceptance is recorded."); await loadMe(location.pathname.endsWith("/settings") ? "settings" : "shops"); }
+    catch (err) { say(err.message, true); }
+  };
   $("showSignup").onclick = (e) => { e.preventDefault(); show("signup"); };
   $("showSignin").onclick = () => show("signin");
   $("signinForm").onsubmit = async (e) => {
@@ -222,7 +270,7 @@
   $("signupForm").onsubmit = async (e) => {
     e.preventDefault();
     if (!samePassword($("suPassword").value, $("suPassword2").value)) return;
-    try { await api("/signup", { email: $("suEmail").value, password: $("suPassword").value, acceptTerms: $("suTerms").checked }); say(`We've sent an email to ${$("suEmail").value}. Open the link in it to finish.`); show("signin"); $("siEmail").value = $("suEmail").value; }
+    try { await api("/signup", { email: $("suEmail").value, password: $("suPassword").value, acceptTerms: $("suTerms").checked, ...(signupTerms ? { termsVersion: signupTerms } : {}) }); say(`We've sent an email to ${$("suEmail").value}. Open the link in it to finish.`); show("signin"); $("siEmail").value = $("suEmail").value; }
     catch (err) { say(err.message, true); }
   };
   $("forgotForm").onsubmit = async (e) => { e.preventDefault(); try { const r = await api("/forgot", { email: $("fgEmail").value }); say(r.message); } catch (err) { say(err.message, true); } };
