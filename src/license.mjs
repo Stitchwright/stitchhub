@@ -57,3 +57,18 @@ export function signKey(s, { shopId, shopName, modules = ["base"], plan, firstDa
   const payload = { v: 1, k: s.kid, id: newKeyId(), s: shopId, n: String(shopName ?? "").slice(0, 120), m: modules, p: plan, f: firstDay, u: lastDay, g: graceDays, t: new Date().toISOString() };
   return { id: payload.id, key: encodeLicense(payload, s.key), payload };
 }
+
+/**
+ * The text that is signed for a password reset grant before its payload (StitchBench src/lib/hub-reset-grants.ts reads
+ * it): no grant's signature can pass as a key's (a key signs bare JSON), and no key's as a grant's.
+ */
+export const GRANT_CONTEXT = "stitchhub-reset-grant-v1\n";
+
+/**
+ * A reset grant for the Windows program: `SBG1.<base64url payload JSON>.<base64url Ed25519 signature over GRANT_CONTEXT
+ * + the payload bytes>`, signed with the hub's own key. `p`: { id, shopRef, installId, email, nonce, iat, exp }.
+ */
+export function signGrant(s, p) {
+  const bytes = Buffer.from(JSON.stringify({ v: 1, k: s.kid, ...p }), "utf8");
+  return `SBG1.${bytes.toString("base64url")}.${crypto.sign(null, Buffer.concat([Buffer.from(GRANT_CONTEXT, "utf8"), bytes]), s.key).toString("base64url")}`;
+}

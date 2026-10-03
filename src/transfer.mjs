@@ -16,7 +16,11 @@ export const TABLES = [
   // Shop owners' accounts (hashed passwords), their shops with standing, the links and codes out (hashed), and signed-in
   // browsers: a move keeps everyone signed in and every link they were sent working.
   { t: "account", table: "accounts", cols: ["id", "email", "password_hash", "verified_at", "terms_version", "terms_at", "stripe_customer_id", "disabled", "created_at", "last_sign_in_at"] },
-  { t: "shop", table: "shops", cols: ["id", "install_id", "shop_ref", "name", "kind", "program", "version", "account_id", "comp_until", "comp_note", "lapsed_at", "created_at", "last_seen_at"] },
+  {
+    t: "shop",
+    table: "shops",
+    cols: ["id", "install_id", "shop_ref", "name", "kind", "program", "version", "account_id", "comp_until", "comp_note", "lapsed_at", "reset_opt_in", "created_at", "last_seen_at"],
+  },
   // Companies moving between installs: the move tokens out (hashed) and the record of each move, so a company's old
   // install still hears where it went after the hub itself moved (src/moves.mjs).
   {
@@ -25,6 +29,14 @@ export const TABLES = [
     cols: ["id", "shop_id", "shop_ref", "token_hash", "from_install_id", "to_install_id", "expires_at", "used_at", "cancelled_at", "by_admin", "moved", "created_at"],
     json: ["moved"],
   },
+  // Password resets asked for on an account for a Windows install (signed grants, public, one use), and the hosted shops
+  // accounts started (src/provisioning.mjs): a moved hub still knows what was asked and answered.
+  {
+    t: "reset_grant",
+    table: "reset_grants",
+    cols: ["id", "shop_id", "account_id", "email", "nonce", "grant_text", "expires_at", "fetched_at", "used_at", "result", "why", "created_at"],
+  },
+  { t: "hosted_start", table: "hosted_starts", cols: ["id", "account_id", "program", "shop_name", "kind", "shop_ref", "install_id", "shop_id", "error", "created_at"] },
   { t: "account_token", table: "account_tokens", cols: ["token_hash", "kind", "account_id", "shop_id", "expires_at", "used_at", "created_at"], key: "token_hash" },
   { t: "session", table: "sessions", cols: ["id_hash", "account_id", "created_at", "last_seen_at", "expires_at"], key: "id_hash" },
   // Billing: each shop's subscription as Stripe last reported it, the webhook events handled (a replay on the new hub

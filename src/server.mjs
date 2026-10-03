@@ -19,6 +19,7 @@ import { registerPartners } from "./partners.mjs";
 import { registerAccounts } from "./accounts.mjs";
 import { registerBilling } from "./billing.mjs";
 import { registerMoves } from "./moves.mjs";
+import { registerProvisioning } from "./provisioning.mjs";
 import { discordBody } from "./discord.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
@@ -879,6 +880,9 @@ registerPartners({ app, member, fail, newId, allow, clientIp, sha, hubName: HUB_
 // signs for the program, the admin's "Lapse now").
 const accounts = registerAccounts({ app, member, admin, fail, newId, allow, bucket, clientIp, hubName: HUB_NAME, createInstall, installByKey, claimListings, root: ROOT });
 registerBilling({ app, acct: accounts.acct, admin, fail, allow, clientIp, hubName: HUB_NAME, hubUrl: accounts.hubUrl, requireAccount: accounts.requireAccount, ready: accounts.ready });
+// "Start a hosted StitchShop / StitchBench" from the account page, and a password reset from the account to a Windows
+// install that allows it: the grant the hub signs, fetched and answered by the program (src/provisioning.mjs).
+registerProvisioning({ member, acct: accounts.acct, fail, newId, allow, clientIp, requireAccount: accounts.requireAccount });
 app.route("/account/api", accounts.acct);
 // A company moving from one install to another: the move token, its redemption (with or without an install key), the
 // admin's list and move by hand (src/moves.mjs). Before the member routes, so a program on no hub yet can redeem.
