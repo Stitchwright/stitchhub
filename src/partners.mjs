@@ -17,6 +17,10 @@ const MAX_INSTALL_HOUR_BYTES = 1024 * 1024 * 1024; // and one install, all its s
 const MAX_LINK_HOUR_BYTES = 128 * 1024 * 1024; // and one side of one link (about 35 intakes with photos)
 const MAX_STORED = 2 * 1024 * 1024 * 1024; // what one install may have on the hub at once (a busy year of intakes with photos is under 1 GB)
 const MAX_LINK_STORED = 512 * 1024 * 1024; // what one side of one link may have on the hub at once
+// What a member and every partner-only install its codes brought on may have on the hub together. Each install has a
+// room of its own above, so without this a member's 50 brought-on installs could hold about 100 GB between them, enough
+// to fill the hub's disk. A hub admin can set it with PARTNER_MEMBER_STORED_MB.
+const MAX_MEMBER_STORED = (Number(process.env.PARTNER_MEMBER_STORED_MB) || 4096) * 1024 * 1024;
 const MAX_PAGE_BYTES = 16 * 1024 * 1024; // one answer to a message poll; the first message always fits
 const MAX_MINTED = 50; // partner-only installs one member's codes may bring onto the hub, all told
 // New work isn't taken on a partnership that has ended; updates, payments and terms still pass (the last statement).
@@ -47,8 +51,9 @@ function allowBytes(budgets, bytes) {
   return true;
 }
 
-// What each install, and each side of each link, has on the hub now (about: the stored size of its messages). Read
-// again every ten minutes so the sweep's deletions count; what is sent in between is added on.
+// What each install, each side of each link, and each member with the installs it brought on has on the hub now
+// (about: the stored size of its messages). Read again every ten minutes so the sweep's deletions count; what is sent
+// in between is added on.
 const stored = new Map();
 async function storedBytes(key, sql, params) {
   const s = stored.get(key);
@@ -68,6 +73,18 @@ const installStored = (installId) =>
   );
 const linkStored = (linkId, side) =>
   storedBytes(`l:${linkId}:${side}`, `SELECT coalesce(sum(pg_column_size(data)), 0)::bigint AS bytes FROM partner_messages WHERE link_id = $1 AND from_side = $2`, [linkId, side]);
+// A member and the installs that go back to it (installs.invited_by: the partner-only installs its codes, or its
+// partners' codes, brought on), all together. Each message counts once, on the side that sent it.
+const memberStored = (root) =>
+  storedBytes(
+    `r:${root}`,
+    `SELECT coalesce(sum(pg_column_size(m.data)), 0)::bigint AS bytes
+     FROM installs i JOIN partner_links l ON l.repair_install_id = i.id OR l.retail_install_id = i.id
+     JOIN partner_messages m ON m.link_id = l.id
+       AND ((l.repair_install_id = i.id AND m.from_side = 'repair') OR (l.retail_install_id = i.id AND m.from_side = 'retail'))
+     WHERE i.id = $1 OR i.invited_by = $1`,
+    [root],
+  );
 
 // Hours that are over are forgotten (keys include shop refs, which the install chooses).
 setInterval(() => {
@@ -272,6 +289,16 @@ export function registerPartners({ app, member, fail, newId, allow, clientIp, sh
     if (kept.bytes + bytes > MAX_STORED || keptLink.bytes + bytes > MAX_LINK_STORED) {
       throw fail(507, "This shop's partner messages fill its room on the hub. Old ones clear after a year; ask the hub admin if you need room sooner.");
     }
+    // And the room this install shares with the member that brought it on (or, for a member, with the installs its
+    // codes brought on).
+    const root = (await one(`SELECT coalesce(invited_by, id) AS root FROM installs WHERE id = $1`, [installId]))?.root ?? installId;
+    const keptMember = await memberStored(root);
+    if (keptMember.bytes + bytes > MAX_MEMBER_STORED) {
+      throw fail(
+        507,
+        "The partner messages of this shop and the partner shops that came onto the hub through the same member fill the room they share on the hub. Old ones clear after a year; ask the hub admin if you need room sooner.",
+      );
+    }
     const row = await one(
       `INSERT INTO partner_messages (id, link_id, from_side, type, data, bytes) VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT (link_id, from_side, id) DO NOTHING RETURNING seq`,
@@ -280,6 +307,7 @@ export function registerPartners({ app, member, fail, newId, allow, clientIp, sh
     if (row) {
       kept.bytes += bytes;
       keptLink.bytes += bytes;
+      keptMember.bytes += bytes;
     }
     return c.json({ ok: true, duplicate: !row, seq: row ? String(row.seq) : null });
   });

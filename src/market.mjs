@@ -607,10 +607,12 @@ export function registerMarket({ member, fail, newId, writeLimit, notify, feedPa
 
   // ---------- ratings ----------
 
-  // The seller rates the buyer once the order is paid; the buyer rates the seller from then on too, and whenever the
-  // seller has rated them (even on an order cancelled after), so no rating goes unanswered. Rating again replaces
-  // the earlier one.
+  // The buyer rates the seller once the order is paid, and whenever the seller has rated them (even on an order
+  // cancelled after), so no rating goes unanswered. The seller rates the buyer once the order has shipped, or once it
+  // is paid and the buyer has said so ("Payment sent"): the seller can mark an order paid alone (cash, a check), and
+  // that alone mustn't let it rate a buyer who never took part. Rating again replaces the earlier one.
   const RATE_FROM = { buyer: ["PAID", "SHIPPED", "RECEIVED"], seller: ["PAID", "SHIPPED", "RECEIVED"] };
+  const mayRate = (mine, o) => RATE_FROM[mine].includes(o.status) && (mine === "buyer" || o.status !== "PAID" || o.buyer_paid_note != null);
 
   member.post("/orders/:id/rate", async (c) => {
     writeLimit(c);
@@ -626,8 +628,8 @@ export function registerMarket({ member, fail, newId, writeLimit, notify, feedPa
       const mine = o.buyer_install_id === me ? "buyer" : "seller";
       sameCompany(actingShop(c, body), mine === "buyer" ? o.buyer_shop_ref : o.seller_shop_ref, "order", fail);
       const answering = mine === "buyer" && (await client.query(`SELECT 1 FROM order_ratings WHERE order_id = $1 AND by_role = 'seller'`, [id])).rowCount > 0;
-      if (!RATE_FROM[mine].includes(o.status) && !answering) {
-        throw fail(409, mine === "buyer" ? "You can rate the seller once the order is paid." : "You can rate the buyer once they've paid.");
+      if (!mayRate(mine, o) && !answering) {
+        throw fail(409, mine === "buyer" ? "You can rate the seller once the order is paid." : "You can rate the buyer once they've said they paid (Payment sent) or the order has shipped.");
       }
       const rated = mine === "buyer" ? o.seller_install_id : o.buyer_install_id;
       const [raterRef, ratedRef] = mine === "buyer" ? [o.buyer_shop_ref, o.seller_shop_ref] : [o.seller_shop_ref, o.buyer_shop_ref];
