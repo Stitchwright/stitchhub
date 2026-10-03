@@ -626,26 +626,22 @@ export function registerMarket({ member, fail, newId, writeLimit, notify, feedPa
     });
   });
 
-  // A StitchBench with one company says which it is: what the install listed, ordered, was rated for and shared before
-  // it sent a shopRef becomes that company's, so its standing carries over. Doing it again changes nothing.
-  member.post("/shops/claim", async (c) => {
-    writeLimit(c);
-    const body = await c.req.json().catch(() => ({}));
-    const ref = str(body.shopRef, 64);
-    if (!ref) throw fail(400, "Send shopRef.");
-    const me = c.get("install").id;
-    const claimed = await tx(async (client) => {
-      const l = await client.query(`UPDATE listings SET shop_ref = $2, seq = nextval('change_seq') WHERE install_id = $1 AND shop_ref = '' AND status <> 'REMOVED'`, [me, ref]);
-      await client.query(`UPDATE listings SET shop_ref = $2 WHERE install_id = $1 AND shop_ref = ''`, [me, ref]);
-      await client.query(`UPDATE orders SET seller_shop_ref = $2 WHERE seller_install_id = $1 AND seller_shop_ref = ''`, [me, ref]);
-      await client.query(`UPDATE orders SET buyer_shop_ref = $2 WHERE buyer_install_id = $1 AND buyer_shop_ref = ''`, [me, ref]);
-      await client.query(`UPDATE order_ratings SET rated_shop_ref = $2 WHERE rated_install_id = $1 AND rated_shop_ref = ''`, [me, ref]);
-      await client.query(`UPDATE order_ratings SET rater_shop_ref = $2 WHERE rater_install_id = $1 AND rater_shop_ref = ''`, [me, ref]);
-      await client.query(`UPDATE posts SET shop_ref = $2 WHERE install_id = $1 AND shop_ref = ''`, [me, ref]);
-      return l.rowCount;
-    });
-    return c.json({ ok: true, listings: claimed });
-  });
+}
+
+/**
+ * A StitchBench with one company says which it is (POST /v1/shops/claim, src/accounts.mjs): what the install listed,
+ * ordered, was rated for and shared before it sent a shopRef becomes that company's, so its standing carries over.
+ * Doing it again changes nothing. Returns how many listings changed hands (they go out again in the feed).
+ */
+export async function claimListings(client, installId, shopRef) {
+  const l = await client.query(`UPDATE listings SET shop_ref = $2, seq = nextval('change_seq') WHERE install_id = $1 AND shop_ref = '' AND status <> 'REMOVED'`, [installId, shopRef]);
+  await client.query(`UPDATE listings SET shop_ref = $2 WHERE install_id = $1 AND shop_ref = ''`, [installId, shopRef]);
+  await client.query(`UPDATE orders SET seller_shop_ref = $2 WHERE seller_install_id = $1 AND seller_shop_ref = ''`, [installId, shopRef]);
+  await client.query(`UPDATE orders SET buyer_shop_ref = $2 WHERE buyer_install_id = $1 AND buyer_shop_ref = ''`, [installId, shopRef]);
+  await client.query(`UPDATE order_ratings SET rated_shop_ref = $2 WHERE rated_install_id = $1 AND rated_shop_ref = ''`, [installId, shopRef]);
+  await client.query(`UPDATE order_ratings SET rater_shop_ref = $2 WHERE rater_install_id = $1 AND rater_shop_ref = ''`, [installId, shopRef]);
+  await client.query(`UPDATE posts SET shop_ref = $2 WHERE install_id = $1 AND shop_ref = ''`, [installId, shopRef]);
+  return l.rowCount;
 }
 
 /** Orders still waiting on the seller (`where` on orders) are declined, with the reason the buyer sees. */

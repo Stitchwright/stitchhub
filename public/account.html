@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StitchHub account</title>
+<style>
+  :root { --bg: #f4f2ee; --card: #fff; --ink: #1c2430; --muted: #5b6573; --line: #ddd8cf; --accent: #1f3a5f; --bad: #b3261e; --ok: #1e7a3c; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #15181d; --card: #1e232a; --ink: #e8ebef; --muted: #a3acb8; --line: #333a44; --accent: #8fb3e0; --bad: #ff8a80; --ok: #7dd3a0; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 system-ui, "Segoe UI", sans-serif; }
+  main { max-width: 720px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { margin: 0 0 4px; font-size: 26px; } h2 { font-size: 18px; margin: 0 0 10px; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin: 16px 0; }
+  .muted { color: var(--muted); } .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  label { display: block; margin: 8px 0 2px; color: var(--muted); font-size: 13px; }
+  input, button { font: inherit; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--ink); }
+  input { width: 100%; max-width: 360px; } button { background: var(--accent); color: #fff; border-color: var(--accent); cursor: pointer; margin-top: 10px; }
+  button.plain { background: var(--card); color: var(--ink); border-color: var(--line); }
+  a { color: var(--accent); } nav a { margin-right: 14px; }
+  table { width: 100%; border-collapse: collapse; } td, th { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 12px; text-transform: uppercase; color: var(--muted); }
+  .bad { color: var(--bad); } .ok { color: var(--ok); } #msg { min-height: 1.5em; }
+  .check { display: flex; gap: 8px; align-items: flex-start; margin: 10px 0; } .check input { width: auto; margin-top: 4px; }
+  .scroll { overflow-x: auto; }
+</style>
+</head>
+<body>
+<main>
+  <h1 id="title">StitchHub</h1>
+  <p class="muted">Your account for the shops you run with StitchBench or StitchShop.</p>
+  <p id="msg" role="status"></p>
+
+  <section id="signin" hidden>
+    <h2>Sign in</h2>
+    <form id="signinForm">
+      <label for="siEmail">Email</label><input id="siEmail" type="email" autocomplete="username" required>
+      <label for="siPassword">Password</label><input id="siPassword" type="password" autocomplete="current-password" required>
+      <div class="row"><button>Sign in</button><a href="/account/forgot">Forgot your password?</a></div>
+    </form>
+    <p class="muted">New here? <a href="#" id="showSignup">Create an account</a>. If you already use StitchBench or StitchShop, the easier way is Settings → Account inside the program: it starts the account for you.</p>
+    <p class="muted" id="resendRow" hidden>Didn't get the email? <a href="#" id="resend">Send it again</a>.</p>
+  </section>
+
+  <section id="signup" hidden>
+    <h2>Create an account</h2>
+    <form id="signupForm">
+      <label for="suEmail">Email</label><input id="suEmail" type="email" autocomplete="username" required>
+      <label for="suPassword">Password (8 characters or more)</label><input id="suPassword" type="password" autocomplete="new-password" minlength="8" required>
+      <label for="suPassword2">The same password again</label><input id="suPassword2" type="password" autocomplete="new-password" minlength="8" required>
+      <div class="check"><input id="suTerms" type="checkbox" required><label for="suTerms" style="margin:0">I accept the terms of use.</label></div>
+      <div class="row"><button>Create account</button><button type="button" class="plain" id="showSignin">I have an account</button></div>
+    </form>
+  </section>
+
+  <section id="forgot" hidden>
+    <h2>Forgot your password</h2>
+    <p class="muted">Enter the email address of your account. If it has one, we'll send a link to set a new password; the link works once, for an hour.</p>
+    <form id="forgotForm">
+      <label for="fgEmail">Email</label><input id="fgEmail" type="email" autocomplete="username" required>
+      <div class="row"><button>Send the link</button><a href="/account">Back to sign in</a></div>
+    </form>
+  </section>
+
+  <section id="setpw" hidden>
+    <h2>Set your password</h2>
+    <form id="setpwForm">
+      <label for="spPassword">New password (8 characters or more)</label><input id="spPassword" type="password" autocomplete="new-password" minlength="8" required>
+      <label for="spPassword2">The same password again</label><input id="spPassword2" type="password" autocomplete="new-password" minlength="8" required>
+      <button>Save password and sign in</button>
+    </form>
+  </section>
+
+  <section id="verify" hidden>
+    <h2>Confirming your email</h2>
+    <p id="verifyText" class="muted">One moment.</p>
+  </section>
+
+  <div id="app" hidden>
+    <nav><a href="/account/shops">Your shops</a><a href="/account/settings">Settings</a><a href="#" id="signout">Sign out</a></nav>
+
+    <section id="shops" hidden>
+      <h2>Your shops</h2>
+      <p class="muted" id="shopsEmpty" hidden>No shop is connected to this account yet. In the program, open Settings → Account, choose "I already have an account" and type the code it shows below.</p>
+      <div class="scroll"><table id="shopsTable"><thead><tr><th>Shop</th><th>Program</th><th>Standing</th><th>Last synced</th></tr></thead><tbody id="shopRows"></tbody></table></div>
+      <p class="muted">Subscriptions aren't open yet. Every shop is free while the hub is in its community period.</p>
+      <h2 style="margin-top:18px">Connect a shop</h2>
+      <form id="connectForm" class="row">
+        <input id="code" placeholder="Code from Settings → Account, like 7KQPM-2XH9T" autocomplete="off" required style="max-width:260px">
+        <button style="margin-top:0">Connect</button>
+      </form>
+    </section>
+
+    <section id="settings" hidden>
+      <h2>Settings</h2>
+      <p>Signed in as <strong id="meEmail"></strong>.</p>
+      <h2 style="margin-top:18px">Change your password</h2>
+      <form id="passwordForm">
+        <label for="pwCurrent">Current password</label><input id="pwCurrent" type="password" autocomplete="current-password" required>
+        <label for="pwNew">New password (8 characters or more)</label><input id="pwNew" type="password" autocomplete="new-password" minlength="8" required>
+        <label for="pwNew2">The same password again</label><input id="pwNew2" type="password" autocomplete="new-password" minlength="8" required>
+        <button>Change password</button>
+      </form>
+      <h2 style="margin-top:18px">Sign out everywhere</h2>
+      <p class="muted">Signs this account out of every browser, this one included.</p>
+      <button class="plain" id="signoutAll">Sign out everywhere</button>
+    </section>
+  </div>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const say = (t, bad) => { $("msg").textContent = t; $("msg").className = bad ? "bad" : "ok"; };
+  const page = location.pathname.replace(/\/+$/, "").split("/")[2] || "";
+  const token = new URLSearchParams(location.search).get("t") || "";
+  const SECTIONS = ["signin", "signup", "forgot", "setpw", "verify", "app", "shops", "settings"];
+  function show(...ids) { for (const id of SECTIONS) $(id).hidden = !ids.includes(id); }
+  async function api(path, body) {
+    const r = await fetch("/account/api" + path, body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { const e = new Error(j.error || r.statusText); e.status = r.status; throw e; }
+    return j;
+  }
+  const when = (d) => (d ? new Date(d).toLocaleString() : "never");
+  const td = (text) => { const c = document.createElement("td"); c.textContent = text ?? ""; return c; };
+  const samePassword = (a, b) => { if (a !== b) { say("The two passwords aren't the same.", true); return false; } return true; };
+
+  async function loadMe(where) {
+    let me;
+    try { me = await api("/me"); } catch (e) { if (e.status === 401) { show("signin"); return; } throw e; }
+    document.title = `${me.hubName} account`; $("title").textContent = me.hubName;
+    $("meEmail").textContent = me.account.email;
+    $("shopsEmpty").hidden = me.shops.length > 0; $("shopsTable").hidden = !me.shops.length;
+    $("shopRows").replaceChildren(...me.shops.map((s) => { const tr = document.createElement("tr"); tr.append(td(s.name), td([s.program, s.version].filter(Boolean).join(" ") || s.installName), td(s.message), td(when(s.lastSeenAt))); return tr; }));
+    show("app", where === "settings" ? "settings" : "shops");
+  }
+
+  async function start() {
+    try {
+      if (page === "forgot") return show("forgot");
+      if (page === "set-password") { if (!token) { say("That link is missing its code. Ask for a new one.", true); return show("forgot"); } return show("setpw"); }
+      if (page === "verify") {
+        show("verify");
+        if (!token) { $("verifyText").textContent = "That link is missing its code."; return; }
+        try { await api("/verify", { token }); say("Your email is confirmed. You're signed in."); history.replaceState(null, "", "/account/shops"); await loadMe("shops"); }
+        catch (e) { $("verifyText").textContent = e.message; }
+        return;
+      }
+      await loadMe(page);
+    } catch (e) { say(e.message, true); }
+  }
+
+  $("showSignup").onclick = (e) => { e.preventDefault(); show("signup"); };
+  $("showSignin").onclick = () => show("signin");
+  $("signinForm").onsubmit = async (e) => {
+    e.preventDefault();
+    try { await api("/signin", { email: $("siEmail").value, password: $("siPassword").value }); say(""); history.replaceState(null, "", "/account/shops"); await loadMe("shops"); }
+    catch (err) { say(err.message, true); $("resendRow").hidden = !/Confirm your email/.test(err.message); }
+  };
+  $("resend").onclick = async (e) => { e.preventDefault(); try { const r = await api("/resend", { email: $("siEmail").value }); say(r.message); } catch (err) { say(err.message, true); } };
+  $("signupForm").onsubmit = async (e) => {
+    e.preventDefault();
+    if (!samePassword($("suPassword").value, $("suPassword2").value)) return;
+    try { await api("/signup", { email: $("suEmail").value, password: $("suPassword").value, acceptTerms: $("suTerms").checked }); say(`We've sent an email to ${$("suEmail").value}. Open the link in it to finish.`); show("signin"); $("siEmail").value = $("suEmail").value; }
+    catch (err) { say(err.message, true); }
+  };
+  $("forgotForm").onsubmit = async (e) => { e.preventDefault(); try { const r = await api("/forgot", { email: $("fgEmail").value }); say(r.message); } catch (err) { say(err.message, true); } };
+  $("setpwForm").onsubmit = async (e) => {
+    e.preventDefault();
+    if (!samePassword($("spPassword").value, $("spPassword2").value)) return;
+    try { await api("/set-password", { token, password: $("spPassword").value }); say("Your password is saved. You're signed in."); history.replaceState(null, "", "/account/shops"); await loadMe("shops"); }
+    catch (err) { say(err.message, true); }
+  };
+  $("connectForm").onsubmit = async (e) => { e.preventDefault(); try { const r = await api("/connect", { code: $("code").value }); $("code").value = ""; say(`${r.shop.name} is connected to your account.`); await loadMe("shops"); } catch (err) { say(err.message, true); } };
+  $("passwordForm").onsubmit = async (e) => {
+    e.preventDefault();
+    if (!samePassword($("pwNew").value, $("pwNew2").value)) return;
+    try { await api("/password", { current: $("pwCurrent").value, password: $("pwNew").value }); say("Password changed. Other browsers are signed out."); e.target.reset(); } catch (err) { say(err.message, true); }
+  };
+  $("signout").onclick = async (e) => { e.preventDefault(); await api("/signout", {}); say("Signed out."); history.replaceState(null, "", "/account"); show("signin"); };
+  $("signoutAll").onclick = async () => { try { await api("/signout-all", {}); say("Signed out everywhere."); history.replaceState(null, "", "/account"); show("signin"); } catch (err) { say(err.message, true); } };
+  start();
+</script>
+</body>
+</html>

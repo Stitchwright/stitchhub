@@ -13,6 +13,12 @@ import { pool, holdFeeds } from "./db.mjs";
 export const TABLES = [
   { t: "setting", table: "settings", cols: ["key", "value"], key: "key" },
   { t: "install", table: "installs", cols: ["id", "name", "contact", "key_hash", "scope", "blocked", "invited_by", "created_at", "last_seen_at"] },
+  // Shop owners' accounts (hashed passwords), their shops with standing, the links and codes out (hashed), and signed-in
+  // browsers: a move keeps everyone signed in and every link they were sent working.
+  { t: "account", table: "accounts", cols: ["id", "email", "password_hash", "verified_at", "terms_version", "terms_at", "stripe_customer_id", "disabled", "created_at", "last_sign_in_at"] },
+  { t: "shop", table: "shops", cols: ["id", "install_id", "shop_ref", "name", "kind", "program", "version", "account_id", "comp_until", "comp_note", "created_at", "last_seen_at"] },
+  { t: "account_token", table: "account_tokens", cols: ["token_hash", "kind", "account_id", "shop_id", "expires_at", "used_at", "created_at"], key: "token_hash" },
+  { t: "session", table: "sessions", cols: ["id_hash", "account_id", "created_at", "last_seen_at", "expires_at"], key: "id_hash" },
   {
     t: "link",
     table: "links",
@@ -223,6 +229,11 @@ function checkRow(table, row) {
     if (!SETTINGS[row.key](row.value)) refuse(`the setting ${row.key} has a value the hub wouldn't take`);
   } else if (table === "installs") {
     if (!/^[0-9a-f]{64}$/.test(row.key_hash ?? "")) refuse("a member's key must be a SHA-256 hash");
+  } else if (table === "accounts") {
+    if (!/^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/.test(row.email ?? "")) refuse("an account needs an email address");
+    if (row.password_hash != null && !/^scrypt\$\d+\$\d+\$\d+\$[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+$/.test(row.password_hash)) refuse("an account's password must be a scrypt hash");
+  } else if (table === "account_tokens" || table === "sessions") {
+    if (!/^[0-9a-f]{64}$/.test((table === "sessions" ? row.id_hash : row.token_hash) ?? "")) refuse("a token or session must be a SHA-256 hash");
   } else if (table === "links" || table === "link_revisions") {
     if (!webAddress(row.url)) refuse("a link must start with http:// or https://");
   } else if (table === "xpart_sources") {
