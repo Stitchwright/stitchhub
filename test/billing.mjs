@@ -7,7 +7,8 @@
 // key's l), founding shops (the admin's mark, 25 at most, founding prices, kept across a gap under 60 days and lost
 // after), the trial's edges (subscribing inside the trial is charged when it ends, Stripe's 48 hours, a full refund of
 // the first payment inside the trial goes back to the trial, a won chargeback is undone with the founding mark its gap
-// cost), the export, and a hub with billing closed. Every key the hub sends is verified here with the program's own
+// cost, a card-company inquiry only flags the shop until it closes or escalates), the export, and a hub with billing
+// closed. Every key the hub sends is verified here with the program's own
 // verify logic (license.ts, copied). Each run makes a fresh database beside the one named (the founding places are
 // counted across a database, so a reused one fails) and drops it at the end.
 // usage: DATABASE_URL=postgresql://... (any database on a server where the role may create databases) node test/billing.mjs
@@ -696,7 +697,53 @@ try {
   assert.deepEqual([adminE.standing, adminE.subscription.disputedAt, adminE.subscription.unpaidSince], ["active", null, null]);
   const closedEv = mock.events.filter((e) => e.type === "charge.dispute.closed").at(-1);
   assert.match((await mockPost(`/__replay/${closedEv.id}`)).delivered[0].body, /"replay":true/, "a replayed close does nothing");
-  console.log("the trial's edges (subscribe inside it, a refund inside it, a won chargeback): ok");
+  // A card-company inquiry (warning_*: no money taken yet) doesn't lock a paying shop: recorded, shown to the admin, logged.
+  const renew2E = await mockPost(`/__subscriptions/${subE}/renew`, { paid: true });
+  allDelivered(renew2E, "E's next month");
+  st = await standing(keyE, "shopE");
+  const keyE2 = checkKey(st.key, shopE, "E's key for the next month");
+  const inqE = await mockPost(`/__charges/${renew2E.invoice.charge}/dispute`, { status: "warning_needs_response" });
+  allDelivered(inqE, "an inquiry opens");
+  st = await standing(keyE, "shopE");
+  assert.deepEqual([st.standing, st.lastDay], ["active", day(renew2E.subscription.current_period_end * 1000)], "an inquiry: full use");
+  assert.equal(checkKey(st.key, shopE, "E's key during the inquiry").id, keyE2.id, "the same key, nothing revoked");
+  assert.ok(!st.revokeKeyIds.includes(keyE2.id));
+  list = await ok(await adminCall("/accounts"));
+  let subAdminE = list.shops.find((s) => s.id === shopE).subscription;
+  assert.deepEqual([subAdminE.inquiryAt, subAdminE.disputedAt, subAdminE.unpaidSince], [today(), null, null], "the admin sees the inquiry");
+  assert.match(hubLog, new RegExp(`card-company inquiry ${inqE.dispute.id} on charge ${renew2E.invoice.charge} \\(warning_needs_response\\) for shop ${shopE}: recorded for the admin`));
+  // It closes without a chargeback (warning_closed): the flag goes; nothing was taken, so nothing to restore.
+  allDelivered(await mockPost(`/__disputes/${inqE.dispute.id}/close`, { status: "warning_closed" }), "the inquiry closes");
+  st = await standing(keyE, "shopE");
+  assert.equal(st.standing, "active");
+  assert.equal(checkKey(st.key, shopE, "E's key after the inquiry").id, keyE2.id);
+  list = await ok(await adminCall("/accounts"));
+  assert.equal(list.shops.find((s) => s.id === shopE).subscription.inquiryAt, null, "the inquiry flag is cleared");
+  assert.match(hubLog, new RegExp(`inquiry ${inqE.dispute.id} on charge ${renew2E.invoice.charge} closed without a chargeback`));
+  // Another inquiry escalates into a chargeback (charge.dispute.updated, needs_response): the shop lapses as for any chargeback.
+  const renew3E = await mockPost(`/__subscriptions/${subE}/renew`, { paid: true });
+  allDelivered(renew3E, "E's month after");
+  const keyE3 = checkKey((await standing(keyE, "shopE")).key, shopE, "E's key for the month after");
+  const inq2E = await mockPost(`/__charges/${renew3E.invoice.charge}/dispute`, { status: "warning_needs_response" });
+  allDelivered(inq2E, "a second inquiry");
+  assert.equal((await standing(keyE, "shopE")).standing, "active");
+  allDelivered(await mockPost(`/__disputes/${inq2E.dispute.id}/update`, { status: "warning_under_review" }), "the inquiry under review");
+  assert.equal((await standing(keyE, "shopE")).standing, "active", "still an inquiry: full use");
+  allDelivered(await mockPost(`/__disputes/${inq2E.dispute.id}/update`, { status: "needs_response" }), "the inquiry escalates");
+  st = await standing(keyE, "shopE");
+  assert.equal(st.standing, "lapsed", "escalated into a chargeback: read-only at once");
+  assert.match(st.message, /disputed with the card company/);
+  assert.ok(st.revokeKeyIds.includes(keyE3.id), "the period's key is named for removal");
+  list = await ok(await adminCall("/accounts"));
+  subAdminE = list.shops.find((s) => s.id === shopE).subscription;
+  assert.deepEqual([subAdminE.inquiryAt, subAdminE.disputedAt, subAdminE.unpaidSince], [null, today(), today()], "now a chargeback on the admin page");
+  assert.match(hubLog, new RegExp(`dispute ${inq2E.dispute.id} on charge ${renew3E.invoice.charge} escalated from an inquiry \\(needs_response\\); shop ${shopE} is read-only`));
+  // Paid again, a later update to that chargeback (evidence under review) changes nothing more.
+  allDelivered(await mockPost(`/__subscriptions/${subE}/renew`, { paid: true }), "E pays again");
+  assert.equal((await standing(keyE, "shopE")).standing, "active");
+  allDelivered(await mockPost(`/__disputes/${inq2E.dispute.id}/update`, { status: "under_review" }), "the chargeback under review");
+  assert.equal((await standing(keyE, "shopE")).standing, "active", "an update to a chargeback already handled doesn't lapse the shop again");
+  console.log("the trial's edges (subscribe inside it, a refund inside it, a won chargeback, inquiries): ok");
 
   // ----- 10. Waived: a retail shop partnered with a repair shop in good standing; "both" pays; the waiver ends. -----
   const keyR = await register("Billing Test Repair R");
