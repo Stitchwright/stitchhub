@@ -8,14 +8,15 @@
   "main": "src/server.mjs",
   "scripts": {
     "start": "node src/server.mjs",
-    "check": "node --check src/server.mjs && node --check src/env.mjs && node --check src/discord.mjs && node --check src/db.mjs && node --check src/checker.mjs && node --check src/transfer.mjs && node --check src/parts.mjs && node --check src/market.mjs && node --check src/usage.mjs && node --check src/partners.mjs && node --check src/accounts.mjs && node --check src/mail.mjs && node --check src/billing.mjs && node --check src/stripe.mjs && node --check src/license.mjs && node --check src/moves.mjs && node --check src/provisioning.mjs && node --check test/stripe-mock.mjs && node --check test/move.mjs && node --check test/provisioning.mjs",
+    "check": "node --check src/server.mjs && node --check src/env.mjs && node --check src/discord.mjs && node --check src/db.mjs && node --check src/checker.mjs && node --check src/transfer.mjs && node --check src/parts.mjs && node --check src/market.mjs && node --check src/usage.mjs && node --check src/partners.mjs && node --check src/accounts.mjs && node --check src/mail.mjs && node --check src/billing.mjs && node --check src/stripe.mjs && node --check src/license.mjs && node --check src/moves.mjs && node --check src/provisioning.mjs && node --check src/terms.mjs && node --check test/stripe-mock.mjs && node --check test/move.mjs && node --check test/provisioning.mjs && node --check test/terms.mjs",
     "test": "node test/smoke.mjs",
     "test:db": "node test/db.mjs",
     "test:accounts": "node test/accounts.mjs",
     "test:companies": "node test/companies.mjs",
     "test:billing": "node test/billing.mjs",
     "test:move": "node test/move.mjs",
-    "test:provisioning": "node test/provisioning.mjs"
+    "test:provisioning": "node test/provisioning.mjs",
+    "test:terms": "node test/terms.mjs"
   },
   "engines": {
     "node": ">=20.12"

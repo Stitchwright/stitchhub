@@ -26,8 +26,9 @@ of this repository.
 
 ## Joining a hub
 
-The hub admin gives members the hub address and a **join key** (for example by email after a one-time
-contribution toward server costs). In StitchBench, open **Settings → Community hub**, enter both, and press Join.
+**Membership is free.** The hub admin gives members the hub address and a **join key**. In StitchBench, open
+**Settings → Community hub**, enter both, and press Join. (A shop can also join with no key by starting its StitchHub
+account from Settings → Account; see Shop owner accounts below.)
 The install gets its own key. The admin can block any install, and can change the join key for new members
 without affecting shops that already joined.
 
@@ -65,8 +66,9 @@ the migrations: they take turns.
 
 The **/admin** page exports everything to one `.ndjson.gz` file, and imports that file into another StitchHub. That
 includes members and their keys, the join key, links with their history, notes, photos, figures, data sets, the
-parts cross-reference with its history, marketplace listings and orders, shop owners' accounts and shops, and billing
-(each shop's subscription, the webhook events handled, every license key issued). The export is one snapshot, so it can be
+parts cross-reference with its history, marketplace listings and orders, shop owners' accounts and shops (with each
+time an account accepted the terms), and billing (each shop's subscription, the webhook events handled, every license
+key issued). The export is one snapshot, so it can be
 taken while shops are using the hub. Download an export now and then and keep it somewhere safe.
 
 **Keep the hub's address when you move it.** Point the same address (your own domain, for example
@@ -236,6 +238,29 @@ replaces any older one. The program fetches it at its sync, checks everything ag
 …: Allow / Refuse" in its own window on the PC only; Allow shows the new password there, once. Its answer comes back
 (`done`) and the grant is spent. Turning the option off withdraws a request still waiting. Three requests an hour per shop.
 
+## Terms of Service and Privacy Policy
+The hub serves both documents from markdown files in `legal/`: `terms-<version>.md` and `privacy-<version>.md`, one
+version string for the pair. A version is the day it comes into force, `YYYY-MM-DD` (`YYYY-MM-DD.2` for a second one
+that day), with `-draft` on the end while it is a draft: the pages then carry a **"DRAFT, not yet in force"** banner. The
+drafts for the lawyer are in `legal/` as `2026-10-03-draft` (copied from StitchBench's `docs/legal/`, where the
+placeholders and open questions are listed). Never edit a published version: add a new pair.
+
+- `/terms` and `/privacy` show the version in force; `/terms/<version>` and `/privacy/<version>` any version on file
+  (an earlier one says so and links the current one). The pages run no script and allow none (a strict CSP); the
+  markdown renderer knows headings, paragraphs, lists, quotes, tables, rules, links (http, https, mailto and paths on the
+  hub only), bold, italic and code, and escapes everything else.
+- The version in force is `TERMS_VERSION`, or when it is unset the newest pair on file (drafts don't count once a
+  published version exists). Set `TERMS_VERSION` when you publish, so a pair committed ahead of its date stays out of
+  force. A `TERMS_VERSION` with no files is logged and the default is used.
+- `GET /v1/terms/current` (no key) answers `{ version, draft, terms, privacy, versions }`: the programs read the version
+  there for the tick in Settings → Account, and link `/terms` and `/privacy` from their login and sign-up pages.
+- **Acceptance** is written down each time: an account started from the program (the version it ticked there), sign-up
+  on the hub (the tick), "We updated our terms" on `/account` (shown, with a tick, whenever the version in force is newer
+  than the one the account accepted, or it accepted none) and **every Checkout** (Subscribe needs the same tick while the
+  account is behind; the version goes to Stripe in the subscription's metadata as `hub_terms_version`). The account
+  keeps the latest (`accounts.terms_version`, `terms_at`), `terms_acceptances` keeps each one (version, how, and for a
+  Checkout the shop and the Checkout Session). A page left open over a version change is told to reload (409).
+
 ## Checking a hub
 ```
 HUB_URL=http://localhost:8080 ADMIN_TOKEN=... JOIN_KEY=... npm test
@@ -276,6 +301,11 @@ tied to the account and found there at its first claim, one start per 10 minutes
 link to another site refused, a service not on this hub, one that doesn't answer) and the owner's reset (only while the
 program allows it, the grant's signature and fields, fetched and answered by that install only, replaced, answered once,
 withdrawn with the opt-in, the limit), and the export.
+
+`DATABASE_URL=<a fresh scratch database> npm run test:terms` starts a hub with a legal folder of its own and the Stripe
+mock and checks the pages (the version in force, older and newer versions, 404s, the DRAFT banner, the markdown and its
+escaping), `GET /v1/terms/current`, acceptance from the program, at sign-up, on `/account` and at Checkout (refused
+without the tick while the account is behind), the claim answer's `terms`, the export, and a `TERMS_VERSION` with no files.
 
 `DATABASE_URL=<a scratch database> npm run test:billing` starts a hub with the Stripe mock (`test/stripe-mock.mjs`:
 Checkout in subscription mode, the Portal, signed webhooks, refunds and disputes, with hooks to fail or renew a payment)
@@ -319,10 +349,11 @@ Members send `Authorization: Bearer <install key>`.
 | `GET /v1/partners/messages?since=N&shopRef=` | messages for this install's shops after `N`; `shopRef` keeps one company's (a company that just moved here pulls its backlog once from the old install's place) |
 | `POST /v1/partners/links/:id/end` | end a partnership (both shops are told) |
 | `POST /v1/upgrade` | `{ joinKey }`: a partner-only install becomes a member |
-| `POST /v1/shops/claim` | `{ shopRef, shopName, kind: "repair" \| "retail" \| "both", program: "StitchBench" \| "StitchShop", version, sole }` → `{ ok, listings, shop, account: { email, verified } \| null, standing: "trial" \| "active" \| "past_due" \| "waived" \| "comped" \| "lapsed", lastDay, message, key: "SB1.…" \| null, revokeKeyIds: [] }`. Sent for every company at every sync; the first time starts its trial. `key` is the hub-signed key for the module `base` the program should hold (its current one, or a fresh one when the standing changed; null when the hub has no signing key, or billing is closed and the shop is on its trial); `revokeKeyIds` names hub keys to drop (a refund, a chargeback, "Lapse now"). `sole: true` (or a body with only `shopRef`, as older programs send) hands what the install listed, ordered and shared before it named its company to that company. `resetOptIn` (the Windows program's "allow a reset from my StitchHub account") is kept on the shop; left as it was when not sent; `false` withdraws a reset request still waiting |
+| `POST /v1/shops/claim` | `{ shopRef, shopName, kind: "repair" \| "retail" \| "both", program: "StitchBench" \| "StitchShop", version, sole }` → `{ ok, listings, shop, account: { email, verified } \| null, terms: { version, draft, accepted }, standing: "trial" \| "active" \| "past_due" \| "waived" \| "comped" \| "lapsed", lastDay, message, key: "SB1.…" \| null, revokeKeyIds: [] }`. Sent for every company at every sync; the first time starts its trial. `key` is the hub-signed key for the module `base` the program should hold (its current one, or a fresh one when the standing changed; null when the hub has no signing key, or billing is closed and the shop is on its trial); `revokeKeyIds` names hub keys to drop (a refund, a chargeback, "Lapse now"). `sole: true` (or a body with only `shopRef`, as older programs send) hands what the install listed, ordered and shared before it named its company to that company. `resetOptIn` (the Windows program's "allow a reset from my StitchHub account") is kept on the shop; left as it was when not sent; `false` withdraws a reset request still waiting |
 | `GET /v1/shops/:ref/standing` | the same answer without the claim (404 until the shop has claimed itself). For a company that moved to another install, the install it left gets `410 { error, moved: true, to: <the install's name>, at }` here and at the claim |
 | `POST /v1/shops/:ref/move-token`, `DELETE` | the install the company is on, making a move file: `{ shopName, kind, program, version }` → `{ token, expiresAt, shopRef }`, answered once (only its hash is kept), one use, 14 days; a second call replaces the first. `DELETE` cancels it (the owner cancelled the move) |
 | `POST /v1/shops/move` (key optional) | `{ shopRef, token, shopName, kind, program, version }`: the install the company moved to redeems the token from the move file; every row of that company (shop, partner links, unused partner codes, listings, orders, ratings, notes, link and part revisions, parts usage) moves to it in one transaction, and listings, notes and orders are numbered again in the feeds. → the claim's answer plus `{ moved: { table: rows }, partner: { shopRef, links }, hubName }`; without a key (a program on no hub yet) the hub makes it an install with the old install's scope and adds `{ installId, installKey, scope }`. 404 wrong token, 409 used (the same install asking again gets the same answer), 410 replaced, cancelled or expired |
+| `GET /v1/terms/current` (no key) | `{ version, draft, terms: "/terms/<version>", privacy: "/privacy/<version>", versions }`: the Terms and Privacy Policy version in force (404 when none is on file). The claim's `terms` carries the same `version` and the version the shop's account `accepted` |
 | `POST /v1/stripe` (no key: Stripe's webhook) | `Stripe-Signature` checked against `STRIPE_WEBHOOK_SECRET` (400 otherwise); the event id is kept, so a replay answers `{ ok, replay: true }` and does nothing; the object is re-read from Stripe before anything is written (502 when that fails, so Stripe sends the event again). Body up to 256 KB |
 | `POST /v1/accounts/start` | `{ shopRef, shopName, kind, program, version, email, termsVersion }` → `{ ok, account: { email, verified: false }, shop }`: the hub makes the account (or mails the link again for one not finished), ties the shop to it and mails a set-password link. 409 when the address already has a finished account (use a link code). Without an install key (an install on no hub yet; `contact` optional) the answer adds `{ installId, installKey, hubName, scope: "pending" }` |
 | `GET /v1/shops/:ref/reset-grants` | `{ grants: [{ id, grant, expiresAt }] }`: the owner's password resets asked for on the account, `SBG1.<payload>.<signature>` (none while the program doesn't allow resets) |
@@ -330,16 +361,18 @@ Members send `Authorization: Bearer <install key>`.
 | `POST /v1/accounts/link-code` | `{ shopRef, shopName, kind, program, version }` → `{ code, expiresAt }`: a 10-character code the owner types in on the hub within 15 minutes (409 when the shop already has an account) |
 
 The hub's own pages use a session cookie and JSON under `/account/api`: `GET me`, `POST signup { email, password,
-acceptTerms }`, `verify { token }`, `signin { email, password }`, `signout`, `signout-all`, `forgot { email }`,
+acceptTerms, termsVersion }`, `terms { acceptTerms, termsVersion }` ("We updated our terms"), `verify { token }`, `signin { email, password }`, `signout`, `signout-all`, `forgot { email }`,
 `resend { email }`, `set-password { token, password }`, `password { current, password }`, `connect { code }`,
-`shops/:id/checkout { plan: "monthly" | "yearly" }` → `{ url }` (a Stripe Checkout Session for one of the account's own
-shops; 404 for another account's, 409 when it already has a subscription, 503 while subscriptions are closed) and
+`shops/:id/checkout { plan: "monthly" | "yearly", termsVersion, acceptTerms }` → `{ url }` (a Stripe Checkout Session for
+one of the account's own shops; 404 for another account's, 409 when it already has a subscription, 503 while
+subscriptions are closed, 400 without `acceptTerms` while the account accepted an older terms version; `termsVersion` is
+the version the page showed: 409 when it isn't the one in force) and
 `shops/:id/portal` → `{ url }` (Stripe's Customer Portal for the account; 409 before it has ever subscribed),
 `hosted { program, shopName, ownerName, timeZone }` → `{ shopRef, setPasswordUrl, expiresAt, appUrl, tied }` (503 for a
 program this hub doesn't offer, 429 within 10 minutes of the last) and `shops/:id/reset-owner` → `{ id, expiresAt }`
 (409 while the program doesn't allow it, 503 without a signing key). `me` carries each shop's `standing`, `lastDay`,
-`message`, `subscription`, `canSubscribe`, `canManage`, `resetOptIn` and `resetRequest`, `billing.open`, `hosted` and
-`canSignResets`. A change
+`message`, `subscription`, `canSubscribe`, `canManage`, `resetOptIn` and `resetRequest`, `billing.open`, `hosted`,
+`canSignResets` and `terms: { current, draft, accepted, acceptedAt, needsAccept }`. A change
 asked for from another site (the browser's `Origin`) is refused. The admin API adds `GET /v1/admin/accounts` (with
 `billing`: open or why not, the Stripe mode and the signing kid and public x), `POST /v1/admin/shops/:id/comp { until:
 "YYYY-MM-DD" | "forever" | "", note }` (a comp also takes back a "Lapse now"), `POST /v1/admin/shops/:id/lapse { lapsed:
