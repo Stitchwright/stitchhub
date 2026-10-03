@@ -47,6 +47,30 @@ const NO_RATING = { avg: null, count: 0 };
  */
 export const shopKey = (installId, shopRef) => `${installId}|${shopRef ?? ""}`;
 
+/**
+ * Which company on the install is making this request: `shopRef` in the body when there is one, else the X-Shop-Ref
+ * header (the one the write limit uses). '' = the install didn't say (every program before per-company identity).
+ */
+export function actingShop(c, body) {
+  const fromBody = body && typeof body === "object" ? str(body.shopRef, 64) : null;
+  return fromBody ?? c.req.header("x-shop-ref")?.trim().slice(0, 64) ?? "";
+}
+
+/**
+ * The install key is what the hub trusts: a row belongs to the install that made it, and which company on that install
+ * may touch it is the program's business. This adds the one check the hub can make without changing that: when the
+ * request names a company (actingShop) and the row names another, it is refused. A request or a row that names none
+ * passes, as every one did before.
+ */
+export function sameCompany(acting, rowRef, what, fail) {
+  if (acting && rowRef && acting !== rowRef) throw fail(403, `That ${what} belongs to another company on your StitchBench.`);
+}
+
+// The company's current name from the shops table (POST /v1/shops/claim keeps it up to date) for a row that names a
+// company; the row's own copy of the name otherwise. `t` is the row's table alias, `ref` its shop_ref column, `inst` its
+// install column; `as` names the shop columns in the answer.
+const SHOP_JOIN = (t, inst, ref, as) => `LEFT JOIN shops ${as} ON ${as}.install_id = ${t}.${inst} AND ${as}.shop_ref = ${t}.${ref} AND coalesce(${t}.${ref}, '') <> ''`;
+
 // The ratings that count towards a shop's standing: the latest one from each shop that rated it (a second install
 // ordering again and again adds one rating, not one per order), none from $0 orders, which cost nothing to set up, and
 // none from an install the hub admin blocked (a sock puppet's ratings go with it, as its usage counts do).
@@ -85,10 +109,13 @@ export async function reputations(shops, db = pool) {
 function listingOut(l, photos, installId, rep) {
   return {
     id: l.id,
-    shopName: l.shop_name,
+    // The company's name as it is now (the shops table), else the name the listing was made under.
+    shopName: l.current_shop_name ?? l.shop_name,
     sellerId: l.install_id,
-    // The company on the seller's install that listed it (null from installs that don't say).
+    // The company on the seller's install that listed it (null from installs that don't say), and its hub shop id
+    // once it has claimed itself (POST /v1/shops/claim; null before).
     shopRef: l.shop_ref || null,
+    shopId: l.current_shop_id ?? null,
     sellerRating: rep?.asSeller ?? NO_RATING,
     mine: l.install_id === installId,
     title: l.title,
@@ -118,7 +145,13 @@ function listingOut(l, photos, installId, rep) {
 /** Listings with their photo ids, in the same order, as `installId` sees them. */
 export async function listingsByIds(ids, installId, db = pool) {
   if (!ids.length) return [];
-  const rows = (await db.query(`SELECT l.*, i.blocked AS seller_blocked FROM listings l LEFT JOIN installs i ON i.id = l.install_id WHERE l.id = ANY($1)`, [ids])).rows;
+  const rows = (
+    await db.query(
+      `SELECT l.*, i.blocked AS seller_blocked, s.id AS current_shop_id, s.name AS current_shop_name
+       FROM listings l LEFT JOIN installs i ON i.id = l.install_id ${SHOP_JOIN("l", "install_id", "shop_ref", "s")} WHERE l.id = ANY($1)`,
+      [ids],
+    )
+  ).rows;
   const photos = (await db.query(`SELECT id, listing_id, sort_order FROM listing_photos WHERE listing_id = ANY($1) ORDER BY sort_order`, [ids])).rows;
   const reps = await reputations(
     rows.map((l) => [l.install_id, l.shop_ref]),
@@ -140,11 +173,14 @@ function orderOut(o, events, installId, ratings, reps) {
     role: o.buyer_install_id === installId ? "buyer" : "seller",
     listingId: o.listing_id,
     item: o.item,
-    sellerShop: o.seller_shop,
-    buyerShop: o.buyer_shop,
-    // Which company on each install (null from installs that don't say).
+    // Each side's name as it is now (the shops table), else as it was when the order was placed.
+    sellerShop: o.seller_current_name ?? o.seller_shop,
+    buyerShop: o.buyer_current_name ?? o.buyer_shop,
+    // Which company on each install (null from installs that don't say), and its hub shop id once it has claimed itself.
     sellerShopRef: o.seller_shop_ref || null,
     buyerShopRef: o.buyer_shop_ref || null,
+    sellerShopId: o.seller_shop_id ?? null,
+    buyerShopId: o.buyer_shop_id ?? null,
     qty: o.qty,
     unitPriceCents: o.unit_price_cents,
     shippingCents: shipping,
@@ -179,7 +215,14 @@ function orderOut(o, events, installId, ratings, reps) {
 
 async function ordersByIds(ids, installId, db = pool) {
   if (!ids.length) return [];
-  const rows = (await db.query(`SELECT * FROM orders WHERE id = ANY($1)`, [ids])).rows;
+  const rows = (
+    await db.query(
+      `SELECT o.*, ss.id AS seller_shop_id, ss.name AS seller_current_name, bs.id AS buyer_shop_id, bs.name AS buyer_current_name
+       FROM orders o ${SHOP_JOIN("o", "seller_install_id", "seller_shop_ref", "ss")} ${SHOP_JOIN("o", "buyer_install_id", "buyer_shop_ref", "bs")}
+       WHERE o.id = ANY($1)`,
+      [ids],
+    )
+  ).rows;
   const events = (await db.query(`SELECT * FROM order_events WHERE order_id = ANY($1) ORDER BY created_at, id`, [ids])).rows;
   const ratings = (await db.query(`SELECT * FROM order_ratings WHERE order_id = ANY($1)`, [ids])).rows;
   const reps = await reputations(
@@ -293,10 +336,12 @@ export function registerMarket({ member, fail, newId, writeLimit, notify, feedPa
     return c.json((await listingsByIds([id], inst.id))[0]);
   });
 
-  async function ownListing(client, c) {
+  // `acting` is the company making the change (actingShop): one company on an install can't change another's listing.
+  async function ownListing(client, c, acting) {
     const l = (await client.query(`SELECT * FROM listings WHERE id = $1 FOR UPDATE`, [c.req.param("id")])).rows[0];
     if (!l) throw fail(404, "That listing isn't on the hub.");
     if (l.install_id !== c.get("install").id) throw fail(403, "Only the shop that listed it can change it.");
+    sameCompany(acting, l.shop_ref, "listing", fail);
     return l;
   }
 
@@ -306,7 +351,7 @@ export function registerMarket({ member, fail, newId, writeLimit, notify, feedPa
     const f = listingFields(p, true);
     const me = c.get("install").id;
     await tx(async (client) => {
-      const l = await ownListing(client, c);
+      const l = await ownListing(client, c, actingShop(c, p));
       if (l.status === "REMOVED") throw fail(409, "That listing was removed.");
       // A new quantity typed over the one the seller saw: refused when orders changed it in between, or the units
       // an accept took (or a cancel put back) would be counted again.
@@ -333,8 +378,9 @@ export function registerMarket({ member, fail, newId, writeLimit, notify, feedPa
 
   member.delete("/listings/:id", async (c) => {
     writeLimit(c);
+    const body = await c.req.json().catch(() => ({}));
     await tx(async (client) => {
-      const l = await ownListing(client, c);
+      const l = await ownListing(client, c, actingShop(c, body));
       await client.query(`UPDATE listings SET status = 'REMOVED', updated_at = now(), seq = nextval('change_seq') WHERE id = $1`, [l.id]);
       await client.query(`DELETE FROM listing_photos WHERE listing_id = $1`, [l.id]); // a removed listing can't come back: its photos go, as a removed note's do
       // Orders still waiting on the seller can't be accepted any more: the buyer hears so now, not never.
@@ -455,6 +501,7 @@ export function registerMarket({ member, fail, newId, writeLimit, notify, feedPa
         const o = (await client.query(`SELECT * FROM orders WHERE id = $1 FOR UPDATE`, [id])).rows[0];
         if (!o || (o.buyer_install_id !== me && o.seller_install_id !== me)) throw fail(404, "No such order.");
         const mine = o.buyer_install_id === me ? "buyer" : "seller";
+        sameCompany(actingShop(c, body), mine === "buyer" ? o.buyer_shop_ref : o.seller_shop_ref, "order", fail);
         if (role !== "either" && mine !== role) throw fail(409, role === "seller" ? "Only the seller can do that." : "Only the buyer can do that.");
         if (from && !from.includes(o.status)) throw fail(409, `This order is ${o.status.toLowerCase()}, so that can't be done now.`);
         const { set = {}, action, note } = await fn({ o, body, client, mine });
@@ -577,6 +624,7 @@ export function registerMarket({ member, fail, newId, writeLimit, notify, feedPa
       const o = (await client.query(`SELECT * FROM orders WHERE id = $1 FOR UPDATE`, [id])).rows[0];
       if (!o || (o.buyer_install_id !== me && o.seller_install_id !== me)) throw fail(404, "No such order.");
       const mine = o.buyer_install_id === me ? "buyer" : "seller";
+      sameCompany(actingShop(c, body), mine === "buyer" ? o.buyer_shop_ref : o.seller_shop_ref, "order", fail);
       const answering = mine === "buyer" && (await client.query(`SELECT 1 FROM order_ratings WHERE order_id = $1 AND by_role = 'seller'`, [id])).rowCount > 0;
       if (!RATE_FROM[mine].includes(o.status) && !answering) {
         throw fail(409, mine === "buyer" ? "You can rate the seller once the order is paid." : "You can rate the buyer once they've paid.");
@@ -612,14 +660,24 @@ export function registerMarket({ member, fail, newId, writeLimit, notify, feedPa
   member.get("/reputation/:installId", async (c) => {
     const id = c.req.param("installId");
     const ref = str(c.req.query("shopRef"), 64) ?? "";
-    const inst = await one(`SELECT id FROM installs WHERE id = $1`, [id]);
+    const inst = await one(`SELECT id, name FROM installs WHERE id = $1`, [id]);
     if (!inst) throw fail(404, "No such shop on the hub.");
+    // Whose standing this is: the company's name once it has claimed itself, else the name on its latest listing, else
+    // the install's.
+    const shop = ref
+      ? (await one(`SELECT id, name FROM shops WHERE install_id = $1 AND shop_ref = $2`, [id, ref])) ??
+        (await one(`SELECT NULL AS id, shop_name AS name FROM listings WHERE install_id = $1 AND shop_ref = $2 ORDER BY updated_at DESC LIMIT 1`, [id, ref]))
+      : null;
     const rep = (await reputations([[id, ref]])).get(shopKey(id, ref));
     const { rows } = await pool.query(
       `SELECT stars, comment, by_role, updated_at FROM (${counted("r.rated_install_id = $1 AND r.rated_shop_ref = $2")}) x ORDER BY updated_at DESC LIMIT 10`,
       [id, ref],
     );
     return c.json({
+      installId: id,
+      shopRef: ref || null,
+      shopId: shop?.id ?? null,
+      shopName: shop?.name ?? inst.name,
       asSeller: rep.asSeller,
       asBuyer: rep.asBuyer,
       recent: rows.map((r) => ({ stars: r.stars, comment: r.comment, role: r.by_role === "buyer" ? "seller" : "buyer", at: r.updated_at })),

@@ -196,6 +196,10 @@ server inside the test standing in for the mailbox, and checks accounts end to e
 and reset, claim and standing, the admin's comp, that one account never sees another's shops, the export and the
 limits.
 
+`DATABASE_URL=<a scratch database> npm run test:companies` does the same for companies on one install: a listing, order,
+note, link, part, usage report and figure made under a company's name shows that name (and the install's when none is
+named), two companies on one install are kept apart in ratings and usage counts, and one can't change the other's rows.
+
 ## API (for StitchBench)
 Members send `Authorization: Bearer <install key>`.
 
@@ -203,22 +207,22 @@ Members send `Authorization: Bearer <install key>`.
 |---|---|
 | `POST /v1/register` | `{ joinKey, name, contact }` → `{ installId, installKey }` |
 | `GET /v1/changes?since=N&limit=1000` | links, notes (photo info), figure ids, parts and listings changed after `N`; `next` is the new `N`. A removed note is only `{ id, deleted: true }`; a figure id that comes again was redrawn; `removedFigures` are figures the hub admin took down. `since` must be digits (400 otherwise); `limit` is kept between 1 and 2000 |
-| `POST /v1/links`, `PUT /v1/links/:id`, `DELETE /v1/links/:id`, `POST /v1/links/:id/restore` | add, fix, remove, restore a link (a link into a private network is refused) |
-| `GET /v1/links/:id/history`, `POST /v1/links/:id/revert` | a link's versions; go back to one |
+| `POST /v1/links`, `PUT /v1/links/:id`, `DELETE /v1/links/:id`, `POST /v1/links/:id/restore` | add, fix, remove, restore a link (a link into a private network is refused). The body may name who did it: `byName` (the person) and `shopRef` + `shopName` (the company, see **Companies** below) |
+| `GET /v1/links/:id/history`, `POST /v1/links/:id/revert` | a link's versions (`byShop` is the company's name when its install named one, else the install's; `shopRef`); go back to one |
 | `POST /v1/links/:id/report` | "this didn't download": check it again soon (404 for a link that isn't there; a link checked within the hour is left alone; 60 an hour per install) |
-| `POST /v1/posts` (multipart: `post` JSON + `photo` files), `DELETE /v1/posts/:id` | share or remove a note |
-| `GET /v1/photos/:id`, `GET/PUT /v1/figures/:id` | pictures. The first shop to share a figure keeps it and can replace it; PUT answers `{ ok, stored }`, and `stored: false` means another shop's copy is already there |
+| `POST /v1/posts` (multipart: `post` JSON + `photo` files), `DELETE /v1/posts/:id` | share or remove a note. The `post` JSON may carry `shopRef` + `shopName`; the note then shows the company's name (`shopName`, `shopRef`, `shopId` in `/v1/changes`). A DELETE that names a company (`shopRef` in a JSON body or `X-Shop-Ref`) can't remove another company's note (403) |
+| `GET /v1/photos/:id`, `GET/PUT /v1/figures/:id` | pictures. The first shop to share a figure keeps it and can replace it; PUT answers `{ ok, stored }`, and `stored: false` means another shop's copy is already there. PUT keeps `X-Shop-Ref` as the company that shared it |
 | `GET /v1/datasets`, `GET /v1/datasets/:name` | published data sets |
-| `POST /v1/xparts`, `PUT /v1/xparts/:id`, `DELETE /v1/xparts/:id`, `POST /v1/xparts/:id/restore` | add, edit, remove, restore a part (409 + `partId` if a number is already on another part) |
+| `POST /v1/xparts`, `PUT /v1/xparts/:id`, `DELETE /v1/xparts/:id`, `POST /v1/xparts/:id/restore` | add, edit, remove, restore a part (409 + `partId` if a number is already on another part). `byName`, `shopRef`, `shopName` as for links; a buying link added or changed is credited to that company (`sources[].byShop`, `shopRef`) |
 | `POST /v1/xparts/:id/merge` | `{ intoId }`: the two entries are the same part |
-| `GET /v1/xparts/:id/history`, `POST /v1/xparts/:id/revert` | a part's versions, newest 50 first (`X-History-More: 1`: ask for older ones with `before=<id>`); go back to one |
-| `POST /v1/listings` (multipart: `listing` JSON + `photo` files), `PUT /v1/listings/:id`, `DELETE /v1/listings/:id` | list, change, remove a listing (own only) |
+| `GET /v1/xparts/:id/history`, `POST /v1/xparts/:id/revert` | a part's versions, newest 50 first (`X-History-More: 1`: ask for older ones with `before=<id>`; `byShop` and `shopRef` as for links); go back to one |
+| `POST /v1/listings` (multipart: `listing` JSON + `photo` files), `PUT /v1/listings/:id`, `DELETE /v1/listings/:id` | list, change, remove a listing (own only). The `listing` JSON may carry `shopRef` + `shopName`: the listing is then the company's (`shopName` is the company's current name, `shopRef`, `shopId` once it has claimed itself, `sellerRating` is the company's). A PUT or DELETE that names a company (`shopRef` in the body or `X-Shop-Ref`) can't touch another company's listing (403) |
 | `GET /v1/listing-photos/:id` | a listing photo |
-| `POST /v1/orders`, `GET /v1/orders?since=N` | order from a listing; your orders changed after `N` |
-| `POST /v1/orders/:id/accept`, `decline`, `buyer-paid`, `paid`, `ship`, `received`, `cancel`, `message` | move an order along (409 for the wrong side or status) |
-| `POST /v1/orders/:id/rate` | `{ stars, comment }`: rate the other side of the order |
-| `GET /v1/reputation/:installId` | a shop's ratings as seller and as buyer, and its last 10 |
-| `POST /v1/usage` | `{ month, items: [{ number, brand, qty, tickets }] }`: this shop's parts used that month (replaces it) |
+| `POST /v1/orders`, `GET /v1/orders?since=N` | order from a listing (`shopRef` + `shopName` name the buying company); your orders changed after `N`. An order carries `sellerShop`, `buyerShop` (each side's company, else its install), `sellerShopRef`, `buyerShopRef`, `sellerShopId`, `buyerShopId`, `sellerReputation`, `buyerReputation` |
+| `POST /v1/orders/:id/accept`, `decline`, `buyer-paid`, `paid`, `ship`, `received`, `cancel`, `message` | move an order along (409 for the wrong side or status; 403 when the body's `shopRef` or `X-Shop-Ref` names a company that isn't this side's) |
+| `POST /v1/orders/:id/rate` | `{ stars, comment, shopRef }`: rate the other side of the order (the rating is given to, and by, the companies on the order) |
+| `GET /v1/reputation/:installId?shopRef=` | a shop's ratings as seller and as buyer, and its last 10; `shopRef` picks one company on the install. Answers `{ installId, shopRef, shopId, shopName, asSeller, asBuyer, recent }` |
+| `POST /v1/usage` | `{ month, items: [{ number, brand, qty, tickets }], shopRef, shopName }`: this shop's parts used that month (replaces it); per company when `shopRef` is sent, and `{ shopRef, off: true }` takes a company's reports back |
 | `GET /v1/usage/top?months=12&brand=&limit=200` | the community's most used parts, by shops then quantity. Only parts that at least 3 shops used are listed (`USAGE_MIN_SHOPS` to change it), and nothing when fewer than 3 shops reported |
 | `POST /v1/partners/invites` | `{ shopRef, shopName, side, terms }` → `{ code, expiresAt }`: a partner code |
 | `POST /v1/partners/redeem` | `{ code, shopRef, shopName }` → `{ link, side }` |
@@ -243,9 +247,24 @@ asked for from another site (the browser's `Origin`) is refused. The admin API a
 The feeds (`/v1/changes`, `/v1/orders`, `/v1/partners/messages`) answer with `X-Feed-Reset: 1` when `since` was past
 what this hub holds (it was restored from an older export): that answer starts again from the beginning.
 
-A hosted StitchBench that serves several companies through one install can send `X-Shop-Ref: <company id>` with its
-changes: each company then has its own 300 changes an hour (3,000 for the install), so one can't use up the others'.
-Parts-usage reports have their own allowance.
+### Companies
+A hosted StitchBench serves several companies through one install key, so every record a company makes names the
+company: `shopRef` (the company's id on that install) and `shopName` in the body of `POST /v1/listings`, `/v1/orders`,
+`/v1/posts`, `/v1/usage`, the link and part writes and the partner calls, and `X-Shop-Ref: <shopRef>` on every other
+request (steps of an order, a PUT or DELETE, a figure). The hub stores the company with the row and shows the company's
+name wherever it shows an author or seller: listings (`shopName`), orders (`sellerShop`, `buyerShop`), notes
+(`shopName`), link and part history and buying links (`byShop`). Once the company has claimed itself
+(`POST /v1/shops/claim`), its rows show its current name from the hub's shops table and carry its `shopId`. Ratings
+and the most-used-parts counts are per company. A program that sends none of this acts as the whole install, exactly
+as before: its rows show the install's name and `shopRef` is null.
+
+The install key stays the trust boundary: a row belongs to the install that made it. What the hub adds is one check:
+a request that names a company (`shopRef` in its body, else `X-Shop-Ref`) is refused with 403 when the row names
+another company on the same install. A request that names none, or a row that names none, passes as it always did,
+so which company may act on an install's older rows is the program's call.
+
+`X-Shop-Ref` also gives each company its own 300 changes an hour (3,000 for the install), so one can't use up the
+others'. Parts-usage reports have their own allowance.
 
 Prices and shipping are up to $1,000,000.00 (100,000,000 cents) and quantities up to 1,000,000; more is a 400 with the reason. A body that isn't JSON is a 400 too.
 

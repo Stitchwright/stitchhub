@@ -11,7 +11,8 @@
     "check": "node --check src/server.mjs && node --check src/env.mjs && node --check src/discord.mjs && node --check src/db.mjs && node --check src/checker.mjs && node --check src/transfer.mjs && node --check src/parts.mjs && node --check src/market.mjs && node --check src/usage.mjs && node --check src/partners.mjs && node --check src/accounts.mjs && node --check src/mail.mjs",
     "test": "node test/smoke.mjs",
     "test:db": "node test/db.mjs",
-    "test:accounts": "node test/accounts.mjs"
+    "test:accounts": "node test/accounts.mjs",
+    "test:companies": "node test/companies.mjs"
   },
   "engines": {
     "node": ">=20.12"

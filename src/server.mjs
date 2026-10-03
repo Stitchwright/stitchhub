@@ -13,7 +13,7 @@ import { pool, q, one, tx, migrate, getSetting, setSetting, startFeeds, feedLimi
 import { startChecker, privateAddress } from "./checker.mjs";
 import { exportStream, importStream } from "./transfer.mjs";
 import { registerParts, partsByIds, partSizes } from "./parts.mjs";
-import { registerMarket, listingsByIds, sellerBlocked, claimListings } from "./market.mjs";
+import { registerMarket, listingsByIds, sellerBlocked, claimListings, actingShop, sameCompany } from "./market.mjs";
 import { registerUsage } from "./usage.mjs";
 import { registerPartners } from "./partners.mjs";
 import { registerAccounts } from "./accounts.mjs";
@@ -386,12 +386,21 @@ member.get("/changes", async (c) => {
   const links = ids("link").length ? (await q(`SELECT * FROM links WHERE id = ANY($1)`, [ids("link")])).rows.map(linkOut) : [];
   let posts = [];
   if (ids("post").length) {
-    const ps = (await q(`SELECT * FROM posts WHERE id = ANY($1)`, [ids("post")])).rows;
+    // The company's name as it is now (the shops table) when the note names a company that has claimed itself; else the
+    // name the note was shared under (the company's, or the install's from installs that don't say).
+    const ps = (
+      await q(
+        `SELECT p.*, s.id AS current_shop_id, s.name AS current_shop_name FROM posts p
+         LEFT JOIN shops s ON s.install_id = p.install_id AND s.shop_ref = p.shop_ref AND p.shop_ref <> '' WHERE p.id = ANY($1)`,
+        [ids("post")],
+      )
+    ).rows;
     const photos = (await q(`SELECT id, post_id, kind, caption, mime, sort_order FROM photos WHERE post_id = ANY($1) ORDER BY sort_order`, [ids("post")])).rows;
     // A removed note is only its id: what it said is gone from the hub.
     posts = ps.map((p) => p.deleted ? { id: p.id, deleted: true } : ({
       id: p.id,
-      shopName: p.shop_name,
+      shopName: p.current_shop_name ?? p.shop_name,
+      shopId: p.current_shop_id ?? null,
       authorName: p.author_name,
       brand: p.brand,
       model: p.model,
@@ -495,7 +504,7 @@ member.post("/links", async (c) => {
     );
     await saveRevision(client, id, "added", f, c, body.note);
   }), f.url, f.fileName);
-  notify`🔗 ${c.get("install").name} added a manual link: ${f.brand} ${f.models} — ${f.title}`;
+  notify`🔗 ${c.shopName ?? c.get("install").name} added a manual link: ${f.brand} ${f.models} — ${f.title}`;
   return c.json(linkOut(await one(`SELECT * FROM links WHERE id = $1`, [id])));
 });
 
@@ -524,12 +533,16 @@ member.put("/links/:id", async (c) => {
   const body = await c.req.json();
   byWhom(c, body);
   const link = await applyEdit(c, c.req.param("id"), linkFields(body), "edited", body.note);
-  notify`✏️ ${c.get("install").name} fixed a manual link: ${link.brand} ${link.models} — ${link.title}`;
+  notify`✏️ ${c.shopName ?? c.get("install").name} fixed a manual link: ${link.brand} ${link.models} — ${link.title}`;
   return c.json(link);
 });
 
 member.get("/links/:id/history", async (c) => {
-  const { rows } = await q(`SELECT * FROM link_revisions WHERE link_id = $1 ORDER BY created_at DESC`, [c.req.param("id")]);
+  const { rows } = await q(
+    `SELECT r.*, s.name AS current_shop_name FROM link_revisions r
+     LEFT JOIN shops s ON s.install_id = r.install_id AND s.shop_ref = r.shop_ref AND r.shop_ref <> '' WHERE r.link_id = $1 ORDER BY r.created_at DESC`,
+    [c.req.param("id")],
+  );
   return c.json(
     rows.map((r) => ({
       id: r.id,
@@ -540,8 +553,10 @@ member.get("/links/:id/history", async (c) => {
       title: r.title,
       url: r.url,
       byName: r.by_name,
-      // The company that made it, when its install said which; otherwise the install (as every revision was before)
-      byShop: r.shop_name || r.by_shop,
+      // The company that made it (its name as it is now, else as it was then), when its install said which; otherwise
+      // the install (as every revision was before)
+      byShop: r.current_shop_name ?? (r.shop_name || r.by_shop),
+      shopRef: r.shop_ref || null,
       note: r.note,
       createdAt: r.created_at,
     })),
@@ -650,8 +665,13 @@ member.post("/posts", async (c) => {
  * Removing a note (by its shop, or by the hub admin when installId is null) takes back what it said and its photos:
  * only its id stays, so installs drop their copy.
  */
-async function removePost(id, installId) {
+async function removePost(id, installId, acting) {
   return tx(async (client) => {
+    // One company on an install can't remove another company's note (when the request says which company it is).
+    if (acting) {
+      const p = (await client.query(`SELECT shop_ref FROM posts WHERE id = $1 AND install_id = $2 FOR UPDATE`, [id, installId])).rows[0];
+      if (p) sameCompany(acting, p.shop_ref, "note", fail);
+    }
     const r = await client.query(
       `UPDATE posts SET deleted = true, title = '', body = '', author_name = NULL, updated_at = now(), seq = nextval('change_seq')
        WHERE id = $1 AND ($2::text IS NULL OR install_id = $2)`,
@@ -663,7 +683,8 @@ async function removePost(id, installId) {
 }
 
 member.delete("/posts/:id", async (c) => {
-  if (!(await removePost(c.req.param("id"), c.get("install").id))) throw fail(404, "Only the shop that shared a note can remove it.");
+  const body = await c.req.json().catch(() => ({}));
+  if (!(await removePost(c.req.param("id"), c.get("install").id, actingShop(c, body)))) throw fail(404, "Only the shop that shared a note can remove it.");
   return c.json({ ok: true });
 });
 
@@ -691,12 +712,14 @@ member.put("/figures/:id", async (c) => {
   if (data.length > 2 * 1024 * 1024) throw fail(413, "Figure too large.");
   // The first shop to share a figure keeps it, and can replace it (a redraw); a figure the hub admin removed can be
   // shared again by anyone. stored: false means another shop's copy is already here and this one was not kept.
+  // Which company on the install shared it comes from X-Shop-Ref (null from installs that don't say); it is kept for
+  // the record, and ownership stays by install.
   const r = await q(
-    `INSERT INTO figures (id, mime, data, width, height, install_id) VALUES ($1,$2,$3,$4,$5,$6)
+    `INSERT INTO figures (id, mime, data, width, height, install_id, shop_ref) VALUES ($1,$2,$3,$4,$5,$6,$7)
      ON CONFLICT (id) DO UPDATE SET mime = EXCLUDED.mime, data = EXCLUDED.data, width = EXCLUDED.width, height = EXCLUDED.height,
-       install_id = EXCLUDED.install_id, deleted = false, seq = nextval('change_seq')
+       install_id = EXCLUDED.install_id, shop_ref = EXCLUDED.shop_ref, deleted = false, seq = nextval('change_seq')
      WHERE figures.install_id = EXCLUDED.install_id OR figures.deleted`,
-    [id, mime, data, Number(c.req.query("w")) || null, Number(c.req.query("h")) || null, c.get("install").id],
+    [id, mime, data, Number(c.req.query("w")) || null, Number(c.req.query("h")) || null, c.get("install").id, actingShop(c, null) || null],
   );
   return c.json({ ok: true, stored: r.rowCount > 0 });
 });

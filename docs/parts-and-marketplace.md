@@ -194,9 +194,17 @@ as the partner channel does; installs that don't say act as the whole install, a
 - `POST /v1/listings` (`listing` JSON), `POST /v1/orders` and `POST /v1/posts` (`post` JSON) take `shopRef` (the
   company's id on that install) and `shopName`. The listing's `shopName`, the order's `sellerShop` / `buyerShop` and
   the note's `shopName` are then the company's. Listing, order and note carry `shopRef`, `sellerShopRef`,
-  `buyerShopRef` (null when not given).
-- Reputation is per (install, shopRef): `GET /v1/reputation/:installId?shopRef=`; listings' `sellerRating` and
-  orders' reputations use it.
+  `buyerShopRef` (null when not given). Once the company has claimed itself (`POST /v1/shops/claim`) the name shown
+  is its current one from the shops table, and `shopId` / `sellerShopId` / `buyerShopId` is its hub shop id (null
+  before).
+- Reputation is per (install, shopRef): `GET /v1/reputation/:installId?shopRef=` (answers `shopName`, `shopId` too);
+  listings' `sellerRating` and orders' reputations use it.
+- A `PUT`/`DELETE` on a listing, a step or rating on an order, or a `DELETE` on a note that names a company
+  (`shopRef` in the body, else the `X-Shop-Ref` header) is refused (403) when the row belongs to another company on
+  the same install. Naming none keeps today's rule: the install key decides.
+- A part's buying links (`sources[].byShop`, `shopRef`) and its history credit the company that made the change when
+  the write named one (`shopRef` + `shopName` in the body, as link writes do); `PUT /v1/figures/:id` keeps
+  `X-Shop-Ref` as the company that shared the figure.
 - Two companies on one install can't order from each other (409).
 - `clientId` on a listing or an order: sent again (a lost answer), the hub returns the one already made.
 - `PUT /v1/listings/:id` takes `expectedQty` with `qty`: 409 when orders changed the quantity since.
