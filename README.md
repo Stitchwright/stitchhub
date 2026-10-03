@@ -216,6 +216,26 @@ the public half at start, and the matching line must be in `license-keys.ts` in 
 Without them no key is signed and standing is only words. Every key issued is written in `license_issues` (the
 retirement allow list of a kid is made from it; `GET /v1/admin/shops/:id/keys` lists a shop's).
 
+## Hosted shops and password resets
+**Start a hosted shop.** A verified account can start a StitchShop or StitchBench on the hosted service from
+`/account/shops`. The hub calls that service's `POST /api/platform/companies` (`HOSTED_STITCHSHOP_URL` or
+`HOSTED_STITCHBENCH_URL`, the site's https address only, with `Authorization: Bearer PLATFORM_API_TOKEN`, 32+ random
+characters, the same variable on the service); the service makes the company with the account's email as its owner
+login and answers its id, its own install on this hub and a link for the owner to choose a password (24 hours, one use).
+The hub ties the company to the account on that install, so the company's first claim finds it under the account and its
+trial runs from then, and shows the link once (it is never stored or logged). One start per account per 10 minutes; each
+is written in `hosted_starts`. Unset variables: the option isn't shown. A service that isn't on this hub still makes
+the shop; its owner connects it with a link code.
+
+**Reset the owner's password on the shop PC.** The Windows program can allow a reset from the account (its owner ticks
+it in Settings → Account on the PC; the program says so in every claim, `resetOptIn`, and the hub keeps it in
+`shops.reset_opt_in`: the hub can never switch it on). While it is on, `/account/shops` offers "Reset the owner's
+password on <shop>": the hub signs a grant with its own key (`HUB_LICENSE_KEY`, over its own context so it can never pass
+as a license key) for that company, that install and the account's email, good for an hour, and the newest request
+replaces any older one. The program fetches it at its sync, checks everything again, and shows "StitchHub asks to reset
+…: Allow / Refuse" in its own window on the PC only; Allow shows the new password there, once. Its answer comes back
+(`done`) and the grant is spent. Turning the option off withdraws a request still waiting. Three requests an hour per shop.
+
 ## Checking a hub
 ```
 HUB_URL=http://localhost:8080 ADMIN_TOKEN=... JOIN_KEY=... npm test
@@ -249,6 +269,13 @@ rows with no company and the install's other companies stay), the old install to
 standing, the new install receiving the moved listings, notes and orders and the partner backlog once from the old
 install's place, a move to a program on no hub (an install made), a stray row on the new install, the admin's list
 and move by hand, and the export carrying `shop_moves`.
+
+`DATABASE_URL=<a fresh scratch database> npm run test:provisioning` starts a hub with a mock hosted service and a
+throwaway signing key and walks "Start a hosted shop" (offered per program, the token sent and never logged, the company
+tied to the account and found there at its first claim, one start per 10 minutes, the service's refusal in its words, a
+link to another site refused, a service not on this hub, one that doesn't answer) and the owner's reset (only while the
+program allows it, the grant's signature and fields, fetched and answered by that install only, replaced, answered once,
+withdrawn with the opt-in, the limit), and the export.
 
 `DATABASE_URL=<a scratch database> npm run test:billing` starts a hub with the Stripe mock (`test/stripe-mock.mjs`:
 Checkout in subscription mode, the Portal, signed webhooks, refunds and disputes, with hooks to fail or renew a payment)
@@ -292,12 +319,14 @@ Members send `Authorization: Bearer <install key>`.
 | `GET /v1/partners/messages?since=N&shopRef=` | messages for this install's shops after `N`; `shopRef` keeps one company's (a company that just moved here pulls its backlog once from the old install's place) |
 | `POST /v1/partners/links/:id/end` | end a partnership (both shops are told) |
 | `POST /v1/upgrade` | `{ joinKey }`: a partner-only install becomes a member |
-| `POST /v1/shops/claim` | `{ shopRef, shopName, kind: "repair" \| "retail" \| "both", program: "StitchBench" \| "StitchShop", version, sole }` → `{ ok, listings, shop, account: { email, verified } \| null, standing: "trial" \| "active" \| "past_due" \| "waived" \| "comped" \| "lapsed", lastDay, message, key: "SB1.…" \| null, revokeKeyIds: [] }`. Sent for every company at every sync; the first time starts its trial. `key` is the hub-signed key for the module `base` the program should hold (its current one, or a fresh one when the standing changed; null when the hub has no signing key, or billing is closed and the shop is on its trial); `revokeKeyIds` names hub keys to drop (a refund, a chargeback, "Lapse now"). `sole: true` (or a body with only `shopRef`, as older programs send) hands what the install listed, ordered and shared before it named its company to that company |
+| `POST /v1/shops/claim` | `{ shopRef, shopName, kind: "repair" \| "retail" \| "both", program: "StitchBench" \| "StitchShop", version, sole }` → `{ ok, listings, shop, account: { email, verified } \| null, standing: "trial" \| "active" \| "past_due" \| "waived" \| "comped" \| "lapsed", lastDay, message, key: "SB1.…" \| null, revokeKeyIds: [] }`. Sent for every company at every sync; the first time starts its trial. `key` is the hub-signed key for the module `base` the program should hold (its current one, or a fresh one when the standing changed; null when the hub has no signing key, or billing is closed and the shop is on its trial); `revokeKeyIds` names hub keys to drop (a refund, a chargeback, "Lapse now"). `sole: true` (or a body with only `shopRef`, as older programs send) hands what the install listed, ordered and shared before it named its company to that company. `resetOptIn` (the Windows program's "allow a reset from my StitchHub account") is kept on the shop; left as it was when not sent; `false` withdraws a reset request still waiting |
 | `GET /v1/shops/:ref/standing` | the same answer without the claim (404 until the shop has claimed itself). For a company that moved to another install, the install it left gets `410 { error, moved: true, to: <the install's name>, at }` here and at the claim |
 | `POST /v1/shops/:ref/move-token`, `DELETE` | the install the company is on, making a move file: `{ shopName, kind, program, version }` → `{ token, expiresAt, shopRef }`, answered once (only its hash is kept), one use, 14 days; a second call replaces the first. `DELETE` cancels it (the owner cancelled the move) |
 | `POST /v1/shops/move` (key optional) | `{ shopRef, token, shopName, kind, program, version }`: the install the company moved to redeems the token from the move file; every row of that company (shop, partner links, unused partner codes, listings, orders, ratings, notes, link and part revisions, parts usage) moves to it in one transaction, and listings, notes and orders are numbered again in the feeds. → the claim's answer plus `{ moved: { table: rows }, partner: { shopRef, links }, hubName }`; without a key (a program on no hub yet) the hub makes it an install with the old install's scope and adds `{ installId, installKey, scope }`. 404 wrong token, 409 used (the same install asking again gets the same answer), 410 replaced, cancelled or expired |
 | `POST /v1/stripe` (no key: Stripe's webhook) | `Stripe-Signature` checked against `STRIPE_WEBHOOK_SECRET` (400 otherwise); the event id is kept, so a replay answers `{ ok, replay: true }` and does nothing; the object is re-read from Stripe before anything is written (502 when that fails, so Stripe sends the event again). Body up to 256 KB |
 | `POST /v1/accounts/start` | `{ shopRef, shopName, kind, program, version, email, termsVersion }` → `{ ok, account: { email, verified: false }, shop }`: the hub makes the account (or mails the link again for one not finished), ties the shop to it and mails a set-password link. 409 when the address already has a finished account (use a link code). Without an install key (an install on no hub yet; `contact` optional) the answer adds `{ installId, installKey, hubName, scope: "pending" }` |
+| `GET /v1/shops/:ref/reset-grants` | `{ grants: [{ id, grant, expiresAt }] }`: the owner's password resets asked for on the account, `SBG1.<payload>.<signature>` (none while the program doesn't allow resets) |
+| `POST /v1/shops/:ref/reset-grants/:id/done` | `{ result: "allowed" \| "refused", why }`: what the program's window answered; the grant is spent |
 | `POST /v1/accounts/link-code` | `{ shopRef, shopName, kind, program, version }` → `{ code, expiresAt }`: a 10-character code the owner types in on the hub within 15 minutes (409 when the shop already has an account) |
 
 The hub's own pages use a session cookie and JSON under `/account/api`: `GET me`, `POST signup { email, password,
@@ -305,8 +334,12 @@ acceptTerms }`, `verify { token }`, `signin { email, password }`, `signout`, `si
 `resend { email }`, `set-password { token, password }`, `password { current, password }`, `connect { code }`,
 `shops/:id/checkout { plan: "monthly" | "yearly" }` → `{ url }` (a Stripe Checkout Session for one of the account's own
 shops; 404 for another account's, 409 when it already has a subscription, 503 while subscriptions are closed) and
-`shops/:id/portal` → `{ url }` (Stripe's Customer Portal for the account; 409 before it has ever subscribed). `me` carries
-each shop's `standing`, `lastDay`, `message`, `subscription`, `canSubscribe` and `canManage`, and `billing.open`. A change
+`shops/:id/portal` → `{ url }` (Stripe's Customer Portal for the account; 409 before it has ever subscribed),
+`hosted { program, shopName, ownerName, timeZone }` → `{ shopRef, setPasswordUrl, expiresAt, appUrl, tied }` (503 for a
+program this hub doesn't offer, 429 within 10 minutes of the last) and `shops/:id/reset-owner` → `{ id, expiresAt }`
+(409 while the program doesn't allow it, 503 without a signing key). `me` carries each shop's `standing`, `lastDay`,
+`message`, `subscription`, `canSubscribe`, `canManage`, `resetOptIn` and `resetRequest`, `billing.open`, `hosted` and
+`canSignResets`. A change
 asked for from another site (the browser's `Origin`) is refused. The admin API adds `GET /v1/admin/accounts` (with
 `billing`: open or why not, the Stripe mode and the signing kid and public x), `POST /v1/admin/shops/:id/comp { until:
 "YYYY-MM-DD" | "forever" | "", note }` (a comp also takes back a "Lapse now"), `POST /v1/admin/shops/:id/lapse { lapsed:

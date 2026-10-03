@@ -19,6 +19,7 @@ import { standingOf, claimAnswer, billingOpen, billingProblem, FOREVER } from ".
 import { signer as hubSigner } from "./license.mjs";
 import { stripeMode } from "./stripe.mjs";
 import { refuseIfMoved } from "./moves.mjs";
+import { hostedOffer, resetStateOf, withdrawGrants } from "./provisioning.mjs";
 
 const SESSION_DAYS = 30;
 const SET_PASSWORD_HOURS = 24; // a link to set the first password, or to verify an address
@@ -215,13 +216,17 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
     if (!(await client.query(`SELECT 1 FROM shops WHERE install_id = $1 AND shop_ref = $2`, [install.id, shopRef])).rowCount) await refuseIfMoved(fail, install.id, shopRef);
     const kind = KINDS.has(body.kind) ? body.kind : null;
     const program = PROGRAMS.has(body.program) ? body.program : null;
+    // Whether the program allows a password reset from the account (the Windows program's opt-in; src/provisioning.mjs).
+    // An older program says nothing, and what was stored stays.
+    const resetOptIn = typeof body.resetOptIn === "boolean" ? body.resetOptIn : null;
     const r = await client.query(
-      `INSERT INTO shops (id, install_id, shop_ref, name, kind, program, version) VALUES ($1, $2, $3, coalesce($4, $8), coalesce($5, 'repair'), $6, $7)
+      `INSERT INTO shops (id, install_id, shop_ref, name, kind, program, version, reset_opt_in) VALUES ($1, $2, $3, coalesce($4, $8), coalesce($5, 'repair'), $6, $7, coalesce($9, false))
        ON CONFLICT (install_id, shop_ref) DO UPDATE SET name = coalesce($4, shops.name), kind = coalesce($5, shops.kind), program = coalesce($6, shops.program),
-         version = coalesce($7, shops.version), last_seen_at = now()
+         version = coalesce($7, shops.version), reset_opt_in = coalesce($9, shops.reset_opt_in), last_seen_at = now()
        RETURNING *`,
-      [newId(), install.id, shopRef, str(body.shopName, 120), kind, program, str(body.version, 40), install.name],
+      [newId(), install.id, shopRef, str(body.shopName, 120), kind, program, str(body.version, 40), install.name, resetOptIn],
     );
+    if (resetOptIn === false) await withdrawGrants(client, r.rows[0].id);
     return r.rows[0];
   }
 
@@ -345,11 +350,23 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
     const a = await requireAccount(c);
     const shops = (await q(`SELECT s.*, i.name AS install_name FROM shops s JOIN installs i ON i.id = s.install_id WHERE s.account_id = $1 ORDER BY s.created_at`, [a.id])).rows;
     const open = billingOpen();
+    const resets = await resetStateOf(shops.map((s) => s.id));
+    const optIn = new Map(shops.map((s) => [s.id, s.reset_opt_in === true]));
     return c.json({
       account: { id: a.id, email: a.email, verified: Boolean(a.verified_at), termsVersion: a.terms_version, createdAt: a.created_at, lastSignInAt: a.last_sign_in_at, hasBilling: Boolean(a.stripe_customer_id) },
-      shops: (await Promise.all(shops.map(withStanding))).map((s) => ({ ...s, canSubscribe: open && !(s.source === "subscription" && s.standing !== "lapsed"), canManage: open && Boolean(a.stripe_customer_id) })),
+      shops: (await Promise.all(shops.map(withStanding))).map((s) => ({
+        ...s,
+        canSubscribe: open && !(s.source === "subscription" && s.standing !== "lapsed"),
+        canManage: open && Boolean(a.stripe_customer_id),
+        // The program on that shop's PC allows a reset of its owner's password from here (src/provisioning.mjs).
+        resetOptIn: optIn.get(s.id) ?? false,
+        resetRequest: resets.get(s.id) ?? null,
+      })),
       hubName,
       billing: { open, monthly: "$25 a month", yearly: "$250 a year" },
+      // "Start a hosted StitchShop / StitchBench" (src/provisioning.mjs): which this hub offers, and whether it can sign resets.
+      hosted: hostedOffer(),
+      canSignResets: Boolean(hubSigner().signer),
     });
   });
 

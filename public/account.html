@@ -14,7 +14,7 @@
   section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin: 16px 0; }
   .muted { color: var(--muted); } .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
   label { display: block; margin: 8px 0 2px; color: var(--muted); font-size: 13px; }
-  input, button { font: inherit; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--ink); }
+  input, button, select { font: inherit; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--ink); }
   input { width: 100%; max-width: 360px; } button { background: var(--accent); color: #fff; border-color: var(--accent); cursor: pointer; margin-top: 10px; }
   button.plain { background: var(--card); color: var(--ink); border-color: var(--line); }
   a { color: var(--accent); } nav a { margin-right: 14px; }
@@ -82,13 +82,28 @@
     <section id="shops" hidden>
       <h2>Your shops</h2>
       <p class="muted" id="shopsEmpty" hidden>No shop is connected to this account yet. In the program, open Settings → Account, choose "I already have an account" and type the code it shows below.</p>
-      <div class="scroll"><table id="shopsTable"><thead><tr><th>Shop</th><th>Program</th><th>Standing</th><th>Billing</th><th>Last synced</th></tr></thead><tbody id="shopRows"></tbody></table></div>
+      <div class="scroll"><table id="shopsTable"><thead><tr><th>Shop</th><th>Program</th><th>Standing</th><th>Billing</th><th>Last synced</th><th>Owner password</th></tr></thead><tbody id="shopRows"></tbody></table></div>
       <p class="muted" id="billingNote"></p>
       <h2 style="margin-top:18px">Connect a shop</h2>
       <form id="connectForm" class="row">
         <input id="code" placeholder="Code from Settings → Account, like 7KQPM-2XH9T" autocomplete="off" required style="max-width:260px">
         <button style="margin-top:0">Connect</button>
       </form>
+      <div id="hosted" hidden>
+        <h2 style="margin-top:18px">Start a hosted shop</h2>
+        <p class="muted">A new shop on our hosted service, in your browser: nothing to install. Your email above is its owner login; you choose the password with the link shown next.</p>
+        <form id="hostedForm">
+          <label for="hsProgram">Program</label><select id="hsProgram"></select>
+          <label for="hsShop">Shop name</label><input id="hsShop" maxlength="120" required>
+          <label for="hsName">Your name</label><input id="hsName" maxlength="120" required autocomplete="name">
+          <button id="hsButton">Start the shop</button>
+        </form>
+        <div id="hostedDone" hidden>
+          <p><strong id="hdTitle"></strong></p>
+          <p>Choose your password here. The link works once, for 24 hours, and isn't shown again:</p>
+          <p><a id="hdLink" target="_blank" rel="noopener noreferrer"></a></p>
+        </div>
+      </div>
     </section>
 
     <section id="settings" hidden>
@@ -130,7 +145,11 @@
     document.title = `${me.hubName} account`; $("title").textContent = me.hubName;
     $("meEmail").textContent = me.account.email;
     $("shopsEmpty").hidden = me.shops.length > 0; $("shopsTable").hidden = !me.shops.length;
-    $("shopRows").replaceChildren(...me.shops.map((s) => { const tr = document.createElement("tr"); tr.append(td(s.name), td([s.program, s.version].filter(Boolean).join(" ") || s.installName), td(s.message), billingCell(s, me.billing), td(when(s.lastSeenAt))); return tr; }));
+    $("shopRows").replaceChildren(...me.shops.map((s) => { const tr = document.createElement("tr"); tr.append(td(s.name), td([s.program, s.version].filter(Boolean).join(" ") || s.installName), td(s.message), billingCell(s, me.billing), td(when(s.lastSeenAt)), resetCell(s, me)); return tr; }));
+    // Start a hosted shop: for a verified account, when this hub offers one.
+    const offered = Object.entries(me.hosted || {}).filter(([, on]) => on).map(([name]) => name);
+    $("hosted").hidden = !me.account.verified || !offered.length;
+    $("hsProgram").replaceChildren(...offered.map((name) => Object.assign(document.createElement("option"), { value: name, textContent: name === "StitchShop" ? "StitchShop (a sewing or quilt shop counter)" : "StitchBench (a repair bench)" })));
     $("billingNote").textContent = me.billing.open
       ? `One price for every shop: ${me.billing.monthly} or ${me.billing.yearly}. A sewing or quilt shop that is partnered with a repair shop in good standing is free. Cards, plans, cancelling and invoices are handled on Stripe's pages; the hub never sees your card.`
       : "Subscriptions aren't open yet. Every shop is free while the hub is in its community period.";
@@ -149,6 +168,28 @@
     if (s.canSubscribe) { c.append(go("/checkout", { plan: "monthly" }, `Subscribe, ${billing.monthly}`), " ", go("/checkout", { plan: "yearly" }, `Subscribe, ${billing.yearly}`)); if (s.standing === "waived") c.append(" ", Object.assign(document.createElement("span"), { className: "muted", textContent: "(free while partnered; no need)" })); }
     if (s.canManage) c.append(s.canSubscribe ? " " : "", go("/portal", {}, "Manage billing"));
     if (!c.childNodes.length) { c.textContent = s.standing === "comped" ? "free" : ""; c.className = "muted"; }
+    return c;
+  }
+
+  // A password reset on the shop PC (the Windows program, when its owner allowed it there): the program's own window
+  // shows the request, and the new password, at the PC only.
+  function resetCell(s, me) {
+    const c = document.createElement("td");
+    if (!s.resetOptIn) { c.textContent = ""; return c; }
+    const r = s.resetRequest;
+    const note = Object.assign(document.createElement("div"), { className: "muted" });
+    if (r && !r.answeredAt && new Date(r.expiresAt) > new Date()) note.textContent = `Asked ${when(r.askedAt)}: open ${s.program || "the program"} on the shop PC and choose Allow. Good until ${when(r.expiresAt)}.`;
+    else if (r && r.result === "allowed") note.textContent = `Reset ${when(r.answeredAt)} at the shop PC.`;
+    else if (r && r.result === "refused") note.textContent = `Refused at the shop PC ${when(r.answeredAt)}.`;
+    if (!me.canSignResets) { c.className = "muted"; c.textContent = "Not available on this hub yet: use the tray icon's Reset a password on the shop PC."; return c; }
+    const b = Object.assign(document.createElement("button"), { className: "plain", textContent: `Reset the owner's password on ${s.name}` });
+    b.style.marginTop = "0";
+    b.onclick = async () => {
+      b.disabled = true;
+      try { await api(`/shops/${s.id}/reset-owner`, {}); say(`Asked. Go to the shop PC: ${s.program || "the program"}'s window shows the request within a minute (or at its next sync, ten at most). Choose Allow there to see the new password. The request works for an hour.`); await loadMe("shops"); }
+      catch (err) { say(err.message, true); b.disabled = false; }
+    };
+    c.append(b, note);
     return c;
   }
 
@@ -190,6 +231,20 @@
     if (!samePassword($("spPassword").value, $("spPassword2").value)) return;
     try { await api("/set-password", { token, password: $("spPassword").value }); say("Your password is saved. You're signed in."); history.replaceState(null, "", "/account/shops"); await loadMe("shops"); }
     catch (err) { say(err.message, true); }
+  };
+  $("hostedForm").onsubmit = async (e) => {
+    e.preventDefault();
+    $("hsButton").disabled = true;
+    try {
+      const r = await api("/hosted", { program: $("hsProgram").value, shopName: $("hsShop").value, ownerName: $("hsName").value, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+      $("hostedForm").hidden = true; $("hostedDone").hidden = false;
+      $("hdTitle").textContent = `${r.shopName} is ready on the hosted ${r.program}.`;
+      $("hdLink").href = r.setPasswordUrl; $("hdLink").textContent = r.setPasswordUrl;
+      say(r.tied ? "The shop is on your account." : "The shop is made. Connect it to this account from its Settings → Account once you're signed in there.");
+      if (r.tied) await loadMe("shops");
+      $("hosted").hidden = false;
+    } catch (err) { say(err.message, true); }
+    $("hsButton").disabled = false;
   };
   $("connectForm").onsubmit = async (e) => { e.preventDefault(); try { const r = await api("/connect", { code: $("code").value }); $("code").value = ""; say(`${r.shop.name} is connected to your account.`); await loadMe("shops"); } catch (err) { say(err.message, true); } };
   $("passwordForm").onsubmit = async (e) => {
