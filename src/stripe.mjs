@@ -93,6 +93,14 @@ export const retrieveSession = (id) => call("GET", `/v1/checkout/sessions/${enc(
 /** The Customer Portal (change the card or plan, cancel, invoices), back to `returnUrl` afterwards. */
 export const createPortalSession = (a) => call("POST", "/v1/billing/portal/sessions", { customer: a.customer, return_url: a.returnUrl });
 export const retrieveSubscription = (id) => call("GET", `/v1/subscriptions/${enc(id)}`);
+/**
+ * Moves a subscription's item to another price (Switch to Shop / Solo), with Stripe's proration: the difference for the
+ * rest of the period is added to the next invoice.
+ */
+export const switchSubscriptionPrice = (a) =>
+  call("POST", `/v1/subscriptions/${enc(a.id)}`, { items: [{ id: a.itemId, price: a.price }], proration_behavior: "create_prorations" }, a.idempotencyKey);
+/** A price's amount and interval (the account page shows what each plan costs). */
+export const retrievePrice = (id) => call("GET", `/v1/prices/${enc(id)}`);
 export const retrieveInvoice = (id) => call("GET", `/v1/invoices/${enc(id)}`);
 export const retrieveCharge = (id) => call("GET", `/v1/charges/${enc(id)}`);
 

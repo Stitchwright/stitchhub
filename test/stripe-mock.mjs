@@ -2,16 +2,23 @@
 // scripts/test-mail/stripe-mock.mjs). node:http only.
 //
 //   import { startStripeMock } from "./stripe-mock.mjs";
-//   const mock = await startStripeMock({ port: 0, webhookUrl: "http://127.0.0.1:8080/v1/stripe", webhookSecret: "whsec_…", prices: { monthly: "price_m", yearly: "price_y" } });
-//   node test/stripe-mock.mjs        // STRIPE_MOCK_PORT (3403), STRIPE_MOCK_WEBHOOK_URL, STRIPE_MOCK_WEBHOOK_SECRET, STRIPE_PRICE_MONTHLY/YEARLY
+//   const mock = await startStripeMock({ port: 0, webhookUrl: "http://127.0.0.1:8080/v1/stripe", webhookSecret: "whsec_…",
+//     catalog: [{ id: "price_solo_m", interval: "month", amount: 2500 }, { id: "price_solo_y", interval: "year", amount: 25000 }, ...] });
+//   (or prices: { monthly, yearly }: two prices, $25 a month and $250 a year, as before the two plans)
+//   node test/stripe-mock.mjs        // STRIPE_MOCK_PORT (3403), STRIPE_MOCK_WEBHOOK_URL, STRIPE_MOCK_WEBHOOK_SECRET, and the
+//                                    // prices from the hub's own variables: STRIPE_PRICE_SOLO_MONTHLY ... _SHOP_YEARLY_FOUNDING
+//                                    // (each id in a comma-separated list), or STRIPE_PRICE_MONTHLY/YEARLY
 //
 // Bearer auth with any sk_/rk_ key (STRIPE_MOCK_KEY to insist on one). The API: POST /v1/customers, POST
 // /v1/checkout/sessions (mode=subscription; the session's url is this mock's own payment page /pay/{id}: "Pay" starts
 // the subscription, pays its first invoice, posts the signed webhooks and sends the browser to success_url), GET
-// /v1/checkout/sessions/{id}, GET /v1/subscriptions/{id}, GET /v1/invoices/{id}, GET /v1/charges/{id}, POST
-// /v1/billing/portal/sessions, POST /v1/refunds (charge.refunded goes out).
+// /v1/checkout/sessions/{id}, GET /v1/subscriptions/{id}, POST /v1/subscriptions/{id} (items[0][id] + items[0][price]:
+// a plan switch; proration_behavior is kept as last_proration_behavior; customer.subscription.updated goes out), GET
+// /v1/prices/{id}, GET /v1/invoices/{id}, GET /v1/charges/{id}, POST /v1/billing/portal/sessions, POST /v1/refunds
+// (charge.refunded goes out).
 // Test hooks (no auth): POST /__pay/{sessionId}; POST /__subscriptions/{id} { status, cancel_at_period_end,
-// current_period_end }; POST /__subscriptions/{id}/renew { paid: true|false } (a new invoice: paid advances the period,
+// current_period_end, price } (price: put the subscription on any price id, one the hub may not know); POST
+// /__subscriptions/{id}/renew { paid: true|false } (a new invoice: paid advances the period,
 // unpaid puts the subscription past_due); POST /__subscriptions/{id}/cancel { at_period_end }; POST
 // /__charges/{id}/dispute; POST /__replay/{eventId}; GET /__events, /__webhooks, /__state; DELETE /__state.
 // Every hook waits for its webhooks to be answered and reports each delivery's status, so a test can check the hub
@@ -88,8 +95,22 @@ function addInterval(unix, interval) {
   return Math.floor(d.getTime() / 1000);
 }
 
+/** The prices from the hub's variables, for the mock run on its own: every STRIPE_PRICE_* id, with the decided amounts. */
+function catalogFromEnv() {
+  const amounts = { SOLO: 2500, SHOP: 4500, SOLO_FOUNDING: 1500, SHOP_FOUNDING: 3000 };
+  const out = [];
+  for (const [name, value] of Object.entries(process.env)) {
+    const m = /^STRIPE_PRICE_(SOLO|SHOP)_(MONTHLY|YEARLY)(_FOUNDING)?$/.exec(name) ?? /^STRIPE_PRICE_(MONTHLY|YEARLY)$/.exec(name);
+    if (!m) continue;
+    const yearly = name.includes("YEARLY");
+    const monthly = m[2] ? amounts[`${m[1]}${m[3] ?? ""}`] : 2500;
+    for (const id of String(value).split(",").map((x) => x.trim()).filter(Boolean)) out.push({ id, interval: yearly ? "year" : "month", amount: yearly ? monthly * 10 : monthly });
+  }
+  return out;
+}
+
 /**
- * @param {{ port?: number; webhookUrl?: string | null; webhookSecret?: string; prices?: { monthly?: string; yearly?: string } }} o
+ * @param {{ port?: number; webhookUrl?: string | null; webhookSecret?: string; prices?: { monthly?: string; yearly?: string }; catalog?: { id: string; interval: "month" | "year"; amount: number }[] }} o
  */
 export async function startStripeMock(o = {}) {
   const customers = new Map();
@@ -104,7 +125,16 @@ export async function startStripeMock(o = {}) {
   const secret = o.webhookSecret ?? process.env.STRIPE_MOCK_WEBHOOK_SECRET ?? "whsec_mock1234567890";
   const webhookUrl = o.webhookUrl === undefined ? (process.env.STRIPE_MOCK_WEBHOOK_URL ?? null) : o.webhookUrl;
   const prices = { monthly: o.prices?.monthly ?? process.env.STRIPE_PRICE_MONTHLY ?? "price_mock_monthly", yearly: o.prices?.yearly ?? process.env.STRIPE_PRICE_YEARLY ?? "price_mock_yearly" };
-  const priceOf = (id) => ({ id, object: "price", recurring: { interval: id === prices.yearly ? "year" : "month" }, unit_amount: id === prices.yearly ? 25000 : 2500, currency: "usd" });
+  // The prices this "Stripe account" has: the catalog given, else the hub's variables, else the two of `prices`.
+  const given = o.catalog ?? (o.prices ? null : catalogFromEnv());
+  const catalog = new Map(
+    (given?.length ? given : [{ id: prices.monthly, interval: "month", amount: 2500 }, { id: prices.yearly, interval: "year", amount: 25000 }]).map((p) => [p.id, p]),
+  );
+  // A price id the catalog doesn't have (put on a subscription by the test hook) is a monthly price of no amount.
+  const priceOf = (id) => {
+    const p = catalog.get(id);
+    return { id, object: "price", active: true, recurring: { interval: p?.interval ?? "month" }, unit_amount: p?.amount ?? 0, currency: "usd" };
+  };
   let port = o.port ?? Number(process.env.STRIPE_MOCK_PORT ?? 3403);
 
   async function deliver(ev) {
@@ -261,6 +291,7 @@ export async function startStripeMock(o = {}) {
           return json(res, 200, { subscription: sub, delivered: [await emit("customer.subscription.deleted", sub)] });
         }
         for (const k of ["status", "cancel_at_period_end", "current_period_end", "current_period_start"]) if (b[k] !== undefined) sub[k] = b[k];
+        if (typeof b.price === "string") sub.items.data[0].price = priceOf(b.price);
         return json(res, 200, { subscription: sub, delivered: [await emit("customer.subscription.updated", sub)] });
       }
       m = /^\/__charges\/(ch_[A-Za-z0-9_]+)\/dispute$/.exec(p);
@@ -303,7 +334,7 @@ export async function startStripeMock(o = {}) {
         if (!f.customer || !customers.has(f.customer)) return stripeError(res, 400, `No such customer: '${f.customer ?? ""}'`);
         const lines = Array.isArray(f.line_items) ? f.line_items : [];
         if (!lines.length || !lines[0].price) return stripeError(res, 400, "Missing required param: line_items[0][price].");
-        if (![prices.monthly, prices.yearly].includes(lines[0].price)) return stripeError(res, 400, `No such price: '${lines[0].price}'`);
+        if (!catalog.has(lines[0].price)) return stripeError(res, 400, `No such price: '${lines[0].price}'`);
         const idem = req.headers["idempotency-key"];
         const prior = idem ? [...sessions.values()].find((s) => s.idempotency_key === idem) : null;
         if (prior) return json(res, 200, prior);
@@ -334,6 +365,24 @@ export async function startStripeMock(o = {}) {
       if (m && req.method === "GET") return sessions.has(m[1]) ? json(res, 200, sessions.get(m[1])) : stripeError(res, 404, `No such checkout.session: '${m[1]}'`);
       m = /^\/v1\/subscriptions\/(sub_[A-Za-z0-9_]+)$/.exec(p);
       if (m && req.method === "GET") return subscriptions.has(m[1]) ? json(res, 200, subscriptions.get(m[1])) : stripeError(res, 404, `No such subscription: '${m[1]}'`);
+      if (m && req.method === "POST") {
+        // A plan switch: the named item moves to the new price; the period, status and metadata stay.
+        const sub = subscriptions.get(m[1]);
+        if (!sub) return stripeError(res, 404, `No such subscription: '${m[1]}'`);
+        const f = parseForm(await readBody(req));
+        const items = Array.isArray(f.items) ? f.items : [];
+        for (const it of items) {
+          const item = sub.items.data.find((x) => x.id === it.id);
+          if (!item) return stripeError(res, 400, `No such subscription item: '${it.id ?? ""}'`);
+          if (!it.price || !catalog.has(it.price)) return stripeError(res, 400, `No such price: '${it.price ?? ""}'`);
+          item.price = priceOf(it.price);
+        }
+        if (f.proration_behavior) sub.last_proration_behavior = f.proration_behavior;
+        await emit("customer.subscription.updated", sub);
+        return json(res, 200, sub);
+      }
+      m = /^\/v1\/prices\/([A-Za-z0-9_]+)$/.exec(p);
+      if (m && req.method === "GET") return catalog.has(m[1]) ? json(res, 200, priceOf(m[1])) : stripeError(res, 404, `No such price: '${m[1]}'`);
       m = /^\/v1\/invoices\/(in_[A-Za-z0-9_]+)$/.exec(p);
       if (m && req.method === "GET") return invoices.has(m[1]) ? json(res, 200, invoices.get(m[1])) : stripeError(res, 404, `No such invoice: '${m[1]}'`);
       m = /^\/v1\/charges\/(ch_[A-Za-z0-9_]+)$/.exec(p);
@@ -370,6 +419,7 @@ export async function startStripeMock(o = {}) {
     port,
     url: `http://127.0.0.1:${port}`,
     prices,
+    catalog,
     customers,
     sessions,
     subscriptions,
@@ -386,7 +436,7 @@ export async function startStripeMock(o = {}) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   startStripeMock()
-    .then((mock) => console.log(`stripe mock on ${mock.url}${process.env.STRIPE_MOCK_WEBHOOK_URL ? ` (webhooks to ${process.env.STRIPE_MOCK_WEBHOOK_URL})` : " (no webhooks)"}; prices ${mock.prices.monthly}, ${mock.prices.yearly}`))
+    .then((mock) => console.log(`stripe mock on ${mock.url}${process.env.STRIPE_MOCK_WEBHOOK_URL ? ` (webhooks to ${process.env.STRIPE_MOCK_WEBHOOK_URL})` : " (no webhooks)"}; prices ${[...mock.catalog.keys()].join(", ")}`))
     .catch((e) => {
       console.error(e);
       process.exit(1);

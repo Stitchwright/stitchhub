@@ -28,7 +28,14 @@ const JOIN = "join-terms-test";
 const RUN = Date.now().toString(36);
 const ROOT = path.resolve(import.meta.dirname, "..");
 const WEBHOOK_SECRET = "whsec_termstest1234567890";
-const PRICES = { monthly: `price_month_${RUN}`, yearly: `price_year_${RUN}` };
+// The two plans' prices (src/billing.mjs priceBook): Solo and Shop, monthly and yearly.
+const PRICES = { monthly: `price_month_${RUN}`, yearly: `price_year_${RUN}`, shopMonthly: `price_shopm_${RUN}`, shopYearly: `price_shopy_${RUN}` };
+const CATALOG = [
+  { id: PRICES.monthly, interval: "month", amount: 2500 },
+  { id: PRICES.yearly, interval: "year", amount: 25000 },
+  { id: PRICES.shopMonthly, interval: "month", amount: 4500 },
+  { id: PRICES.shopYearly, interval: "year", amount: 45000 },
+];
 const OLD = "2026-09-01";
 const DRAFT = "2026-10-03-draft";
 
@@ -76,7 +83,7 @@ fs.writeFileSync(path.join(LEGAL, "README.md"), "# Not a version either\n");
 const freePort = () => new Promise((r) => net.createServer().listen(0, "127.0.0.1", function () { const p = this.address().port; this.close(() => r(p)); }));
 const port = await freePort();
 const HUB = `http://127.0.0.1:${port}`;
-const mock = await startStripeMock({ port: 0, webhookUrl: `${HUB}/v1/stripe`, webhookSecret: WEBHOOK_SECRET, prices: PRICES });
+const mock = await startStripeMock({ port: 0, webhookUrl: `${HUB}/v1/stripe`, webhookSecret: WEBHOOK_SECRET, catalog: CATALOG });
 
 // ----- the hub under test -----
 const ENV = {
@@ -98,8 +105,12 @@ const ENV = {
   STRIPE_API_BASE: mock.url,
   STRIPE_SECRET_KEY: "sk_test_termsmock12345678",
   STRIPE_WEBHOOK_SECRET: WEBHOOK_SECRET,
-  STRIPE_PRICE_MONTHLY: PRICES.monthly,
-  STRIPE_PRICE_YEARLY: PRICES.yearly,
+  STRIPE_PRICE_SOLO_MONTHLY: PRICES.monthly,
+  STRIPE_PRICE_SOLO_YEARLY: PRICES.yearly,
+  STRIPE_PRICE_SHOP_MONTHLY: PRICES.shopMonthly,
+  STRIPE_PRICE_SHOP_YEARLY: PRICES.shopYearly,
+  STRIPE_PRICE_MONTHLY: "",
+  STRIPE_PRICE_YEARLY: "",
   LEGAL_DIR: LEGAL,
   TERMS_VERSION: "",
 };
@@ -261,8 +272,8 @@ try {
   assert.equal((await accountRow(emailC)).terms_version, OLD, "a page that names no version gets the one in force");
 
   // Checkout while the account's version is current: no tick needed; the version goes with the session.
-  await status(await page(a, `/shops/${shopA}/checkout`, { plan: "monthly", termsVersion: "2026-08-01" }), 409, "Checkout from a page showing another version");
-  const co1 = await ok(page(a, `/shops/${shopA}/checkout`, { plan: "monthly", termsVersion: OLD }));
+  await status(await page(a, `/shops/${shopA}/checkout`, { plan: "solo", interval: "monthly", termsVersion: "2026-08-01" }), 409, "Checkout from a page showing another version");
+  const co1 = await ok(page(a, `/shops/${shopA}/checkout`, { plan: "solo", interval: "monthly", termsVersion: OLD }));
   const s1 = mock.sessions.get(co1.sessionId);
   assert.equal(s1.metadata.hub_terms_version, OLD, "the version is in the session's metadata");
   assert.equal(s1.subscription_data.metadata.hub_terms_version, OLD, "and the subscription's");
@@ -311,11 +322,11 @@ try {
   const codeA2 = (await ok(call("/v1/accounts/link-code", { key: keyA, json: { shopRef: "shopA2", shopName: "A Second", kind: "repair", program: "StitchBench" } }))).code;
   const shopA2 = (await ok(page(a, "/connect", { code: codeA2 }))).shop.id;
   const before = mock.sessions.size;
-  const refused = await status(await page(a, `/shops/${shopA2}/checkout`, { plan: "yearly", termsVersion: DRAFT }), 400, "Checkout without the tick");
+  const refused = await status(await page(a, `/shops/${shopA2}/checkout`, { plan: "solo", interval: "yearly", termsVersion: DRAFT }), 400, "Checkout without the tick");
   assert.match(refused, /Tick the box/);
   assert.equal(mock.sessions.size, before, "no Checkout Session was made");
   assert.equal((await accountRow(emailA)).terms_version, OLD);
-  const co2 = await ok(page(a, `/shops/${shopA2}/checkout`, { plan: "yearly", termsVersion: DRAFT, acceptTerms: true }));
+  const co2 = await ok(page(a, `/shops/${shopA2}/checkout`, { plan: "solo", interval: "yearly", termsVersion: DRAFT, acceptTerms: true }));
   assert.equal(mock.sessions.get(co2.sessionId).metadata.hub_terms_version, DRAFT);
   assert.equal((await accountRow(emailA)).terms_version, DRAFT);
   assert.deepEqual((await acceptances(emailA)).map((x) => [x.version, x.via, x.shop_id, x.checkout_id]), [
@@ -326,7 +337,7 @@ try {
   me = await ok(page(a, "/me"));
   assert.equal(me.terms.needsAccept, false, "the Checkout tick counts as accepting");
   // Current now: the next Checkout needs no tick, and is still recorded.
-  const co3 = await ok(page(a, `/shops/${shopA}/checkout`, { plan: "monthly" }));
+  const co3 = await ok(page(a, `/shops/${shopA}/checkout`, { plan: "solo", interval: "monthly" }));
   assert.deepEqual((await acceptances(emailA)).at(-1), { version: DRAFT, via: "checkout", shop_id: shopA, checkout_id: co3.sessionId });
   assert.deepEqual((await claim(keyA, { shopRef: "shopA", shopName: "A Repair", kind: "repair", program: "StitchBench", version: "1.7.0", sole: false })).terms.accepted, DRAFT);
   console.log("updated terms, re-accept and Checkout's tick: ok");
