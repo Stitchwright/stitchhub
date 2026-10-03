@@ -6,8 +6,8 @@
 //      and gets an install key back (scope "pending" until the email is verified, then "member").
 //   2. The program shows a link code (/v1/accounts/link-code); the owner signs in here and types it under "Connect a shop".
 //   3. On the hub first: /account sign-up, verify by email, then connect a shop with a code.
-// Standing is answered for every claimed shop: a 30-day trial from its first claim, or the hub admin's comp. Keys,
-// subscriptions and the waiver for partnered shops come with the billing package; `key` is null until then.
+// Standing is answered for every claimed shop (src/billing.mjs works it out: trial, subscription, comp, the waiver for a
+// partnered retail shop, lapsed) with the key the program should hold for it.
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -15,8 +15,10 @@ import { Hono } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { one, q, tx, getSetting } from "./db.mjs";
 import { sendMail, mailProblem } from "./mail.mjs";
+import { standingOf, claimAnswer, billingOpen, billingProblem, FOREVER } from "./billing.mjs";
+import { signer as hubSigner } from "./license.mjs";
+import { stripeMode } from "./stripe.mjs";
 
-const TRIAL_DAYS = 30;
 const SESSION_DAYS = 30;
 const SET_PASSWORD_HOURS = 24; // a link to set the first password, or to verify an address
 const RESET_HOURS = 1; // a forgotten password
@@ -24,7 +26,6 @@ const LINK_MINUTES = 15; // a code the program shows
 const COOKIE = "hub_session";
 const KINDS = new Set(["repair", "retail", "both"]);
 const PROGRAMS = new Set(["StitchBench", "StitchShop"]);
-const FOREVER = new Date("2099-12-31T00:00:00Z");
 const ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"; // no 0/O, 1/I/L: the code is read off one screen and typed on another
 const WRONG_PASSWORDS = 200; // wrong sign-ins from everywhere together in an hour, like WRONG_JOIN_KEYS
 // The passwords everyone tries first. Refused however long they are.
@@ -41,7 +42,6 @@ const str = (v, max) => {
   return s ? s.slice(0, max) : null;
 };
 const sha = (s) => crypto.createHash("sha256").update(s).digest("hex");
-const day = (d) => d.toISOString().slice(0, 10);
 const normCode = (code) => String(code ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 
 /** Why accounts can't run on this hub yet (mail or its own address missing), or null. */
@@ -178,19 +178,6 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
 
   // ----- shops and standing -----
 
-  /** This shop's standing as the hub sees it today: the admin's comp, else the trial from its first claim. */
-  function standingOf(shop) {
-    const now = Date.now();
-    if (shop.comp_until && shop.comp_until.getTime() > now) {
-      const forever = shop.comp_until.getTime() >= FOREVER.getTime();
-      return { standing: "comped", lastDay: forever ? null : day(shop.comp_until), message: forever ? "Free, with the hub admin's compliments." : `Free through ${day(shop.comp_until)}, with the hub admin's compliments.` };
-    }
-    const end = new Date(shop.created_at.getTime() + TRIAL_DAYS * 86400_000);
-    const lastDay = day(end);
-    if (end.getTime() > now) return { standing: "trial", lastDay, message: `Free trial through ${lastDay}.` };
-    return { standing: "trial", lastDay, message: `The free trial ended on ${lastDay}. Subscriptions aren't open yet, so nothing changes until they are.` };
-  }
-
   const shopOut = (s) => ({
     id: s.id,
     shopRef: s.shop_ref,
@@ -201,13 +188,21 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
     createdAt: s.created_at,
     lastSeenAt: s.last_seen_at,
     ...(s.install_name !== undefined ? { installName: s.install_name } : {}),
-    ...standingOf(s),
   });
 
-  /** What the program learns about a shop: its row, its account (if any) and its standing. No key until billing exists. */
+  /** A shop row with its standing today (billing.mjs): standing, lastDay, message, subscription, waivedBy. */
+  async function withStanding(s) {
+    const st = await standingOf(s);
+    return { ...shopOut(s), standing: st.standing, lastDay: st.lastDay, message: st.message, source: st.source, waivedBy: st.waivedBy ? { name: st.waivedBy.shopName } : null, subscription: st.subscription, lapsedAt: s.lapsed_at ?? null };
+  }
+
+  /**
+   * What the program learns about a shop at a claim: its row, its account (if any), its standing and the key it should
+   * hold (signed now when the standing calls for a new one), and the ids of keys to drop.
+   */
   async function standingAnswer(shop, account) {
     const a = account === undefined && shop.account_id ? await one(`SELECT email, verified_at FROM accounts WHERE id = $1`, [shop.account_id]) : account;
-    return { shop: shopOut(shop), account: a ? { email: a.email, verified: Boolean(a.verified_at) } : null, ...standingOf(shop), key: null, revokeKeyIds: [] };
+    return { shop: shopOut(shop), account: a ? { email: a.email, verified: Boolean(a.verified_at) } : null, ...(await claimAnswer(shop)) };
   }
 
   /** The shop row for (install, shopRef): made on first sight, its name, kind, program and version kept current. */
@@ -342,10 +337,12 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
   acct.get("/me", async (c) => {
     const a = await requireAccount(c);
     const shops = (await q(`SELECT s.*, i.name AS install_name FROM shops s JOIN installs i ON i.id = s.install_id WHERE s.account_id = $1 ORDER BY s.created_at`, [a.id])).rows;
+    const open = billingOpen();
     return c.json({
-      account: { id: a.id, email: a.email, verified: Boolean(a.verified_at), termsVersion: a.terms_version, createdAt: a.created_at, lastSignInAt: a.last_sign_in_at },
-      shops: shops.map(shopOut),
+      account: { id: a.id, email: a.email, verified: Boolean(a.verified_at), termsVersion: a.terms_version, createdAt: a.created_at, lastSignInAt: a.last_sign_in_at, hasBilling: Boolean(a.stripe_customer_id) },
+      shops: (await Promise.all(shops.map(withStanding))).map((s) => ({ ...s, canSubscribe: open && !(s.source === "subscription" && s.standing !== "lapsed"), canManage: open && Boolean(a.stripe_customer_id) })),
       hubName,
+      billing: { open, monthly: "$25 a month", yearly: "$250 a year" },
     });
   });
 
@@ -496,19 +493,19 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
     return c.json({ ok: true, shop: shopOut(shop) });
   });
 
-  app.route("/account/api", acct);
-
   // ---------- hub admin ----------
 
   const shopRows = (where, params) =>
-    q(`SELECT s.*, i.name AS install_name, a.email AS account_email FROM shops s JOIN installs i ON i.id = s.install_id LEFT JOIN accounts a ON a.id = s.account_id ${where} ORDER BY s.created_at`, params).then((r) => r.rows);
-  const adminShop = (s) => ({ ...shopOut(s), installId: s.install_id, installName: s.install_name, accountId: s.account_id, accountEmail: s.account_email ?? null, compUntil: s.comp_until, compNote: s.comp_note });
+    q(`SELECT s.*, i.name AS install_name, a.email AS account_email, a.stripe_customer_id FROM shops s JOIN installs i ON i.id = s.install_id LEFT JOIN accounts a ON a.id = s.account_id ${where} ORDER BY s.created_at`, params).then((r) => r.rows);
+  const adminShop = async (s) => ({ ...(await withStanding(s)), installId: s.install_id, installName: s.install_name, accountId: s.account_id, accountEmail: s.account_email ?? null, stripeCustomerId: s.stripe_customer_id ?? null, compUntil: s.comp_until, compNote: s.comp_note });
 
   admin.get("/accounts", async (c) => {
     const accounts = (await q(`SELECT * FROM accounts ORDER BY created_at`)).rows;
-    const shops = await shopRows("", []);
+    const shops = await Promise.all((await shopRows("", [])).map(adminShop));
+    const signing = hubSigner();
     return c.json({
       problem: accountsProblem(),
+      billing: { open: billingOpen(), problem: billingProblem(), stripeMode: stripeMode(), signing: signing.signer ? { kid: signing.signer.kid, x: signing.signer.x } : null, signingProblem: signing.problem },
       accounts: accounts.map((a) => ({
         id: a.id,
         email: a.email,
@@ -516,15 +513,16 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
         hasPassword: Boolean(a.password_hash),
         disabled: a.disabled,
         termsVersion: a.terms_version,
+        stripeCustomerId: a.stripe_customer_id,
         createdAt: a.created_at,
         lastSignInAt: a.last_sign_in_at,
-        shops: shops.filter((s) => s.account_id === a.id).map(adminShop),
+        shops: shops.filter((s) => s.accountId === a.id),
       })),
-      shops: shops.map(adminShop),
+      shops,
     });
   });
 
-  // "Free until <date>" or for good, with a note; an empty `until` takes the comp away.
+  // "Free until <date>" or for good, with a note; an empty `until` takes the comp away. A comp also takes back "Lapse now".
   admin.post("/shops/:id/comp", async (c) => {
     const body = await c.req.json();
     let until = null;
@@ -533,9 +531,9 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
       until = /^\d{4}-\d{2}-\d{2}$/.test(String(body.until)) ? new Date(`${body.until}T23:59:59Z`) : new Date(NaN);
       if (Number.isNaN(until.getTime())) throw fail(400, "Give the last free day as YYYY-MM-DD, or \"forever\".");
     }
-    const r = await q(`UPDATE shops SET comp_until = $2, comp_note = $3 WHERE id = $1`, [c.req.param("id"), until, until ? str(body.note, 300) : null]);
+    const r = await q(`UPDATE shops SET comp_until = $2, comp_note = $3, lapsed_at = CASE WHEN $2::timestamptz IS NULL THEN lapsed_at ELSE NULL END WHERE id = $1`, [c.req.param("id"), until, until ? str(body.note, 300) : null]);
     if (!r.rowCount) throw fail(404, "No such shop.");
-    return c.json({ ok: true, shop: adminShop((await shopRows("WHERE s.id = $1", [c.req.param("id")]))[0]) });
+    return c.json({ ok: true, shop: await adminShop((await shopRows("WHERE s.id = $1", [c.req.param("id")]))[0]) });
   });
 
   admin.post("/accounts/:id/resend", async (c) => {
@@ -567,4 +565,8 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
   const sweep = () =>
     Promise.all([q(`DELETE FROM account_tokens WHERE expires_at < now() - interval '7 days'`), q(`DELETE FROM sessions WHERE expires_at < now()`)]).catch((e) => console.error("accounts sweep:", e.message));
   setInterval(sweep, 6 * 3600_000).unref();
+
+  // The cookie API router is mounted by server.mjs once billing has added its routes to it (Hono copies a router's
+  // routes when it is mounted, so routes added later wouldn't be served).
+  return { acct, requireAccount, ready, hubUrl: HUB_URL };
 }

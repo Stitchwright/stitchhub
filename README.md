@@ -65,7 +65,8 @@ the migrations: they take turns.
 
 The **/admin** page exports everything to one `.ndjson.gz` file, and imports that file into another StitchHub. That
 includes members and their keys, the join key, links with their history, notes, photos, figures, data sets, the
-parts cross-reference with its history, and marketplace listings and orders. The export is one snapshot, so it can be
+parts cross-reference with its history, marketplace listings and orders, shop owners' accounts and shops, and billing
+(each shop's subscription, the webhook events handled, every license key issued). The export is one snapshot, so it can be
 taken while shops are using the hub. Download an export now and then and keep it somewhere safe.
 
 **Keep the hub's address when you move it.** Point the same address (your own domain, for example
@@ -158,10 +159,10 @@ at `/account`. Three ways in:
    it under "Connect a shop".
 3. **On the hub first**: `/account` → Create an account, confirm by email, then connect a shop with a code.
 
-Every company tells the hub about itself at each sync (`POST /v1/shops/claim`) and learns its **standing**: a 30-day
-trial from its first claim, or free with the admin's compliments (the /admin page, Shops → Comp). Subscriptions and
-license keys come with the billing package; until then `key` is always null and the standing changes nothing in the
-program.
+Every company tells the hub about itself at each sync (`POST /v1/shops/claim`) and learns its **standing** (see
+Billing below): a 30-day trial from its first claim, a subscription, free while partnered, free with the admin's
+compliments (the /admin page, Shops → Comp), or lapsed. The answer carries the **license key** the program should hold for
+itself (module `base`), signed by the hub; the key, not the words, is what the program enforces.
 
 Passwords are hashed with scrypt; links, codes and session ids are stored as SHA-256 hashes; sessions are HttpOnly
 cookies for 30 days; a password reset signs every browser out. Sign-ups are limited to 10 an hour per address and wrong
@@ -172,6 +173,48 @@ domain is used when it is empty), `SMTP_URL` (`smtps://user:pass@host:465`, or `
 `MAIL_FROM`. Without them the account routes answer 503 and the rest of the hub runs as before. A test hub on this
 computer can set `MAIL_DEV_LOG=true` instead: each email is printed to the hub's log (links included) rather than sent.
 Never set that on a real hub.
+
+## Billing
+One price for every shop: **$25 a month or $250 a year**, for StitchBench on Windows, StitchShop on Windows and every
+company on a hosted instance, through Stripe Billing on the hub. The owner subscribes on `/account` → Your shops →
+Subscribe (Stripe Checkout, a card is always taken: the hub runs the trial itself) and changes the card or plan, cancels
+or downloads invoices under Manage billing (Stripe's Customer Portal). The hub never sees a card number. Stripe tells the
+hub what happened through the webhook `POST /v1/stripe`: the signature is checked first, each event is handled once (its
+id is kept in `stripe_events`; a replay is a 200 that does nothing) and the event's own copy of the object is never
+trusted (the hub re-reads the subscription, invoice or charge from Stripe by id).
+
+A shop's **standing**, worked out at every claim:
+
+| standing | when | the key |
+|---|---|---|
+| `trial` | 30 days from the shop's first claim | plan `t`, from the first claim through the trial's last day |
+| `active` | Stripe says the subscription is paid (`active`/`trialing`), or it is cancelled but paid through the period end | plan `m` or `y`, through the current period end |
+| `past_due` | the last payment failed; 14 days' grace past the period end while Stripe retries | the same key (it already carries 14 days of grace) |
+| `waived` | a **retail** shop (StitchShop, `kind: "retail"`) that is the retail side of an `ACTIVE` partner link whose repair shop is `trial`, `active`, `past_due` or `comped`. A repair shop is never waived, and a `both` shop counts as repair and pays | plan `w`, a 35-day key signed fresh each day the waiver holds, so an offline install works about a month past the end of its partnership and no longer |
+| `comped` | the admin's "Comp": free through a day, or for good (`2099-12-31`) | plan `c` through that day |
+| `lapsed` | the trial ended; the subscription ended or its grace ran out; a refund or chargeback; the admin's "Lapse now"; a waiver that ended more than 35 days ago | a key that is over: the trial's or period's own (grace from its last day); after a refund, a chargeback or "Lapse now", a one-day key with no grace, so the program is read-only from its next sync |
+
+Rules of thumb: a key is re-signed only when the plan or last day changes (a renewal, a new comp date), and the current
+key is sent at every claim so a program that lost it gets it back; a lapsed shop's key is never cut shorter than the one
+it holds (a comp that ran out keeps its 14 days of grace), but a key the program believes is still live when the standing
+has ended (a comp taken away) is replaced by one ending today, so the grace runs from today; `revokeKeyIds` names the
+keys of a refunded or charged-back period (and of a "Lapse now") for the program to drop. A refund or chargeback lapses
+the shop at once, even inside its trial. When a subscription ends while the trial still runs, the shop is back on its
+trial. A partnered shop that also pays is told it can cancel and stay free; the hub never cancels for it. Dunning mail
+goes once per period: when a payment fails, 7 days into the grace, the day the shop lapses, and 30 days before a yearly
+renewal (Stripe sends the receipts).
+
+Variables: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` (the endpoint `https://<hub>/v1/stripe` with the events
+`checkout.session.completed`, `customer.subscription.created|updated|deleted`, `invoice.paid`,
+`invoice.payment_failed`, `charge.refunded`, `charge.dispute.created`), `STRIPE_PRICE_MONTHLY` and
+`STRIPE_PRICE_YEARLY` (the ids of two recurring prices made in the Stripe dashboard), `STRIPE_API_BASE` (the mock, for a
+test hub). **With any of the first four unset, subscriptions are closed**: the account page says so, a trial that ended
+changes nothing ("Subscriptions aren't open yet"), and no trial or waiver key is signed, so no shop can go read-only for
+want of a way to pay; comps still get their key. Keys are signed with `HUB_LICENSE_KID` and `HUB_LICENSE_KEY` (the
+Ed25519 private key, PEM base64, from `npm run license:keygen -- --kid hub1 --hub` in the StitchBench repo; the hub prints
+the public half at start, and the matching line must be in `license-keys.ts` in both programs before the hub signs).
+Without them no key is signed and standing is only words. Every key issued is written in `license_issues` (the
+retirement allow list of a kid is made from it; `GET /v1/admin/shops/:id/keys` lists a shop's).
 
 ## Checking a hub
 ```
@@ -199,6 +242,16 @@ limits.
 `DATABASE_URL=<a scratch database> npm run test:companies` does the same for companies on one install: a listing, order,
 note, link, part, usage report and figure made under a company's name shows that name (and the install's when none is
 named), two companies on one install are kept apart in ratings and usage counts, and one can't change the other's rows.
+
+`DATABASE_URL=<a scratch database> npm run test:billing` starts a hub with the Stripe mock (`test/stripe-mock.mjs`:
+Checkout in subscription mode, the Portal, signed webhooks, refunds and disputes, with hooks to fail or renew a payment)
+and a throwaway `hub1` key, and walks a shop from its trial through subscribe → active → past_due → lapsed → paid again,
+cancelling, a yearly plan, a refund and a chargeback (keys revoked), a partnered retail shop waived and the waiver ending,
+comps, "Lapse now", replayed and badly signed webhooks, one account unable to subscribe another's shop, the export, and a
+hub with billing closed. Every key the hub sends is verified with the program's own verify logic (a copy of
+`license.ts`'s `verifyLicense`) and checked to be for the right shop. The mock also runs on its own
+(`node test/stripe-mock.mjs`, `STRIPE_MOCK_PORT`, `STRIPE_MOCK_WEBHOOK_URL`) for a local test hub: set
+`STRIPE_API_BASE` to it.
 
 ## API (for StitchBench)
 Members send `Authorization: Bearer <install key>`.
@@ -232,16 +285,23 @@ Members send `Authorization: Bearer <install key>`.
 | `GET /v1/partners/messages?since=N` | messages for this install's shops after `N` |
 | `POST /v1/partners/links/:id/end` | end a partnership (both shops are told) |
 | `POST /v1/upgrade` | `{ joinKey }`: a partner-only install becomes a member |
-| `POST /v1/shops/claim` | `{ shopRef, shopName, kind: "repair" \| "retail" \| "both", program: "StitchBench" \| "StitchShop", version, sole }` → `{ ok, listings, shop, account: { email, verified } \| null, standing: "trial" \| "comped", lastDay, message, key: null, revokeKeyIds: [] }`. Sent for every company at every sync; the first time starts its trial. `sole: true` (or a body with only `shopRef`, as older programs send) hands what the install listed, ordered and shared before it named its company to that company |
+| `POST /v1/shops/claim` | `{ shopRef, shopName, kind: "repair" \| "retail" \| "both", program: "StitchBench" \| "StitchShop", version, sole }` → `{ ok, listings, shop, account: { email, verified } \| null, standing: "trial" \| "active" \| "past_due" \| "waived" \| "comped" \| "lapsed", lastDay, message, key: "SB1.…" \| null, revokeKeyIds: [] }`. Sent for every company at every sync; the first time starts its trial. `key` is the hub-signed key for the module `base` the program should hold (its current one, or a fresh one when the standing changed; null when the hub has no signing key, or billing is closed and the shop is on its trial); `revokeKeyIds` names hub keys to drop (a refund, a chargeback, "Lapse now"). `sole: true` (or a body with only `shopRef`, as older programs send) hands what the install listed, ordered and shared before it named its company to that company |
 | `GET /v1/shops/:ref/standing` | the same answer without the claim (404 until the shop has claimed itself) |
+| `POST /v1/stripe` (no key: Stripe's webhook) | `Stripe-Signature` checked against `STRIPE_WEBHOOK_SECRET` (400 otherwise); the event id is kept, so a replay answers `{ ok, replay: true }` and does nothing; the object is re-read from Stripe before anything is written (502 when that fails, so Stripe sends the event again). Body up to 256 KB |
 | `POST /v1/accounts/start` | `{ shopRef, shopName, kind, program, version, email, termsVersion }` → `{ ok, account: { email, verified: false }, shop }`: the hub makes the account (or mails the link again for one not finished), ties the shop to it and mails a set-password link. 409 when the address already has a finished account (use a link code). Without an install key (an install on no hub yet; `contact` optional) the answer adds `{ installId, installKey, hubName, scope: "pending" }` |
 | `POST /v1/accounts/link-code` | `{ shopRef, shopName, kind, program, version }` → `{ code, expiresAt }`: a 10-character code the owner types in on the hub within 15 minutes (409 when the shop already has an account) |
 
 The hub's own pages use a session cookie and JSON under `/account/api`: `GET me`, `POST signup { email, password,
 acceptTerms }`, `verify { token }`, `signin { email, password }`, `signout`, `signout-all`, `forgot { email }`,
-`resend { email }`, `set-password { token, password }`, `password { current, password }`, `connect { code }`. A change
-asked for from another site (the browser's `Origin`) is refused. The admin API adds `GET /v1/admin/accounts`,
-`POST /v1/admin/shops/:id/comp { until: "YYYY-MM-DD" | "forever" | "", note }`, `POST /v1/admin/accounts/:id/resend`,
+`resend { email }`, `set-password { token, password }`, `password { current, password }`, `connect { code }`,
+`shops/:id/checkout { plan: "monthly" | "yearly" }` → `{ url }` (a Stripe Checkout Session for one of the account's own
+shops; 404 for another account's, 409 when it already has a subscription, 503 while subscriptions are closed) and
+`shops/:id/portal` → `{ url }` (Stripe's Customer Portal for the account; 409 before it has ever subscribed). `me` carries
+each shop's `standing`, `lastDay`, `message`, `subscription`, `canSubscribe` and `canManage`, and `billing.open`. A change
+asked for from another site (the browser's `Origin`) is refused. The admin API adds `GET /v1/admin/accounts` (with
+`billing`: open or why not, the Stripe mode and the signing kid and public x), `POST /v1/admin/shops/:id/comp { until:
+"YYYY-MM-DD" | "forever" | "", note }` (a comp also takes back a "Lapse now"), `POST /v1/admin/shops/:id/lapse { lapsed:
+true | false }` ("Lapse now" and its undo), `GET /v1/admin/shops/:id/keys`, `POST /v1/admin/accounts/:id/resend`,
 `POST /v1/admin/accounts/:id/disable { disabled }` and `DELETE /v1/admin/accounts/:id`.
 
 The feeds (`/v1/changes`, `/v1/orders`, `/v1/partners/messages`) answer with `X-Feed-Reset: 1` when `since` was past
