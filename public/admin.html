@@ -66,6 +66,19 @@
     </section>
 
     <section>
+      <h2>Accounts</h2>
+      <p class="muted">Shop owners' StitchHub accounts (<a href="/account">/account</a>): email, whether the address is confirmed, and the shops each one owns. "Resend" mails the set-password or confirmation link again. "Delete" is for an owner who asks: the account goes, its shops stay on the hub with no account.</p>
+      <p id="accountsProblem" class="bad" hidden></p>
+      <div class="scroll"><table><thead><tr><th>Email</th><th>Confirmed</th><th>Shops</th><th>Made</th><th>Last sign-in</th><th></th></tr></thead><tbody id="accounts"></tbody></table></div>
+    </section>
+
+    <section>
+      <h2>Shops</h2>
+      <p class="muted">Every company that has told the hub about itself, with its standing: a 30-day trial from its first sync, or free with your compliments ("Comp": a last free day, or for good). Subscriptions come later; until then comp every shop you don't mean to charge.</p>
+      <div class="scroll"><table><thead><tr><th>Shop</th><th>Member (install)</th><th>Kind</th><th>Program</th><th>Account</th><th>Standing</th><th>Last seen</th><th></th></tr></thead><tbody id="shops"></tbody></table></div>
+    </section>
+
+    <section>
       <h2>Figure snapshots</h2>
       <p class="muted">A wrong or unwanted figure can be taken down: installs drop their copy, and any shop can share that figure again. Its id is the end of the picture's address in StitchBench (right-click the figure, Copy image address). To take down every figure one shop shared, use Remove figures under Members.</p>
       <form class="row" id="figForm"><label for="figId" class="muted">Figure id</label><input id="figId" required pattern="[0-9a-f]{24}" placeholder="24 letters and digits"><button>Remove figure</button></form>
@@ -130,6 +143,40 @@
       tr.append(c); return tr;
     }));
     $("datasets").textContent = s.datasets.length ? s.datasets.map((d) => `${d.name}: version ${d.version}, ${(d.size / 1e6).toFixed(1)} MB`).join(" · ") : "None yet.";
+    await loadAccounts();
+  }
+
+  const post = (path, body) => api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const standingText = (s) => (s.standing === "comped" ? (s.lastDay ? `free through ${s.lastDay}` : "free for good") : s.lastDay >= new Date().toISOString().slice(0, 10) ? `trial through ${s.lastDay}` : `trial ended ${s.lastDay}`) + (s.compNote ? ` (${s.compNote})` : "");
+  function compButton(s) {
+    const b = document.createElement("button"); b.className = "plain"; b.textContent = s.standing === "comped" ? "Change comp" : "Comp";
+    b.onclick = async () => {
+      const until = prompt(`Free until (YYYY-MM-DD), "forever", or empty to take the comp away:`, s.compUntil ? (s.compUntil.startsWith("2099") ? "forever" : s.compUntil.slice(0, 10)) : "forever");
+      if (until === null) return;
+      const note = until ? prompt("A note for yourself (why):", s.compNote || "") : null;
+      try { await post(`/shops/${s.id}/comp`, { until: until.trim(), note }); say(until.trim() ? "Comp saved." : "Comp taken away."); loadAccounts(); } catch (err) { say(err.message, true); }
+    };
+    return b;
+  }
+  async function loadAccounts() {
+    const a = await (await api("/accounts")).json();
+    $("accountsProblem").hidden = !a.problem; $("accountsProblem").textContent = a.problem || "";
+    $("accounts").replaceChildren(...a.accounts.map((x) => {
+      const tr = document.createElement("tr");
+      tr.append(td(x.email + (x.disabled ? " (switched off)" : "")), td(x.verified ? "yes" : x.hasPassword ? "not yet (link mailed)" : "not yet (no password yet)"), td(x.shops.map((s) => s.name).join(", ") || "none"), td(when(x.createdAt)), td(when(x.lastSignInAt)));
+      const c = document.createElement("td");
+      if (!x.verified) { const r = document.createElement("button"); r.className = "plain"; r.textContent = "Resend"; r.onclick = async () => { try { await post(`/accounts/${x.id}/resend`, {}); say("Email sent again."); } catch (err) { say(err.message, true); } }; c.append(r, " "); }
+      const off = document.createElement("button"); off.className = "plain"; off.textContent = x.disabled ? "Switch on" : "Switch off";
+      off.onclick = async () => { try { await post(`/accounts/${x.id}/disable`, { disabled: !x.disabled }); loadAccounts(); } catch (err) { say(err.message, true); } };
+      const del = document.createElement("button"); del.className = "plain"; del.textContent = "Delete";
+      del.onclick = async () => { if (!confirm(`Delete the account ${x.email}? Its shops stay on the hub with no account.`)) return; try { await api(`/accounts/${x.id}`, { method: "DELETE" }); say("Account deleted."); loadAccounts(); } catch (err) { say(err.message, true); } };
+      c.append(off, " ", del); tr.append(c); return tr;
+    }));
+    $("shops").replaceChildren(...a.shops.map((s) => {
+      const tr = document.createElement("tr");
+      tr.append(td(s.name), td(s.installName), td(s.kind), td([s.program, s.version].filter(Boolean).join(" ")), td(s.accountEmail || "none"), td(standingText(s)), td(when(s.lastSeenAt)));
+      const c = document.createElement("td"); c.append(compButton(s)); tr.append(c); return tr;
+    }));
   }
 
   $("loginForm").onsubmit = async (e) => { e.preventDefault(); token = $("tok").value; try { await load(); try { sessionStorage.setItem("hubAdmin", token); } catch {} say(""); } catch (err) { say(err.message, true); } };

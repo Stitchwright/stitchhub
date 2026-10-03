@@ -146,6 +146,33 @@ and sales, and settlements. Customer phone numbers and addresses stay in the sew
 year so a shop that was offline catches up. They are not encrypted or signed: the hub admin can read them in the
 database, like everything else on the hub, and could send one as either shop.
 
+## Shop owner accounts
+A shop owner can have an **account** on the hub: an email address and a password, confirmed by email, with a password
+reset by email. The account owns one or more **hub shops** (a company on an install; a hosted StitchBench holds several).
+The install key stays what the program uses on every request; the account is what a person uses on the hub's own pages
+at `/account`. Three ways in:
+1. **From the program** (the usual way): Settings → Account starts the account for the shop; the hub mails a link to
+   set a password. A program that is on no hub yet joins this way too, with no join key: its install is `pending` (it
+   can use `/v1/shops/*`, `/v1/accounts/*`, `/v1/me` and `/v1/upgrade`) and becomes a member when the email is confirmed.
+2. **A link code**: the program shows a 10-character code (good for 15 minutes); the owner signs in on the hub and types
+   it under "Connect a shop".
+3. **On the hub first**: `/account` → Create an account, confirm by email, then connect a shop with a code.
+
+Every company tells the hub about itself at each sync (`POST /v1/shops/claim`) and learns its **standing**: a 30-day
+trial from its first claim, or free with the admin's compliments (the /admin page, Shops → Comp). Subscriptions and
+license keys come with the billing package; until then `key` is always null and the standing changes nothing in the
+program.
+
+Passwords are hashed with scrypt; links, codes and session ids are stored as SHA-256 hashes; sessions are HttpOnly
+cookies for 30 days; a password reset signs every browser out. Sign-ups are limited to 10 an hour per address and wrong
+sign-ins to 20 an hour per address (and 200 an hour for the whole hub).
+
+For the emails the hub needs three variables: `HUB_URL` (its own public address, for the links; on Railway the public
+domain is used when it is empty), `SMTP_URL` (`smtps://user:pass@host:465`, or `smtp://…:587` for STARTTLS) and
+`MAIL_FROM`. Without them the account routes answer 503 and the rest of the hub runs as before. A test hub on this
+computer can set `MAIL_DEV_LOG=true` instead: each email is printed to the hub's log (links included) rather than sent.
+Never set that on a real hub.
+
 ## Checking a hub
 ```
 HUB_URL=http://localhost:8080 ADMIN_TOKEN=... JOIN_KEY=... npm test
@@ -163,6 +190,11 @@ that are too large or break the rules are refused.
 `DATABASE_URL=<a scratch database> ADMIN_TOKEN=<16+ characters> npm run test:db` checks what needs the database: every
 column is in the export, the feeds stop below a write in progress, and the link checker drops what a probe found when the
 link has changed since.
+
+`DATABASE_URL=<a scratch database> npm run test:accounts` starts a hub of its own on a free port, with a small mail
+server inside the test standing in for the mailbox, and checks accounts end to end: the three ways in, sign in, forgot
+and reset, claim and standing, the admin's comp, that one account never sees another's shops, the export and the
+limits.
 
 ## API (for StitchBench)
 Members send `Authorization: Bearer <install key>`.
@@ -196,6 +228,17 @@ Members send `Authorization: Bearer <install key>`.
 | `GET /v1/partners/messages?since=N` | messages for this install's shops after `N` |
 | `POST /v1/partners/links/:id/end` | end a partnership (both shops are told) |
 | `POST /v1/upgrade` | `{ joinKey }`: a partner-only install becomes a member |
+| `POST /v1/shops/claim` | `{ shopRef, shopName, kind: "repair" \| "retail" \| "both", program: "StitchBench" \| "StitchShop", version, sole }` → `{ ok, listings, shop, account: { email, verified } \| null, standing: "trial" \| "comped", lastDay, message, key: null, revokeKeyIds: [] }`. Sent for every company at every sync; the first time starts its trial. `sole: true` (or a body with only `shopRef`, as older programs send) hands what the install listed, ordered and shared before it named its company to that company |
+| `GET /v1/shops/:ref/standing` | the same answer without the claim (404 until the shop has claimed itself) |
+| `POST /v1/accounts/start` | `{ shopRef, shopName, kind, program, version, email, termsVersion }` → `{ ok, account: { email, verified: false }, shop }`: the hub makes the account (or mails the link again for one not finished), ties the shop to it and mails a set-password link. 409 when the address already has a finished account (use a link code). Without an install key (an install on no hub yet; `contact` optional) the answer adds `{ installId, installKey, hubName, scope: "pending" }` |
+| `POST /v1/accounts/link-code` | `{ shopRef, shopName, kind, program, version }` → `{ code, expiresAt }`: a 10-character code the owner types in on the hub within 15 minutes (409 when the shop already has an account) |
+
+The hub's own pages use a session cookie and JSON under `/account/api`: `GET me`, `POST signup { email, password,
+acceptTerms }`, `verify { token }`, `signin { email, password }`, `signout`, `signout-all`, `forgot { email }`,
+`resend { email }`, `set-password { token, password }`, `password { current, password }`, `connect { code }`. A change
+asked for from another site (the browser's `Origin`) is refused. The admin API adds `GET /v1/admin/accounts`,
+`POST /v1/admin/shops/:id/comp { until: "YYYY-MM-DD" | "forever" | "", note }`, `POST /v1/admin/accounts/:id/resend`,
+`POST /v1/admin/accounts/:id/disable { disabled }` and `DELETE /v1/admin/accounts/:id`.
 
 The feeds (`/v1/changes`, `/v1/orders`, `/v1/partners/messages`) answer with `X-Feed-Reset: 1` when `since` was past
 what this hub holds (it was restored from an older export): that answer starts again from the beginning.

@@ -13,9 +13,10 @@ import { pool, q, one, tx, migrate, getSetting, setSetting, startFeeds, feedLimi
 import { startChecker, privateAddress } from "./checker.mjs";
 import { exportStream, importStream } from "./transfer.mjs";
 import { registerParts, partsByIds, partSizes } from "./parts.mjs";
-import { registerMarket, listingsByIds, sellerBlocked } from "./market.mjs";
+import { registerMarket, listingsByIds, sellerBlocked, claimListings } from "./market.mjs";
 import { registerUsage } from "./usage.mjs";
 import { registerPartners } from "./partners.mjs";
+import { registerAccounts } from "./accounts.mjs";
 import { discordBody } from "./discord.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
@@ -160,7 +161,7 @@ const MB = 1024 * KB;
 const ADMIN_UPLOAD = (Number(process.env.ADMIN_UPLOAD_MB) || 1024) * MB; // bulk imports, data sets, moving the hub
 
 function maxBody(p) {
-  if (p === "/v1/register" || p === "/v1/partners/join") return 16 * KB; // no key needed: a join key or code and a name
+  if (p === "/v1/register" || p === "/v1/partners/join" || p === "/v1/accounts/start") return 16 * KB; // no key needed: a join key, code or email and a name
   if (p === "/v1/posts") return 12 * 3 * MB + MB; // a note with up to 12 photos of 3 MB
   if (p === "/v1/listings") return 8 * 3 * MB + MB; // a listing with up to 8 photos
   if (/^\/v1\/figures\/[^/]+$/.test(p)) return 2 * MB;
@@ -227,7 +228,7 @@ app.get("/", async (c) => {
 Manuals are never stored here, only links to where they are published.</p>
 <p>${s.links} manual links · ${s.posts} shared notes · ${s.installs} shops</p>
 <p>To join, open StitchBench → Settings → Community hub and enter this address and the join key you were given.</p>
-<p><a href="/admin">Hub admin</a></p></body>`);
+<p><a href="/account">Your account</a> · <a href="/admin">Hub admin</a></p></body>`);
 });
 
 app.get("/admin", (c) => c.html(fs.readFileSync(path.join(ROOT, "public", "admin.html"), "utf8")));
@@ -254,17 +255,24 @@ async function createInstall(db, name, contact, scope) {
 
 // ---------- installs (Authorization: Bearer <install key>) ----------
 
-const member = new Hono();
-member.use("*", async (c, next) => {
-  const h = c.req.header("authorization") ?? "";
-  const key = h.startsWith("Bearer ") ? h.slice(7) : "";
+/** The install an install key belongs to; 401 for a key the hub doesn't know, 403 for a blocked one. */
+async function installByKey(key) {
   if (!key) throw fail(401, "Join the hub first (Settings → Community hub).");
   const inst = await one(`SELECT id, name, scope, blocked, last_seen_at FROM installs WHERE key_hash = $1`, [sha(key)]);
   if (!inst) throw fail(401, "This install isn't known to the hub. Join again with the current join key.");
   if (inst.blocked) throw fail(403, "The hub admin has blocked this install.");
-  // Joined with a partner code only: the partner channel, nothing of the community's.
-  if (inst.scope === "partner" && !/^\/v1\/(partners\/|me$|upgrade$)/.test(c.req.path)) throw fail(403, "This shop is connected to its partner shops only. Join the community with a join key to use this.");
   if (!inst.last_seen_at || Date.now() - inst.last_seen_at.getTime() > 300_000) q(`UPDATE installs SET last_seen_at = now() WHERE id = $1`, [inst.id]).catch(() => {});
+  return inst;
+}
+
+const member = new Hono();
+member.use("*", async (c, next) => {
+  const h = c.req.header("authorization") ?? "";
+  const inst = await installByKey(h.startsWith("Bearer ") ? h.slice(7) : "");
+  // Joined with a partner code only: the partner channel and its own account and shops, nothing of the community's.
+  if (inst.scope === "partner" && !/^\/v1\/(partners\/|shops\/|accounts\/|me$|upgrade$)/.test(c.req.path)) throw fail(403, "This shop is connected to its partner shops only. Join the community with a join key to use this.");
+  // Joined by starting a StitchHub account (no join key): a member once the account's email is verified.
+  if (inst.scope === "pending" && !/^\/v1\/(shops\/|accounts\/|me$|upgrade$)/.test(c.req.path)) throw fail(403, "Finish setting up your StitchHub account first: open the link in the email we sent (Settings → Account).");
   c.set("install", inst);
   await next();
 });
@@ -840,6 +848,8 @@ registerParts({ member, admin, fail, newId, writeLimit, validUrl });
 registerMarket({ member, fail, newId, writeLimit, notify, feedPage });
 registerUsage({ member, fail, writeLimit: usageLimit });
 registerPartners({ app, member, fail, newId, allow, clientIp, sha, hubName: HUB_NAME, createInstall });
+// Shop owners' accounts, their shops and standing (src/accounts.mjs, the /account pages; mail through src/mail.mjs).
+registerAccounts({ app, member, admin, fail, newId, allow, bucket, clientIp, hubName: HUB_NAME, createInstall, installByKey, claimListings, root: ROOT });
 
 // Admin first: the member routes below would otherwise answer /v1/admin/* with their key check.
 app.route("/v1/admin", admin);
