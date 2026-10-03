@@ -95,12 +95,28 @@ export const retrieveSession = (id) => call("GET", `/v1/checkout/sessions/${enc(
 /** The Customer Portal (change the card or plan, cancel, invoices), back to `returnUrl` afterwards. */
 export const createPortalSession = (a) => call("POST", "/v1/billing/portal/sessions", { customer: a.customer, return_url: a.returnUrl });
 export const retrieveSubscription = (id) => call("GET", `/v1/subscriptions/${enc(id)}`);
+/** A customer's subscriptions, ended ones too (one account's customer holds every shop's). */
+export const listSubscriptions = (customer) => call("GET", `/v1/subscriptions?customer=${enc(customer)}&status=all&limit=100`);
+/** Cancels a subscription at once: no proration credit and no refund (Stripe's defaults for DELETE). */
+export const cancelSubscription = (id) => call("DELETE", `/v1/subscriptions/${enc(id)}`);
 /**
- * Moves a subscription's item to another price (Switch to Shop / Solo), with Stripe's proration: the difference for the
- * rest of the period is added to the next invoice.
+ * Moves a subscription's item to another price (Switch to Shop / Solo), with Stripe's proration. `chargeNow` (moving up to
+ * Shop): the difference for the rest of the period is invoiced and charged at once (always_invoice), and the change
+ * waits for that payment (pending_if_incomplete: a declined card leaves the subscription on its old price, with a
+ * pending_update, until the invoice is paid). Otherwise (moving down to Solo) the difference is a credit on the next
+ * invoice (create_prorations).
  */
 export const switchSubscriptionPrice = (a) =>
-  call("POST", `/v1/subscriptions/${enc(a.id)}`, { items: [{ id: a.itemId, price: a.price }], proration_behavior: "create_prorations" }, a.idempotencyKey);
+  call(
+    "POST",
+    `/v1/subscriptions/${enc(a.id)}`,
+    {
+      items: [{ id: a.itemId, price: a.price }],
+      proration_behavior: a.chargeNow ? "always_invoice" : "create_prorations",
+      ...(a.chargeNow ? { payment_behavior: "pending_if_incomplete" } : {}),
+    },
+    a.idempotencyKey,
+  );
 /** A price's amount and interval (the account page shows what each plan costs). */
 export const retrievePrice = (id) => call("GET", `/v1/prices/${enc(id)}`);
 export const retrieveInvoice = (id) => call("GET", `/v1/invoices/${enc(id)}`);

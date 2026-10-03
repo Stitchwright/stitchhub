@@ -14,11 +14,14 @@
 // the subscription, pays its first invoice, posts the signed webhooks and sends the browser to success_url;
 // subscription_data[trial_end], at least 48 hours ahead as Stripe requires, starts it trialing with a $0 first invoice
 // and nothing charged until the trial ends), GET /v1/checkout/sessions/{id}, GET /v1/subscriptions/{id}, POST
-// /v1/subscriptions/{id} (items[0][id] + items[0][price]: a plan switch; proration_behavior is kept as
-// last_proration_behavior; customer.subscription.updated goes out), GET /v1/prices/{id}, GET /v1/invoices/{id} (with
-// billing_reason: subscription_create for the first, subscription_cycle after), GET /v1/charges/{id}, GET
-// /v1/disputes/{id}, POST /v1/billing/portal/sessions, POST /v1/refunds (amount for a partial one; charge.refunded goes
-// out).
+// /v1/subscriptions/{id} (items[0][id] + items[0][price]: a plan switch; proration_behavior and payment_behavior are kept
+// as last_proration_behavior and last_payment_behavior; always_invoice charges the difference between the two prices at
+// once on a subscription_update invoice, and with pending_if_incomplete a declined card leaves the price as it was, with
+// a pending_update, until that invoice is paid), DELETE /v1/subscriptions/{id} (cancelled at once), GET
+// /v1/subscriptions?customer=&status=all, GET /v1/prices/{id}, GET /v1/invoices/{id} (with billing_reason:
+// subscription_create for the first, subscription_cycle after), GET /v1/charges/{id}, GET /v1/disputes/{id}, POST
+// /v1/billing/portal/sessions, POST /v1/refunds (amount for a partial one; charge.refunded goes out). The webhooks of an
+// API call the hub makes (a switch, a cancellation) go out after the answer, as Stripe's do; settle() waits for them.
 // Test hooks (no auth): POST /__pay/{sessionId}; POST /__subscriptions/{id} { status, cancel_at_period_end,
 // current_period_end, price } (price: put the subscription on any price id, one the hub may not know); POST
 // /__subscriptions/{id}/renew { paid: true|false } (a new invoice: paid advances the period, and ends a trial with the
@@ -26,7 +29,8 @@
 // /__charges/{id}/dispute { status } (charge.dispute.created; needs_response, or warning_needs_response for an inquiry);
 // POST /__disputes/{id}/update { status } (charge.dispute.updated: an inquiry escalating to needs_response, a review);
 // POST /__disputes/{id}/close { status: "won" | "lost" | "warning_closed" } (charge.dispute.closed); POST
-// /__replay/{eventId}; GET /__events, /__webhooks, /__state; DELETE /__state.
+// /__customers/{id}/decline_next (the customer's next charge is declined); POST /__invoices/{id}/pay (an open invoice
+// paid, a pending update applied); POST /__replay/{eventId}; GET /__events, /__webhooks, /__state; DELETE /__state.
 // Every hook waits for its webhooks to be answered and reports each delivery's status, so a test can check the hub
 // right after.
 import crypto from "node:crypto";
@@ -37,6 +41,9 @@ import { fileURLToPath } from "node:url";
 const KEY = /^(sk|rk)_(test|live)_[A-Za-z0-9]{8,}$/;
 const hex = (n) => crypto.randomBytes(n).toString("hex");
 const now = () => Math.floor(Date.now() / 1000);
+let lastStamp = 0;
+/** A created time that only goes forward: two subscriptions or invoices made in one second still sort in order. */
+const stamp = () => (lastStamp = Math.max(now(), lastStamp + 1));
 
 function readBody(req) {
   return new Promise((resolve) => {
@@ -166,6 +173,16 @@ export async function startStripeMock(o = {}) {
     events.push(ev);
     return deliver(ev);
   }
+  // The webhooks of an API call the hub makes go out after the answer (the hub may be inside a transaction that the
+  // webhook's handling has to wait for); settle() waits until every one has been answered.
+  const inflight = new Set();
+  function emitLater(type, object) {
+    const done = emit(type, object).finally(() => inflight.delete(done));
+    inflight.add(done);
+  }
+  async function settle() {
+    while (inflight.size) await Promise.allSettled([...inflight]);
+  }
 
   function charge(sub, inv, amount) {
     const ch = { id: `ch_${hex(12)}`, object: "charge", amount, amount_refunded: 0, refunded: false, customer: sub.customer, invoice: inv.id, payment_intent: `pi_${hex(12)}`, status: "succeeded", created: now() };
@@ -192,7 +209,7 @@ export async function startStripeMock(o = {}) {
       charge: null,
       payment_intent: null,
       attempt_count: 1,
-      created: now(),
+      created: stamp(),
     };
     invoices.set(inv.id, inv);
     if (paid && amount > 0) charge(sub, inv, amount);
@@ -222,7 +239,7 @@ export async function startStripeMock(o = {}) {
       items: { object: "list", data: [{ id: `si_${hex(8)}`, object: "subscription_item", price, quantity: 1 }] },
       metadata: s.subscription_data?.metadata ?? {},
       latest_invoice: null,
-      created: start,
+      created: stamp(),
     };
     subscriptions.set(sub.id, sub);
     const inv = invoiceFor(sub, true, "subscription_create", trialEnd ? 0 : price.unit_amount);
@@ -327,6 +344,34 @@ export async function startStripeMock(o = {}) {
         dp.status = ["lost", "warning_closed"].includes(b.status) ? b.status : "won";
         return json(res, 200, { dispute: dp, delivered: [await emit("charge.dispute.closed", dp)] });
       }
+      m = /^\/__customers\/(cus_[A-Za-z0-9_]+)\/decline_next$/.exec(p);
+      if (m && req.method === "POST") {
+        const c = customers.get(m[1]);
+        if (!c) return json(res, 404, { error: "no such customer" });
+        c.decline_next = true;
+        return json(res, 200, { ok: true });
+      }
+      m = /^\/__invoices\/(in_[A-Za-z0-9_]+)\/pay$/.exec(p);
+      if (m && req.method === "POST") {
+        const inv = invoices.get(m[1]);
+        if (!inv) return json(res, 404, { error: "no such invoice" });
+        if (inv.paid) return json(res, 409, { error: "already paid" });
+        const sub = subscriptions.get(inv.subscription);
+        inv.paid = true;
+        inv.status = "paid";
+        inv.amount_paid = inv.amount_due;
+        if (inv.amount_due > 0) charge(sub, inv, inv.amount_due);
+        // A pending update (a switch that waited for this payment) takes effect now.
+        if (sub?.pending_update) {
+          for (const it of sub.pending_update.subscription_items) {
+            const item = sub.items.data.find((x) => x.id === it.id);
+            if (item) item.price = priceOf(it.price);
+          }
+          sub.pending_update = null;
+        }
+        const delivered = [await emit("invoice.paid", inv), ...(sub ? [await emit("customer.subscription.updated", sub)] : [])];
+        return json(res, 200, { invoice: inv, subscription: sub, delivered });
+      }
       m = /^\/__replay\/(evt_[A-Za-z0-9_]+)$/.exec(p);
       if (m && req.method === "POST") {
         const ev = events.find((e) => e.id === m[1]);
@@ -393,22 +438,60 @@ export async function startStripeMock(o = {}) {
       }
       m = /^\/v1\/checkout\/sessions\/(cs_[A-Za-z0-9_]+)$/.exec(p);
       if (m && req.method === "GET") return sessions.has(m[1]) ? json(res, 200, sessions.get(m[1])) : stripeError(res, 404, `No such checkout.session: '${m[1]}'`);
+      if (p === "/v1/subscriptions" && req.method === "GET") {
+        const customer = url.searchParams.get("customer");
+        const all = url.searchParams.get("status") === "all";
+        const data = [...subscriptions.values()].filter((x) => (!customer || x.customer === customer) && (all || x.status !== "canceled"));
+        return json(res, 200, { object: "list", data, has_more: false });
+      }
       m = /^\/v1\/subscriptions\/(sub_[A-Za-z0-9_]+)$/.exec(p);
       if (m && req.method === "GET") return subscriptions.has(m[1]) ? json(res, 200, subscriptions.get(m[1])) : stripeError(res, 404, `No such subscription: '${m[1]}'`);
+      if (m && req.method === "DELETE") {
+        // Cancelled at once: no proration credit, no refund.
+        const sub = subscriptions.get(m[1]);
+        if (!sub) return stripeError(res, 404, `No such subscription: '${m[1]}'`);
+        if (sub.status === "canceled") return stripeError(res, 400, `This subscription is already canceled: '${m[1]}'`);
+        sub.status = "canceled";
+        sub.canceled_at = now();
+        sub.cancel_at_period_end = false;
+        sub.pending_update = null;
+        emitLater("customer.subscription.deleted", sub);
+        return json(res, 200, sub);
+      }
       if (m && req.method === "POST") {
-        // A plan switch: the named item moves to the new price; the period, status and metadata stay.
+        // A plan switch: the named item moves to the new price; the period, status and metadata stay. always_invoice
+        // charges the difference now (the new price less the old, a whole-period stand-in for Stripe's proration); with
+        // pending_if_incomplete a declined card keeps the old price and a pending_update until that invoice is paid.
         const sub = subscriptions.get(m[1]);
         if (!sub) return stripeError(res, 404, `No such subscription: '${m[1]}'`);
         const f = parseForm(await readBody(req));
         const items = Array.isArray(f.items) ? f.items : [];
+        const moves = [];
         for (const it of items) {
           const item = sub.items.data.find((x) => x.id === it.id);
           if (!item) return stripeError(res, 400, `No such subscription item: '${it.id ?? ""}'`);
           if (!it.price || !catalog.has(it.price)) return stripeError(res, 400, `No such price: '${it.price ?? ""}'`);
-          item.price = priceOf(it.price);
+          moves.push({ item, price: it.price });
         }
-        if (f.proration_behavior) sub.last_proration_behavior = f.proration_behavior;
-        await emit("customer.subscription.updated", sub);
+        sub.last_proration_behavior = f.proration_behavior ?? null;
+        sub.last_payment_behavior = f.payment_behavior ?? null;
+        const apply = () => moves.forEach((x) => (x.item.price = priceOf(x.price)));
+        if (f.proration_behavior === "always_invoice") {
+          const amount = Math.max(0, moves.reduce((n, x) => n + priceOf(x.price).unit_amount - x.item.price.unit_amount, 0));
+          const c = customers.get(sub.customer);
+          const declined = Boolean(c?.decline_next);
+          if (c) c.decline_next = false;
+          const inv = invoiceFor(sub, !declined, "subscription_update", amount);
+          if (declined && f.payment_behavior === "pending_if_incomplete") {
+            sub.pending_update = { subscription_items: moves.map((x) => ({ id: x.item.id, price: x.price })), expires_at: now() + 23 * 3600 };
+            emitLater("invoice.payment_failed", inv);
+          } else {
+            apply();
+            if (declined) sub.status = "past_due";
+            emitLater(declined ? "invoice.payment_failed" : "invoice.paid", inv);
+          }
+        } else apply();
+        emitLater("customer.subscription.updated", sub);
         return json(res, 200, sub);
       }
       m = /^\/v1\/prices\/([A-Za-z0-9_]+)$/.exec(p);
@@ -466,6 +549,7 @@ export async function startStripeMock(o = {}) {
     webhooks,
     pay,
     emit,
+    settle,
     close: () => new Promise((resolve) => server.close(() => resolve())),
   };
 }

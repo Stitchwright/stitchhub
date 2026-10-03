@@ -187,7 +187,7 @@
     const cost = (x) => [x?.monthly, x?.yearly].filter(Boolean).join(" or ");
     const lines = [
       `Two plans, the same program and every feature on both: Solo, for up to ${billing.soloLogins} people signed in, ${cost(p.solo)}; Shop, for everyone at the shop, ${cost(p.shop)}. Yearly is ten times monthly: two months free.`,
-      "Switch between Solo and Shop at any time: the difference for the rest of the period goes on the next invoice. A sewing or quilt shop partnered with a repair shop in good standing gets Shop free.",
+      "Switch between Solo and Shop at any time: moving up to Shop charges the difference for the rest of the period now, moving down to Solo credits it on the next invoice. A sewing or quilt shop partnered with a repair shop in good standing gets Shop free.",
     ];
     const f = billing.founding;
     if (f?.on) lines.push(f.losesOn ? `This account is a founding shop: subscribe again by ${f.losesOn} to keep the founding prices (they stay while a subscription runs without a gap of more than 60 days).` : "This account is a founding shop: these are the founding prices, locked while a subscription runs without a gap of more than 60 days.");
@@ -238,9 +238,15 @@
       const b = Object.assign(document.createElement("button"), { className: "plain", textContent: `Switch to ${TIER[to]}` }); b.style.marginTop = "0";
       b.onclick = async () => {
         const what = to === "shop" ? "everyone at the shop can sign in" : `up to ${billing.soloLogins} people can be signed in; anyone past that keeps working until you remove their access`;
-        if (!confirm(`Switch ${s.name} to ${TIER[to]}${price ? ` (${price})` : ""}? On ${TIER[to]}, ${what}. The difference for the rest of this period goes on your next invoice.`)) return;
+        const money = to === "shop" ? "The difference for the rest of this period is charged to your card now; the switch happens once it's paid." : "The difference for the rest of this period is credited on your next invoice.";
+        if (!confirm(`Switch ${s.name} to ${TIER[to]}${price ? ` (${price})` : ""}? On ${TIER[to]}, ${what}. ${money}`)) return;
         b.disabled = true;
-        try { await api(`/shops/${s.id}/switch`, { plan: to }); say(`${s.name} is on ${TIER[to]} now. The program learns it at its next sync (or Settings → Account → Check again).`); await loadMe("shops"); }
+        try {
+          const r = await api(`/shops/${s.id}/switch`, { plan: to });
+          if (r.pending) say(r.message, true);
+          else say(`${s.name} is on ${TIER[to]} now. The program learns it at its next sync (or Settings → Account → Check again).`);
+          await loadMe("shops");
+        }
         catch (err) { say(err.message, true); b.disabled = false; }
       };
       const row = Object.assign(document.createElement("div"), { className: "row" }); row.style.marginBottom = "6px";

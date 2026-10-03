@@ -46,7 +46,7 @@ export const TABLES = [
   {
     t: "subscription",
     table: "subscriptions",
-    cols: ["shop_id", "stripe_subscription_id", "stripe_customer_id", "plan", "status", "current_period_end", "cancel_at_period_end", "unpaid_since", "disputed_at", "mailed", "created_at", "updated_at", "tier", "founding", "price_id", "unpaid_charge_id", "refunded_in_trial", "inquiry_at", "inquiry_dispute_id"],
+    cols: ["shop_id", "stripe_subscription_id", "stripe_customer_id", "plan", "status", "current_period_end", "cancel_at_period_end", "unpaid_since", "disputed_at", "mailed", "created_at", "updated_at", "tier", "founding", "price_id", "unpaid_charge_id", "refunded_in_trial", "inquiry_at", "inquiry_dispute_ids", "chargeback_dispute_ids"],
     key: "shop_id",
     json: ["mailed"],
   },

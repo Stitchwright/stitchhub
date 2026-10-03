@@ -175,7 +175,7 @@
   const post = (path, body) => api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const standingText = (s) => {
     const sub = s.subscription;
-    const extra = [s.compNote && s.standing === "comped" ? s.compNote : null, sub ? `Stripe: ${sub.plan === "solo" ? "Solo" : "Shop"}, ${sub.interval || "unknown interval"}${sub.founding ? ", founding price" : ""}, ${sub.status}${sub.cancelAtPeriodEnd ? ", cancels at period end" : ""}${sub.periodEnd ? `, period ends ${sub.periodEnd}` : ""}${sub.unpaidSince ? `, ${sub.disputedAt ? "CHARGEBACK" : "refunded"} ${sub.unpaidSince}` : ""}${sub.inquiryAt ? `, INQUIRY ${sub.inquiryAt} (the card company is asking; no chargeback yet, the shop keeps working)` : ""}` : null].filter(Boolean);
+    const extra = [s.compNote && s.standing === "comped" ? s.compNote : null, sub ? `Stripe: ${sub.plan === "solo" ? "Solo" : "Shop"}, ${sub.interval || "unknown interval"}${sub.founding ? ", founding price" : ""}, ${sub.status}${sub.cancelAtPeriodEnd ? ", cancels at period end" : ""}${sub.periodEnd ? `, period ends ${sub.periodEnd}` : ""}${sub.unpaidSince ? `, ${sub.disputedAt ? "CHARGEBACK" : "refunded"} ${sub.unpaidSince}` : ""}${sub.inquiryAt ? `, INQUIRY ${sub.inquiryAt}${sub.inquiries > 1 ? ` (${sub.inquiries} open)` : ""} (the card company is asking; no chargeback yet, the shop keeps working)` : ""}` : null].filter(Boolean);
     return `${s.standing}: ${s.message}${extra.length ? ` (${extra.join("; ")})` : ""}`;
   };
   function lapseButton(s) {
