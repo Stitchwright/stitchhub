@@ -15,7 +15,7 @@ export const TABLES = [
   { t: "install", table: "installs", cols: ["id", "name", "contact", "key_hash", "scope", "blocked", "invited_by", "created_at", "last_seen_at"] },
   // Shop owners' accounts (hashed passwords), their shops with standing, the links and codes out (hashed), and signed-in
   // browsers: a move keeps everyone signed in and every link they were sent working.
-  { t: "account", table: "accounts", cols: ["id", "email", "password_hash", "verified_at", "terms_version", "terms_at", "stripe_customer_id", "disabled", "created_at", "last_sign_in_at"] },
+  { t: "account", table: "accounts", cols: ["id", "email", "password_hash", "verified_at", "terms_version", "terms_at", "stripe_customer_id", "disabled", "created_at", "last_sign_in_at", "founding_at", "founding_gap_since", "founding_lost_at"] },
   {
     t: "shop",
     table: "shops",
@@ -46,12 +46,12 @@ export const TABLES = [
   {
     t: "subscription",
     table: "subscriptions",
-    cols: ["shop_id", "stripe_subscription_id", "stripe_customer_id", "plan", "status", "current_period_end", "cancel_at_period_end", "unpaid_since", "disputed_at", "mailed", "created_at", "updated_at"],
+    cols: ["shop_id", "stripe_subscription_id", "stripe_customer_id", "plan", "status", "current_period_end", "cancel_at_period_end", "unpaid_since", "disputed_at", "mailed", "created_at", "updated_at", "tier", "founding", "price_id"],
     key: "shop_id",
     json: ["mailed"],
   },
   { t: "stripe_event", table: "stripe_events", cols: ["id", "type", "received_at"] },
-  { t: "license_issue", table: "license_issues", cols: ["key_id", "shop_id", "kid", "plan", "modules", "first_day", "last_day", "grace_days", "key", "issued_at", "revoked_at"], key: "key_id" },
+  { t: "license_issue", table: "license_issues", cols: ["key_id", "shop_id", "kid", "plan", "modules", "first_day", "last_day", "grace_days", "key", "issued_at", "revoked_at", "tier", "founding"], key: "key_id" },
   {
     t: "link",
     table: "links",

@@ -161,9 +161,7 @@
     const offered = Object.entries(me.hosted || {}).filter(([, on]) => on).map(([name]) => name);
     $("hosted").hidden = !me.account.verified || !offered.length;
     $("hsProgram").replaceChildren(...offered.map((name) => Object.assign(document.createElement("option"), { value: name, textContent: name === "StitchShop" ? "StitchShop (a sewing or quilt shop counter)" : "StitchBench (a repair bench)" })));
-    $("billingNote").textContent = me.billing.open
-      ? `One price for every shop: ${me.billing.monthly} or ${me.billing.yearly}. A sewing or quilt shop that is partnered with a repair shop in good standing is free. Cards, plans, cancelling and invoices are handled on Stripe's pages; the hub never sees your card.`
-      : "Subscriptions aren't open yet. Every shop is free while the hub is in its community period.";
+    $("billingNote").textContent = me.billing.open ? billingWords(me.billing) : "Subscriptions aren't open yet. Every shop is free while the hub is in its community period.";
     show("app", where === "settings" ? "settings" : "shops");
   }
 
@@ -183,8 +181,24 @@
     $("tpTick").checked = false;
   }
 
+  // The two plans in words, under the shops table: what each costs for this account, and the founding mark.
+  function billingWords(billing) {
+    const p = billing.prices || {};
+    const cost = (x) => [x?.monthly, x?.yearly].filter(Boolean).join(" or ");
+    const lines = [
+      `Two plans, the same program and every feature on both: Solo, for up to ${billing.soloLogins} people signed in, ${cost(p.solo)}; Shop, for everyone at the shop, ${cost(p.shop)}. Yearly is ten times monthly: two months free.`,
+      "Switch between Solo and Shop at any time: the difference for the rest of the period goes on the next invoice. A sewing or quilt shop partnered with a repair shop in good standing gets Shop free.",
+    ];
+    const f = billing.founding;
+    if (f?.on) lines.push(f.losesOn ? `This account is a founding shop: subscribe again by ${f.losesOn} to keep the founding prices (they stay while a subscription runs without a gap of more than 60 days).` : "This account is a founding shop: these are the founding prices, locked while a subscription runs without a gap of more than 60 days.");
+    lines.push("Cards, cancelling and invoices are handled on Stripe's pages; the hub never sees your card.");
+    return lines.join(" ");
+  }
+  const TIER = { solo: "Solo", shop: "Shop" };
+
   // Subscribe (Stripe Checkout) and Manage billing (Stripe's Customer Portal): the hub answers with the page to go to.
-  // Checkout names the terms version the page showed, and the tick when the account must accept it first.
+  // Checkout names the terms version the page showed, and the tick when the account must accept it first. Switch moves a
+  // running subscription between Solo and Shop (same interval) with Stripe's proration.
   function billingCell(s, billing, terms) {
     const c = document.createElement("td");
     const go = (path, body, label) => {
@@ -201,8 +215,38 @@
       return b;
     };
     if (!billing.open) { c.textContent = s.standing === "comped" ? "free" : "coming soon"; c.className = "muted"; return c; }
-    if (s.canSubscribe) { c.append(go("/checkout", { plan: "monthly" }, `Subscribe, ${billing.monthly}`), " ", go("/checkout", { plan: "yearly" }, `Subscribe, ${billing.yearly}`)); if (s.standing === "waived") c.append(" ", Object.assign(document.createElement("span"), { className: "muted", textContent: "(free while partnered; no need)" })); }
-    if (s.canManage) c.append(s.canSubscribe ? " " : "", go("/portal", {}, "Manage billing"));
+    const prices = billing.prices || {};
+    if (s.canSubscribe) {
+      for (const tier of ["solo", "shop"]) {
+        const p = prices[tier] || {};
+        const row = Object.assign(document.createElement("div"), { className: "row" }); row.style.marginBottom = "6px";
+        row.append(Object.assign(document.createElement("span"), { textContent: tier === "solo" ? `Solo (up to ${billing.soloLogins} signed in):` : "Shop (everyone):" }));
+        // Yearly first (decision 8), shown as two months free.
+        if (p.yearly) row.append(go("/checkout", { plan: tier, interval: "yearly" }, `${p.yearly}, two months free`));
+        if (p.monthly) row.append(go("/checkout", { plan: tier, interval: "monthly" }, p.monthly));
+        if (!p.yearly && !p.monthly) row.append(Object.assign(document.createElement("span"), { className: "muted", textContent: "not set up on this hub yet" }));
+        c.append(row);
+      }
+      if (billing.founding?.on) c.append(Object.assign(document.createElement("div"), { className: "muted", textContent: "Founding-shop prices." }));
+      if (s.standing === "waived") c.append(Object.assign(document.createElement("div"), { className: "muted", textContent: "Free while partnered: no need to subscribe." }));
+    }
+    if (s.canSwitch) {
+      const sub = s.subscription;
+      const to = sub.plan === "solo" ? "shop" : "solo";
+      const price = (prices[to] || {})[sub.interval === "yearly" ? "yearly" : "monthly"];
+      const b = Object.assign(document.createElement("button"), { className: "plain", textContent: `Switch to ${TIER[to]}` }); b.style.marginTop = "0";
+      b.onclick = async () => {
+        const what = to === "shop" ? "everyone at the shop can sign in" : `up to ${billing.soloLogins} people can be signed in; anyone past that keeps working until you remove their access`;
+        if (!confirm(`Switch ${s.name} to ${TIER[to]}${price ? ` (${price})` : ""}? On ${TIER[to]}, ${what}. The difference for the rest of this period goes on your next invoice.`)) return;
+        b.disabled = true;
+        try { await api(`/shops/${s.id}/switch`, { plan: to }); say(`${s.name} is on ${TIER[to]} now. The program learns it at its next sync (or Settings → Account → Check again).`); await loadMe("shops"); }
+        catch (err) { say(err.message, true); b.disabled = false; }
+      };
+      const row = Object.assign(document.createElement("div"), { className: "row" }); row.style.marginBottom = "6px";
+      row.append(Object.assign(document.createElement("span"), { textContent: `On ${TIER[sub.plan] || "Shop"}${sub.interval ? `, ${sub.interval}` : ""}${sub.founding ? ", founding price" : ""}.` }), b);
+      c.append(row);
+    }
+    if (s.canManage) c.append(go("/portal", {}, "Manage billing"));
     if (!c.childNodes.length) { c.textContent = s.standing === "comped" ? "free" : ""; c.className = "muted"; }
     return c;
   }

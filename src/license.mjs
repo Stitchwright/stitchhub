@@ -50,11 +50,15 @@ export function signer() {
 
 /**
  * Sign one key for a shop. `f` and `u` are YYYY-MM-DD (u >= f), `g` days of grace, `p` the plan letter
- * (t trial, m monthly, y yearly, c comped, w waived). Returns { id, key, payload }.
+ * (t trial, m monthly, y yearly, c comped, w waived), `l` the login plan (solo: two people signed in; shop: everyone)
+ * and `fs` a founding shop's price (only when true). A program from before plans ignores `l` and `fs`; a newer one
+ * limits logins only on `l: "solo"`. Returns { id, key, payload }.
  */
-export function signKey(s, { shopId, shopName, modules = ["base"], plan, firstDay, lastDay, graceDays = 14 }) {
+export function signKey(s, { shopId, shopName, modules = ["base"], plan, firstDay, lastDay, graceDays = 14, tier = null, founding = false }) {
   if (lastDay < firstDay) throw new Error(`a key can't end (${lastDay}) before it starts (${firstDay})`);
   const payload = { v: 1, k: s.kid, id: newKeyId(), s: shopId, n: String(shopName ?? "").slice(0, 120), m: modules, p: plan, f: firstDay, u: lastDay, g: graceDays, t: new Date().toISOString() };
+  if (tier) payload.l = tier;
+  if (founding) payload.fs = true;
   return { id: payload.id, key: encodeLicense(payload, s.key), payload };
 }
 

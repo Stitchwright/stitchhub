@@ -1,5 +1,9 @@
-// Billing on the hub (hub-accounts-billing-design.md section 3): $25 a month or $250 a year per shop through Stripe
-// Billing. A shop's standing at any moment is worked out here from what the hub holds:
+// Billing on the hub (hub-accounts-billing-design.md section 3; the price list of pricing-recommendation.md section 12,
+// decided 3 Oct 2026): two plans per shop through Stripe Billing, Solo (up to two people signed in, $25 a month or $250
+// a year) and Shop (everyone, $45 or $450), the same features on both; the first 25 founding shops pay $15 / $30 a month
+// ($150 / $300 a year) while their subscription runs without a gap over 60 days. Several Stripe prices count as one plan
+// (a price rise adds new prices and the old ones keep working): each configured price id maps to a plan, an interval and
+// founding or not (priceBook). A shop's standing at any moment is worked out here from what the hub holds:
 //   lapsed   the admin's "Lapse now"; a refund or chargeback; a subscription that ended; a trial or waiver long over
 //   active   a subscription Stripe says is paid (or cancelled but paid through the period end)
 //   past_due the last payment failed; 14 days' grace past the period end while Stripe retries
@@ -10,6 +14,8 @@
 // is what the program enforces. Every key issued is written down in license_issues; the current one is sent at every
 // claim (so a program that lost it gets it back) and a new one is signed when the standing calls for a different plan
 // or last day. Webhooks are trusted only after the object is re-read from Stripe, and each event is handled once.
+// The standing also names the login plan (`plan`: solo | shop; the key carries it as `l`): a subscription's own, Shop for
+// a trial, a comp and a partnered shop (so a shop can try it with its staff), and a lapsed shop keeps its last one.
 import crypto from "node:crypto";
 import { one, q, tx } from "./db.mjs";
 import { sendMail } from "./mail.mjs";
@@ -30,45 +36,201 @@ export const addDays = (ymd, n) => new Date(Date.parse(`${ymd}T00:00:00Z`) + n *
 const today = () => day(new Date());
 const earlier = (a, b) => (a < b ? a : b);
 
-const prices = () => ({ m: (process.env.STRIPE_PRICE_MONTHLY ?? "").trim(), y: (process.env.STRIPE_PRICE_YEARLY ?? "").trim() });
-const planOfPrice = (priceId) => (priceId && priceId === prices().m ? "m" : priceId && priceId === prices().y ? "y" : null);
+// ----- plans and prices -----
 
-/** Subscriptions can be sold: the Stripe key, both prices and the webhook secret are set. */
+export const TIERS = ["solo", "shop"];
+export const TIER_WORDS = { solo: "Solo", shop: "Shop" };
+export const SOLO_LOGINS = 2;
+export const FOUNDING_LIMIT = 25;
+export const FOUNDING_GAP_DAYS = 60;
+
+/** The variable holding a plan's price ids: STRIPE_PRICE_SOLO_MONTHLY, ..., STRIPE_PRICE_SHOP_YEARLY_FOUNDING. */
+export const priceVar = (tier, interval, founding) => `STRIPE_PRICE_${tier.toUpperCase()}_${interval === "y" ? "YEARLY" : "MONTHLY"}${founding ? "_FOUNDING" : ""}`;
+const PRICE_VARS = TIERS.flatMap((tier) => ["m", "y"].flatMap((interval) => [false, true].map((founding) => ({ env: priceVar(tier, interval, founding), tier, interval, founding }))));
+// Today's single price from before the two plans ($25, every login): still counted, as Shop, for a subscription already
+// on it (never sold again; a shop that paid for every login keeps every login).
+const LEGACY_VARS = [
+  { env: "STRIPE_PRICE_MONTHLY", tier: "shop", interval: "m", founding: false, legacy: true },
+  { env: "STRIPE_PRICE_YEARLY", tier: "shop", interval: "y", founding: false, legacy: true },
+];
+const idsOf = (env) => [...new Set((process.env[env] ?? "").split(",").map((s) => s.trim()).filter(Boolean))];
+
+/**
+ * Every configured price id → { tier, interval, founding, env, sold }. Each variable holds a comma-separated list: the
+ * first id is the one new subscriptions get (sold), the rest are older prices that still count as that plan (a price
+ * rise adds a new price in front; subscriptions on the old one keep their plan). `conflicts` names an id configured
+ * as two different plans.
+ */
+export function priceBook() {
+  const byId = new Map();
+  const conflicts = [];
+  for (const v of [...PRICE_VARS, ...LEGACY_VARS]) {
+    idsOf(v.env).forEach((id, i) => {
+      const prior = byId.get(id);
+      if (!prior) return byId.set(id, { tier: v.tier, interval: v.interval, founding: v.founding, env: v.env, sold: i === 0 && !v.legacy });
+      if (prior.tier !== v.tier || prior.interval !== v.interval || prior.founding !== v.founding) conflicts.push(`${id} is in both ${prior.env} and ${v.env}`);
+    });
+  }
+  return { byId, conflicts };
+}
+/** The price new subscriptions get for a plan, interval (m | y) and founding or not; "" when it isn't set. */
+export const priceFor = (tier, interval, founding) => idsOf(priceVar(tier, interval, founding))[0] ?? "";
+/** What a price id is: { tier, interval, founding } from the configured lists, or null for an id the hub doesn't know. */
+export const planOfPrice = (priceId) => (priceId ? (priceBook().byId.get(priceId) ?? null) : null);
+
+/** Subscriptions can be sold: the Stripe key, the four plan prices and the webhook secret are set. */
 export const billingOpen = () => billingProblem() === null;
 /** Why they can't, for the admin page; null when billing is open. */
 export function billingProblem() {
   if (!process.env.STRIPE_SECRET_KEY?.trim()) return "STRIPE_SECRET_KEY isn't set: subscriptions aren't open, and every shop runs free (a trial that ended changes nothing).";
   if (!stripe.stripeConfigured()) return "STRIPE_SECRET_KEY doesn't look like a Stripe secret key (sk_live_… or sk_test_…).";
-  if (!prices().m || !prices().y) return "STRIPE_PRICE_MONTHLY and STRIPE_PRICE_YEARLY aren't both set (the two prices' ids from the Stripe dashboard).";
+  const missing = PRICE_VARS.filter((v) => !v.founding && !priceFor(v.tier, v.interval, false)).map((v) => v.env);
+  if (missing.length) {
+    const legacy = LEGACY_VARS.some((v) => idsOf(v.env).length) ? " STRIPE_PRICE_MONTHLY and STRIPE_PRICE_YEARLY (the single price from before the two plans) still count as Shop for subscriptions already on them, but aren't sold any more." : "";
+    return `${missing.join(", ")} ${missing.length === 1 ? "isn't" : "aren't"} set (the Solo and Shop prices' ids from the Stripe dashboard, monthly and yearly).${legacy}`;
+  }
+  const { conflicts } = priceBook();
+  if (conflicts.length) return `A Stripe price is configured as two plans: ${conflicts.join("; ")}. Each price id goes in one variable only.`;
   if (!process.env.STRIPE_WEBHOOK_SECRET?.trim()) return "STRIPE_WEBHOOK_SECRET isn't set: Stripe's webhooks would be refused, so no payment would ever count.";
   return null;
 }
+/** The founding prices not set yet (a founding shop can't subscribe to that plan until they are), for the admin page. */
+export const foundingMissing = () => PRICE_VARS.filter((v) => v.founding && !priceFor(v.tier, v.interval, true)).map((v) => v.env);
+
+// The decided prices (pricing-recommendation.md section 12), shown until Stripe has been asked for the real amounts.
+const PRICE_DEFAULTS = { solo: { m: 2500, y: 25000 }, shop: { m: 4500, y: 45000 }, soloFounding: { m: 1500, y: 15000 }, shopFounding: { m: 3000, y: 30000 } };
+const PRICE_TTL_MS = 3600_000;
+const priceCache = new Map(); // price id → { words, at }
+const dollars = (cents) => `$${cents % 100 ? (cents / 100).toFixed(2) : String(cents / 100)}`;
+const priceWords = (cents, interval) => `${dollars(cents)} a ${interval === "y" ? "year" : "month"}`;
+
+/**
+ * What each plan costs, as the account page shows it: { solo: { monthly, yearly }, shop: { ... } } for founding or not.
+ * The amounts are read from Stripe (each sold price, kept an hour), falling back to the decided price list.
+ */
+export async function priceList(founding) {
+  const out = {};
+  for (const tier of TIERS) {
+    out[tier] = {};
+    for (const interval of ["m", "y"]) {
+      const id = priceFor(tier, interval, founding);
+      const fallback = PRICE_DEFAULTS[founding ? `${tier}Founding` : tier][interval];
+      let words = priceWords(fallback, interval);
+      if (id && stripe.stripeConfigured()) {
+        const hit = priceCache.get(id);
+        if (hit && Date.now() - hit.at < PRICE_TTL_MS) words = hit.words;
+        else {
+          try {
+            const p = await stripe.retrievePrice(id);
+            if (Number.isInteger(p.unit_amount)) words = priceWords(p.unit_amount, p.recurring?.interval === "year" ? "y" : "m");
+            priceCache.set(id, { words, at: Date.now() });
+          } catch {
+            /* Stripe unreachable: the decided price, and asked again next time */
+          }
+        }
+      }
+      out[tier][interval === "y" ? "yearly" : "monthly"] = id ? words : null;
+    }
+  }
+  return out;
+}
+
+// ----- founding shops -----
+
+const RUNNING = new Set(["active", "trialing", "past_due"]);
+
+/**
+ * Brings an account's founding mark up to date (in `client`'s transaction, or on its own): while any of its shops'
+ * subscriptions runs (paid, retrying a payment, or cancelled but paid through a day still ahead) there is no gap; when
+ * none does, the gap started when the last one stopped (its period end, or the day a payment was taken back), and once
+ * it passes 60 days the mark goes (founding_lost_at). An account that never subscribed has no gap. Returns the
+ * account's founding state: { founding, at, gapSince, lostAt, losesOn }.
+ */
+export async function refreshFounding(client, accountId) {
+  const run = (sql, params) => (client ? client.query(sql, params) : q(sql, params));
+  const a = (await run(`SELECT founding_at, founding_gap_since, founding_lost_at FROM accounts WHERE id = $1`, [accountId])).rows[0];
+  if (!a) return { founding: false, at: null, gapSince: null, lostAt: null, losesOn: null };
+  const state = (x) => ({
+    founding: Boolean(x.founding_at),
+    at: x.founding_at ?? null,
+    gapSince: x.founding_gap_since ?? null,
+    lostAt: x.founding_lost_at ?? null,
+    losesOn: x.founding_at && x.founding_gap_since ? addDays(day(x.founding_gap_since), FOUNDING_GAP_DAYS) : null,
+  });
+  if (!a.founding_at) return state(a);
+  const subs = (
+    await run(`SELECT sub.status, sub.current_period_end, sub.unpaid_since FROM subscriptions sub JOIN shops s ON s.id = sub.shop_id WHERE s.account_id = $1 AND sub.stripe_subscription_id IS NOT NULL`, [accountId])
+  ).rows;
+  if (!subs.length) return state(a);
+  const now = new Date();
+  const running = subs.some((s) => !s.unpaid_since && (RUNNING.has(s.status) || (s.current_period_end && s.current_period_end > now)));
+  if (running) {
+    if (!a.founding_gap_since) return state(a);
+    const r = (await run(`UPDATE accounts SET founding_gap_since = NULL WHERE id = $1 RETURNING founding_at, founding_gap_since, founding_lost_at`, [accountId])).rows[0];
+    return state(r);
+  }
+  const ends = subs.map((s) => s.unpaid_since ?? s.current_period_end).filter(Boolean).map((d) => Math.min(d.getTime(), now.getTime()));
+  const since = a.founding_gap_since ?? new Date(ends.length ? Math.max(...ends) : now.getTime());
+  const lose = now.getTime() - since.getTime() > FOUNDING_GAP_DAYS * 86400_000;
+  if (!lose && a.founding_gap_since) return state(a);
+  const r = (
+    await run(
+      `UPDATE accounts SET founding_gap_since = $2, founding_at = CASE WHEN $3 THEN NULL ELSE founding_at END, founding_lost_at = CASE WHEN $3 THEN now() ELSE founding_lost_at END
+       WHERE id = $1 RETURNING founding_at, founding_gap_since, founding_lost_at`,
+      [accountId, since, lose],
+    )
+  ).rows[0];
+  if (lose) console.log(`billing: account ${accountId} is no longer a founding shop (no subscription since ${day(since)}, over ${FOUNDING_GAP_DAYS} days)`);
+  return state(r);
+}
+
+/** How many founding places are taken (accounts marked now), of FOUNDING_LIMIT. */
+export const foundingUsed = async (client) => Number((await (client ? client.query.bind(client) : q)(`SELECT count(*)::int AS n FROM accounts WHERE founding_at IS NOT NULL`)).rows[0].n);
 
 // ----- standing -----
 
+const subTier = (s) => (TIERS.includes(s?.tier) ? s.tier : "shop");
 const subOut = (s) =>
   s
-    ? { id: s.stripe_subscription_id, plan: s.plan, status: s.status, periodEnd: s.current_period_end ? day(s.current_period_end) : null, cancelAtPeriodEnd: s.cancel_at_period_end, unpaidSince: s.unpaid_since ? day(s.unpaid_since) : null, disputedAt: s.disputed_at ? day(s.disputed_at) : null }
+    ? {
+        id: s.stripe_subscription_id,
+        plan: subTier(s),
+        interval: PLAN_WORDS[s.plan] ?? null,
+        founding: Boolean(s.founding),
+        priceId: s.price_id ?? null,
+        status: s.status,
+        periodEnd: s.current_period_end ? day(s.current_period_end) : null,
+        cancelAtPeriodEnd: s.cancel_at_period_end,
+        unpaidSince: s.unpaid_since ? day(s.unpaid_since) : null,
+        disputedAt: s.disputed_at ? day(s.disputed_at) : null,
+      }
     : null;
 
+/** "Solo (monthly, founding price)": the plan as the standing's words name it. */
+const planPhrase = (sub) => `${TIER_WORDS[subTier(sub)]} (${[PLAN_WORDS[sub.plan], sub.founding ? "founding price" : null].filter(Boolean).join(", ") || "monthly"})`;
+
 /** A key that ends the program's standing at once (the admin's "Lapse now", a refund): a one-day window over yesterday, no grace. */
-function cutKey(shop, plan, t) {
+function cutKey(shop, plan, t, tier = "shop", founding = false) {
   const yesterday = addDays(t, -1);
-  return { plan, f: yesterday, u: yesterday, g: 0, cut: true };
+  return { plan, f: yesterday, u: yesterday, g: 0, cut: true, tier, founding };
 }
 
 /** What a subscription row says today, or null when it says nothing yet (Checkout never finished). */
 function fromSubscription(shop, sub, t) {
   const periodEnd = sub.current_period_end ? day(sub.current_period_end) : null;
   const plan = sub.plan ?? "m";
-  const word = PLAN_WORDS[sub.plan] ?? "";
+  const words = planPhrase(sub);
+  // The login plan rides on every key a subscription calls for, a lapsed one too (it keeps its last plan).
+  const tier = subTier(sub);
+  const founding = Boolean(sub.founding);
+  const key = (f, u, g = GRACE_DAYS) => ({ plan, f, u, g, tier, founding });
   if (sub.unpaid_since) {
     const d = day(sub.unpaid_since);
     return {
       standing: "lapsed",
       lastDay: d,
       message: `The payment for this shop was ${sub.disputed_at ? "disputed with the card company" : "refunded"} on ${d}, so the program is read-only. Subscribe again on your StitchHub account page to keep working.`,
-      want: cutKey(shop, plan, t),
+      want: cutKey(shop, plan, t, tier, founding),
     };
   }
   switch (sub.status) {
@@ -78,8 +240,8 @@ function fromSubscription(shop, sub, t) {
       return {
         standing: "active",
         lastDay: periodEnd,
-        message: sub.cancel_at_period_end ? `Your ${word} subscription is cancelled and runs through ${periodEnd}.` : `Subscribed (${word}), paid through ${periodEnd}.`,
-        want: { plan, f: t, u: periodEnd, g: GRACE_DAYS },
+        message: sub.cancel_at_period_end ? `Your ${words} subscription is cancelled and runs through ${periodEnd}.` : `Subscribed to ${words}, paid through ${periodEnd}.`,
+        want: key(t, periodEnd),
       };
     case "past_due": {
       if (!periodEnd) return null;
@@ -88,15 +250,15 @@ function fromSubscription(shop, sub, t) {
         return {
           standing: "past_due",
           lastDay: periodEnd,
-          message: `The last payment didn't go through. Update your card under Manage billing by ${graceEnd}, or the program becomes read-only.`,
-          want: { plan, f: t, u: periodEnd, g: GRACE_DAYS },
+          message: `The last payment for ${words} didn't go through. Update your card under Manage billing by ${graceEnd}, or the program becomes read-only.`,
+          want: key(t, periodEnd),
         };
       }
       return {
         standing: "lapsed",
         lastDay: periodEnd,
         message: `The payment for the period that ended ${periodEnd} never went through; the program has been read-only since ${addDays(graceEnd, 1)}. Update your card under Manage billing to keep working.`,
-        want: { plan, f: earlier(t, periodEnd), u: periodEnd, g: GRACE_DAYS },
+        want: key(earlier(t, periodEnd), periodEnd),
       };
     }
     case "canceled":
@@ -104,13 +266,13 @@ function fromSubscription(shop, sub, t) {
     case "incomplete_expired":
     case "paused":
       if (sub.status === "canceled" && periodEnd && periodEnd >= t) {
-        return { standing: "active", lastDay: periodEnd, message: `Your subscription was cancelled and runs through ${periodEnd}.`, want: { plan, f: t, u: periodEnd, g: GRACE_DAYS } };
+        return { standing: "active", lastDay: periodEnd, message: `Your ${words} subscription was cancelled and runs through ${periodEnd}.`, want: key(t, periodEnd) };
       }
       return {
         standing: "lapsed",
         lastDay: periodEnd,
-        message: `Your subscription ended${periodEnd ? ` on ${periodEnd}` : ""}. Subscribe again on your StitchHub account page to keep working.`,
-        want: periodEnd ? { plan, f: periodEnd, u: periodEnd, g: GRACE_DAYS } : null,
+        message: `Your ${words} subscription ended${periodEnd ? ` on ${periodEnd}` : ""}. Subscribe again on your StitchHub account page to keep working.`,
+        want: periodEnd ? key(periodEnd, periodEnd) : null,
       };
     default:
       return null; // incomplete: Checkout wasn't finished
@@ -143,20 +305,33 @@ export async function standingOf(shop, { noWaiver = false } = {}) {
   const t = today();
   const sub = await one(`SELECT * FROM subscriptions WHERE shop_id = $1`, [shop.id]);
   const subState = sub ? fromSubscription(shop, sub, t) : null;
-  const out = (fields) => ({ lastDay: null, waivedBy: null, ...fields, subscription: subOut(sub) });
+  // The login plan: Shop unless a subscription's own words say otherwise (set below for those); a lapsed shop keeps
+  // its last plan, which is its subscription's when it ever had one.
+  const lastTier = sub?.stripe_subscription_id ? subTier(sub) : "shop";
+  const lastFounding = sub?.stripe_subscription_id ? Boolean(sub.founding) : false;
+  const out = (fields) => ({ lastDay: null, waivedBy: null, plan: "shop", interval: null, founding: false, ...fields, subscription: subOut(sub) });
+  const fromSub = (fields) => out({ ...fields, plan: subTier(sub), interval: PLAN_WORDS[sub.plan] ?? null, founding: Boolean(sub.founding) });
   const trialLast = day(new Date(shop.created_at.getTime() + TRIAL_DAYS * 86400_000));
-  const trialKey = { plan: "t", f: day(shop.created_at), u: trialLast, g: GRACE_DAYS };
+  const trialKey = { plan: "t", f: day(shop.created_at), u: trialLast, g: GRACE_DAYS, tier: "shop" };
 
   // 1. The admin ended it.
   if (shop.lapsed_at) {
     const d = day(shop.lapsed_at);
-    return out({ standing: "lapsed", source: "admin", lastDay: d, message: `The hub admin ended this shop's standing on ${d}, so the program is read-only. Ask the hub admin.`, want: cutKey(shop, "t", t) });
+    return out({
+      standing: "lapsed",
+      source: "admin",
+      lastDay: d,
+      plan: lastTier,
+      founding: lastFounding,
+      message: `The hub admin ended this shop's standing on ${d}, so the program is read-only. Ask the hub admin.`,
+      want: cutKey(shop, "t", t, lastTier, lastFounding),
+    });
   }
   // 2. A subscription that is paid, or in its grace.
   if (subState && subState.standing !== "lapsed") {
     const waiver = noWaiver ? null : await waiverFor(shop);
     const note = waiver ? ` You're partnered with ${waiver.shopName}, so this shop would be free without a subscription: you can cancel under Manage billing and stay free.` : "";
-    return out({ ...subState, source: "subscription", message: subState.message + note, waivedBy: waiver });
+    return fromSub({ ...subState, source: "subscription", message: subState.message + note, waivedBy: waiver });
   }
   // 3. The admin's comp.
   if (shop.comp_until && shop.comp_until.getTime() > Date.now()) {
@@ -167,7 +342,7 @@ export async function standingOf(shop, { noWaiver = false } = {}) {
       source: "comp",
       lastDay: forever ? null : last,
       message: forever ? "Free, with the hub admin's compliments." : `Free through ${last}, with the hub admin's compliments.`,
-      want: { plan: "c", f: t, u: last, g: GRACE_DAYS },
+      want: { plan: "c", f: t, u: last, g: GRACE_DAYS, tier: "shop" },
     });
   }
   // 4. Free while partnered: a retail shop whose repair shop is in good standing.
@@ -178,11 +353,11 @@ export async function standingOf(shop, { noWaiver = false } = {}) {
       source: "waiver",
       waivedBy: waiver,
       message: `Free while you're partnered with ${waiver.shopName}.`,
-      want: billingOpen() ? { plan: "w", f: t, u: addDays(t, WAIVER_DAYS - 1), g: GRACE_DAYS } : null,
+      want: billingOpen() ? { plan: "w", f: t, u: addDays(t, WAIVER_DAYS - 1), g: GRACE_DAYS, tier: "shop" } : null,
     });
   }
   // 5. A subscription that ended (unless the trial is still running; a refund or chargeback lapses the shop even then).
-  if (subState && (trialLast < t || sub.unpaid_since)) return out({ ...subState, source: "subscription" });
+  if (subState && (trialLast < t || sub.unpaid_since)) return fromSub({ ...subState, source: "subscription" });
   // 6. A waiver that ended while its last key still runs: notice, then lapsed (the key the program holds does the rest).
   if (!noWaiver) {
     const w = await one(`SELECT last_day::text AS last_day FROM license_issues WHERE shop_id = $1 AND plan = 'w' AND revoked_at IS NULL ORDER BY issued_at DESC LIMIT 1`, [shop.id]);
@@ -213,12 +388,14 @@ export async function keyFor(shop, st) {
   const { signer } = hubSigner();
   if (!signer) return { key: null, revokeKeyIds };
   const stored = await one(
-    `SELECT key_id, plan, first_day::text AS first_day, last_day::text AS last_day, grace_days, key FROM license_issues WHERE shop_id = $1 AND revoked_at IS NULL ORDER BY issued_at DESC LIMIT 1`,
+    `SELECT key_id, plan, tier, founding, first_day::text AS first_day, last_day::text AS last_day, grace_days, key FROM license_issues WHERE shop_id = $1 AND revoked_at IS NULL ORDER BY issued_at DESC LIMIT 1`,
     [shop.id],
   );
   let want = st.want ? { ...st.want } : null;
   if (!want) return { key: stored?.key ?? null, revokeKeyIds };
-  const same = () => stored && stored.plan === want.plan && stored.last_day === want.u && stored.grace_days === want.g;
+  // The login plan is part of the key: a switch between Solo and Shop (same period) signs a new one.
+  const same = () =>
+    stored && stored.plan === want.plan && stored.last_day === want.u && stored.grace_days === want.g && (stored.tier ?? null) === (want.tier ?? null) && Boolean(stored.founding) === Boolean(want.founding);
   let keep;
   if (want.cut) {
     keep = Boolean(stored) && stored.plan === want.plan && keyEnd(stored.last_day, stored.grace_days) < t; // already cut short
@@ -234,8 +411,8 @@ export async function keyFor(shop, st) {
     }
   } else keep = same();
   if (keep) return { key: stored.key, revokeKeyIds };
-  const made = signKey(signer, { shopId: shop.id, shopName: shop.name, plan: want.plan, firstDay: want.f, lastDay: want.u, graceDays: want.g });
-  await q(`INSERT INTO license_issues (key_id, shop_id, kid, plan, modules, first_day, last_day, grace_days, key) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, [
+  const made = signKey(signer, { shopId: shop.id, shopName: shop.name, plan: want.plan, firstDay: want.f, lastDay: want.u, graceDays: want.g, tier: want.tier ?? null, founding: Boolean(want.founding) });
+  await q(`INSERT INTO license_issues (key_id, shop_id, kid, plan, modules, first_day, last_day, grace_days, key, tier, founding) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`, [
     made.id,
     shop.id,
     signer.kid,
@@ -245,15 +422,21 @@ export async function keyFor(shop, st) {
     want.u,
     want.g,
     made.key,
+    want.tier ?? null,
+    Boolean(want.founding),
   ]);
   return { key: made.key, revokeKeyIds };
 }
 
-/** The standing part of a claim or standing answer: the words, the key and the revoked ids. */
+/**
+ * The standing part of a claim or standing answer: the words, the login plan (solo | shop; with the interval and founding
+ * for a subscription), the key (which carries the plan as `l`: the program limits logins from the key alone) and the
+ * revoked ids.
+ */
 export async function claimAnswer(shop) {
   const st = await standingOf(shop);
   const { key, revokeKeyIds } = await keyFor(shop, st);
-  return { standing: st.standing, lastDay: st.lastDay, message: st.message, key, revokeKeyIds };
+  return { standing: st.standing, lastDay: st.lastDay, message: st.message, plan: st.plan, interval: st.interval, founding: st.founding, key, revokeKeyIds };
 }
 
 /** Every live key of a shop is revoked (the program is told to drop them at its next sync). */
@@ -293,18 +476,28 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
     return shop;
   }
 
-  // Subscribe: a Checkout Session in subscription mode for one shop, monthly or yearly, back to /account/shops after.
+  const intervalOf = (v) => (v === "yearly" ? "y" : v === "monthly" ? "m" : null);
+  const foundingPriceMissing = (tier, interval) =>
+    fail(503, `The founding price for ${TIER_WORDS[tier]}, ${PLAN_WORDS[interval]}, isn't set up on this hub yet (${priceVar(tier, interval, true)}). Ask the hub admin.`);
+
+  // Subscribe: a Checkout Session in subscription mode for one shop, Solo or Shop, monthly or yearly, back to
+  // /account/shops after. A founding account (the admin's mark, kept while its subscriptions run without a gap over 60
+  // days) gets the founding price of the plan it picks; nobody else can.
   acct.post("/shops/:id/checkout", async (c) => {
     ready();
     open();
     const a = await requireAccount(c);
     if (!allow(`checkout:${a.id}`, 20)) throw fail(429, "Too many tries. Wait an hour.");
     const body = await c.req.json().catch(() => ({}));
-    const plan = body.plan === "yearly" ? "y" : body.plan === "monthly" ? "m" : null;
-    if (!plan) throw fail(400, "Pick monthly or yearly.");
+    const tier = TIERS.includes(body.plan) ? body.plan : null;
+    const interval = intervalOf(body.interval);
+    if (!tier || !interval) throw fail(400, "Pick Solo or Shop, monthly or yearly.");
     const shop = await ownShop(c, a);
     const st = await standingOf(shop);
-    if (st.source === "subscription" && st.standing !== "lapsed") throw fail(409, "This shop already has a subscription. Use Manage billing to change it.");
+    if (st.source === "subscription" && st.standing !== "lapsed") throw fail(409, "This shop already has a subscription. Use Switch or Manage billing to change it.");
+    const { founding } = await refreshFounding(null, a.id);
+    const price = priceFor(tier, interval, founding);
+    if (!price) throw foundingPriceMissing(tier, interval);
     // Subscribing is agreeing to the terms (Terms, section 2): the version in force is written down with each Checkout,
     // on the account and in terms_acceptances, and goes to Stripe with the subscription's metadata. An account that
     // accepted an older version, or none, ticks the box on the page first.
@@ -316,7 +509,7 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
       const customer = await customerFor(a);
       session = await stripe.createSubscriptionCheckout({
         customer,
-        price: prices()[plan],
+        price,
         successUrl: `${hubUrl}/account/shops?done=1`,
         cancelUrl: `${hubUrl}/account/shops?cancelled=1`,
         reference: shop.id,
@@ -328,6 +521,44 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
     }
     await tx((client) => recordAcceptance(client, { accountId: a.id, version: terms, via: "checkout", shopId: shop.id, checkoutId: session.id ?? null }));
     return c.json({ ok: true, url: session.url, sessionId: session.id });
+  });
+
+  // "Switch to Shop" / "Switch to Solo": the subscription item moves to the other plan's price, same interval (the
+  // founding price for a founding account), with Stripe's proration: the difference for the rest of the period goes on
+  // the next invoice. The hub re-reads the subscription and writes it at once (the webhook that follows changes nothing
+  // more), so the next sync brings the program a key for the new plan.
+  acct.post("/shops/:id/switch", async (c) => {
+    ready();
+    open();
+    const a = await requireAccount(c);
+    if (!allow(`switch:${a.id}`, 20)) throw fail(429, "Too many tries. Wait an hour.");
+    const body = await c.req.json().catch(() => ({}));
+    const tier = TIERS.includes(body.plan) ? body.plan : null;
+    if (!tier) throw fail(400, "Pick Solo or Shop.");
+    const shop = await ownShop(c, a);
+    const sub = await one(`SELECT * FROM subscriptions WHERE shop_id = $1`, [shop.id]);
+    const st = await standingOf(shop);
+    if (!sub?.stripe_subscription_id || st.source !== "subscription" || st.standing === "lapsed" || !RUNNING.has(sub.status)) {
+      throw fail(409, "This shop has no running subscription to switch. Subscribe to the plan you want instead.");
+    }
+    if (subTier(sub) === tier) throw fail(409, `This shop is already on ${TIER_WORDS[tier]}.`);
+    let updated;
+    try {
+      const s = await stripe.retrieveSubscription(sub.stripe_subscription_id);
+      const item = s.items?.data?.[0];
+      if (!item?.id) throw fail(502, "Stripe didn't name the subscription's item. Use Manage billing instead.");
+      const itemPrice = typeof item.price === "string" ? { id: item.price } : (item.price ?? {});
+      const interval = planOfPrice(itemPrice.id)?.interval ?? (itemPrice.recurring?.interval === "year" ? "y" : "m");
+      const { founding } = await refreshFounding(null, a.id);
+      const price = priceFor(tier, interval, founding);
+      if (!price) throw foundingPriceMissing(tier, interval);
+      updated = await stripe.switchSubscriptionPrice({ id: s.id, itemId: item.id, price, idempotencyKey: `switch:${shop.id}:${crypto.randomBytes(8).toString("hex")}` });
+      await tx((client) => syncSubscription(client, s.id));
+    } catch (e) {
+      throw stripeFail(e);
+    }
+    console.log(`billing: shop ${shop.id} switched to ${tier} (subscription ${updated?.id ?? sub.stripe_subscription_id})`);
+    return c.json({ ok: true, plan: tier, ...(await standingOf(shop).then((x) => ({ standing: x.standing, message: x.message, subscription: x.subscription }))) });
   });
 
   // Manage billing: the Customer Portal (change the card or plan, cancel, invoices). Per account; reached from a shop row.
@@ -358,21 +589,30 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
     const customer = typeof s.customer === "string" ? s.customer : s.customer?.id;
     if (shop.account_customer && customer !== shop.account_customer) return console.warn(`stripe: subscription ${subId} isn't the shop's account's customer; ignored`);
     const price = s.items?.data?.[0]?.price;
-    const plan = planOfPrice(typeof price === "string" ? price : price?.id);
+    const priceId = typeof price === "string" ? price : (price?.id ?? null);
+    // The plan from the price. A price the hub doesn't know (one made in the dashboard and not added to the variables)
+    // counts as Shop, so a paying shop is never held to two logins by a missing variable; the interval is Stripe's own.
+    const known = planOfPrice(priceId);
+    const plan = known?.interval ?? (price?.recurring?.interval === "year" ? "y" : price?.recurring?.interval === "month" ? "m" : null);
+    const tier = known?.tier ?? "shop";
+    const founding = known?.founding ?? false;
     const periodEnd = s.current_period_end ? new Date(s.current_period_end * 1000) : null;
     // A new subscription for a shop replaces the row (the old one ended, or Checkout was run twice: the admin sees both in Stripe).
     await client.query(
-      `INSERT INTO subscriptions (shop_id, stripe_subscription_id, stripe_customer_id, plan, status, current_period_end, cancel_at_period_end)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO subscriptions (shop_id, stripe_subscription_id, stripe_customer_id, plan, status, current_period_end, cancel_at_period_end, tier, founding, price_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        ON CONFLICT (shop_id) DO UPDATE SET stripe_subscription_id = EXCLUDED.stripe_subscription_id, stripe_customer_id = EXCLUDED.stripe_customer_id,
          plan = EXCLUDED.plan, status = EXCLUDED.status, current_period_end = EXCLUDED.current_period_end, cancel_at_period_end = EXCLUDED.cancel_at_period_end,
+         tier = EXCLUDED.tier, founding = EXCLUDED.founding, price_id = EXCLUDED.price_id,
          unpaid_since = CASE WHEN subscriptions.stripe_subscription_id = EXCLUDED.stripe_subscription_id THEN subscriptions.unpaid_since ELSE NULL END,
          disputed_at = CASE WHEN subscriptions.stripe_subscription_id = EXCLUDED.stripe_subscription_id THEN subscriptions.disputed_at ELSE NULL END,
          mailed = CASE WHEN subscriptions.stripe_subscription_id = EXCLUDED.stripe_subscription_id THEN subscriptions.mailed ELSE '{}'::jsonb END,
          updated_at = now()`,
-      [shop.id, s.id, customer ?? null, plan, s.status, periodEnd, Boolean(s.cancel_at_period_end)],
+      [shop.id, s.id, customer ?? null, plan, s.status, periodEnd, Boolean(s.cancel_at_period_end), tier, founding, priceId],
     );
-    if (!plan) console.warn(`stripe: subscription ${subId} is on a price the hub doesn't know (${typeof price === "string" ? price : price?.id}); treated as monthly`);
+    if (!known) console.warn(`stripe: subscription ${subId} is on a price the hub doesn't know (${priceId}); treated as Shop${plan ? "" : ", monthly"}. Add it to the STRIPE_PRICE_* variable it belongs to.`);
+    // A founding account's gap starts when its last subscription stops, and ends when one runs again.
+    if (shop.account_id) await refreshFounding(client, shop.account_id);
     return { shop, sub: s, periodEnd, plan };
   }
 
@@ -386,10 +626,11 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
     if (!invoiceId) return console.warn(`stripe: charge ${chargeId} isn't for an invoice; ignored`);
     const subId = invoiceSub(await stripe.retrieveInvoice(invoiceId));
     if (!subId) return console.warn(`stripe: invoice ${invoiceId} isn't for a subscription; ignored`);
-    const row = (await client.query(`SELECT shop_id FROM subscriptions WHERE stripe_subscription_id = $1`, [subId])).rows[0];
+    const row = (await client.query(`SELECT sub.shop_id, s.account_id FROM subscriptions sub JOIN shops s ON s.id = sub.shop_id WHERE sub.stripe_subscription_id = $1`, [subId])).rows[0];
     if (!row) return console.warn(`stripe: subscription ${subId} isn't on the hub; ignored`);
     await client.query(`UPDATE subscriptions SET unpaid_since = coalesce(unpaid_since, now()), disputed_at = CASE WHEN $2 THEN coalesce(disputed_at, now()) ELSE disputed_at END, updated_at = now() WHERE shop_id = $1`, [row.shop_id, disputed]);
     await revokeLiveKeys(client, row.shop_id, ["m", "y"]);
+    if (row.account_id) await refreshFounding(client, row.account_id);
   }
 
   async function mailAccount(shopId, kind, periodKey, subject, text) {
@@ -433,6 +674,7 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
         // Paid: a period that was taken back, or ended by the admin, is good again.
         await client.query(`UPDATE subscriptions SET unpaid_since = NULL, updated_at = now() WHERE shop_id = $1 AND stripe_subscription_id = $2`, [r.shop.id, subId]);
         await client.query(`UPDATE shops SET lapsed_at = NULL WHERE id = $1 AND lapsed_at IS NOT NULL`, [r.shop.id]);
+        if (r.shop.account_id) await refreshFounding(client, r.shop.account_id);
         return;
       }
       case "invoice.payment_failed": {
@@ -511,15 +753,45 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
   // The keys a shop was issued (the kid retirement allow list is made from these).
   admin.get("/shops/:id/keys", async (c) => {
     const rows = (
-      await q(`SELECT key_id, kid, plan, modules, first_day::text AS first_day, last_day::text AS last_day, grace_days, issued_at, revoked_at FROM license_issues WHERE shop_id = $1 ORDER BY issued_at DESC LIMIT 200`, [c.req.param("id")])
+      await q(
+        `SELECT key_id, kid, plan, tier, founding, modules, first_day::text AS first_day, last_day::text AS last_day, grace_days, issued_at, revoked_at FROM license_issues WHERE shop_id = $1 ORDER BY issued_at DESC LIMIT 200`,
+        [c.req.param("id")],
+      )
     ).rows;
-    return c.json({ keys: rows.map((r) => ({ keyId: r.key_id, kid: r.kid, plan: r.plan, modules: r.modules, firstDay: r.first_day, lastDay: r.last_day, graceDays: r.grace_days, issuedAt: r.issued_at, revokedAt: r.revoked_at })) });
+    return c.json({
+      keys: rows.map((r) => ({ keyId: r.key_id, kid: r.kid, plan: r.plan, tier: r.tier, founding: r.founding, modules: r.modules, firstDay: r.first_day, lastDay: r.last_day, graceDays: r.grace_days, issuedAt: r.issued_at, revokedAt: r.revoked_at })),
+    });
+  });
+
+  // "Founding shop": the account gets the founding prices when it subscribes or switches (25 accounts at most; the
+  // 26th is refused). The mark stays while the account's subscriptions run without a gap over 60 days. { founding: false }
+  // takes it off (a subscription already on a founding price keeps it in Stripe until it is changed there).
+  admin.post("/accounts/:id/founding", async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const on = body.founding !== false;
+    const out = await tx(async (client) => {
+      await client.query(`SELECT pg_advisory_xact_lock(hashtext('stitchhub:founding'))`);
+      const a = (await client.query(`SELECT id, founding_at FROM accounts WHERE id = $1 FOR UPDATE`, [c.req.param("id")])).rows[0];
+      if (!a) throw fail(404, "No such account.");
+      if (on && !a.founding_at) {
+        const used = await foundingUsed(client);
+        if (used >= FOUNDING_LIMIT) throw fail(409, `All ${FOUNDING_LIMIT} founding places are taken. Take the mark off another account first.`);
+        await client.query(`UPDATE accounts SET founding_at = now(), founding_gap_since = NULL, founding_lost_at = NULL WHERE id = $1`, [a.id]);
+      } else if (!on && a.founding_at) {
+        await client.query(`UPDATE accounts SET founding_at = NULL, founding_gap_since = NULL WHERE id = $1`, [a.id]);
+      }
+      return { founding: await refreshFounding(client, a.id), used: await foundingUsed(client) };
+    });
+    return c.json({ ok: true, founding: out.founding, foundingPlaces: { used: out.used, limit: FOUNDING_LIMIT } });
   });
 
   // ----- dunning mail, once per period: 7 days into grace, the day it lapses, 30 days before a yearly renewal -----
 
   async function dunningSweep() {
     if (!billingOpen()) return;
+    // Founding marks: a gap that started without a webhook (a period that simply ran out) is written down, and a gap
+    // over 60 days takes the mark off.
+    for (const r of (await q(`SELECT id FROM accounts WHERE founding_at IS NOT NULL`)).rows) await refreshFounding(null, r.id);
     const rows = (
       await q(
         `SELECT sub.shop_id, sub.plan, sub.status, sub.current_period_end, sub.cancel_at_period_end FROM subscriptions sub JOIN shops s ON s.id = sub.shop_id JOIN accounts a ON a.id = s.account_id

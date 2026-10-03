@@ -15,7 +15,7 @@ import { Hono } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { one, q, tx } from "./db.mjs";
 import { sendMail, mailProblem } from "./mail.mjs";
-import { standingOf, claimAnswer, billingOpen, billingProblem, FOREVER } from "./billing.mjs";
+import { standingOf, claimAnswer, billingOpen, billingProblem, FOREVER, FOUNDING_LIMIT, foundingMissing, foundingUsed, priceList, refreshFounding, SOLO_LOGINS } from "./billing.mjs";
 import { signer as hubSigner } from "./license.mjs";
 import { stripeMode } from "./stripe.mjs";
 import { refuseIfMoved } from "./moves.mjs";
@@ -196,7 +196,17 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
   /** A shop row with its standing today (billing.mjs): standing, lastDay, message, subscription, waivedBy. */
   async function withStanding(s) {
     const st = await standingOf(s);
-    return { ...shopOut(s), standing: st.standing, lastDay: st.lastDay, message: st.message, source: st.source, waivedBy: st.waivedBy ? { name: st.waivedBy.shopName } : null, subscription: st.subscription, lapsedAt: s.lapsed_at ?? null };
+    return {
+      ...shopOut(s),
+      standing: st.standing,
+      lastDay: st.lastDay,
+      message: st.message,
+      plan: st.plan,
+      source: st.source,
+      waivedBy: st.waivedBy ? { name: st.waivedBy.shopName } : null,
+      subscription: st.subscription,
+      lapsedAt: s.lapsed_at ?? null,
+    };
   }
 
   /**
@@ -357,6 +367,7 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
     const a = await requireAccount(c);
     const shops = (await q(`SELECT s.*, i.name AS install_name FROM shops s JOIN installs i ON i.id = s.install_id WHERE s.account_id = $1 ORDER BY s.created_at`, [a.id])).rows;
     const open = billingOpen();
+    const founding = await refreshFounding(null, a.id);
     const resets = await resetStateOf(shops.map((s) => s.id));
     const optIn = new Map(shops.map((s) => [s.id, s.reset_opt_in === true]));
     return c.json({
@@ -364,13 +375,17 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
       shops: (await Promise.all(shops.map(withStanding))).map((s) => ({
         ...s,
         canSubscribe: open && !(s.source === "subscription" && s.standing !== "lapsed"),
+        // Switch to Shop / Solo: a running subscription (paid, or retrying a payment), not one that has ended.
+        canSwitch: open && s.source === "subscription" && s.standing !== "lapsed" && ["active", "trialing", "past_due"].includes(s.subscription?.status),
         canManage: open && Boolean(a.stripe_customer_id),
         // The program on that shop's PC allows a reset of its owner's password from here (src/provisioning.mjs).
         resetOptIn: optIn.get(s.id) ?? false,
         resetRequest: resets.get(s.id) ?? null,
       })),
       hubName,
-      billing: { open, monthly: "$25 a month", yearly: "$250 a year" },
+      // What each plan costs for this account (the founding prices for a founding shop), Solo's login limit, and the
+      // founding mark: while a gap runs, the day it would go.
+      billing: { open, prices: open ? await priceList(founding.founding) : null, soloLogins: SOLO_LOGINS, founding: { on: founding.founding, gapSince: founding.gapSince, losesOn: founding.losesOn } },
       // "Start a hosted StitchShop / StitchBench" (src/provisioning.mjs): which this hub offers, and whether it can sign resets.
       hosted: hostedOffer(),
       canSignResets: Boolean(hubSigner().signer),
@@ -549,12 +564,21 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
   const adminShop = async (s) => ({ ...(await withStanding(s)), installId: s.install_id, installName: s.install_name, accountId: s.account_id, accountEmail: s.account_email ?? null, stripeCustomerId: s.stripe_customer_id ?? null, compUntil: s.comp_until, compNote: s.comp_note });
 
   admin.get("/accounts", async (c) => {
+    for (const r of (await q(`SELECT id FROM accounts WHERE founding_at IS NOT NULL`)).rows) await refreshFounding(null, r.id);
     const accounts = (await q(`SELECT * FROM accounts ORDER BY created_at`)).rows;
     const shops = await Promise.all((await shopRows("", [])).map(adminShop));
     const signing = hubSigner();
     return c.json({
       problem: accountsProblem(),
-      billing: { open: billingOpen(), problem: billingProblem(), stripeMode: stripeMode(), signing: signing.signer ? { kid: signing.signer.kid, x: signing.signer.x } : null, signingProblem: signing.problem },
+      billing: {
+        open: billingOpen(),
+        problem: billingProblem(),
+        stripeMode: stripeMode(),
+        signing: signing.signer ? { kid: signing.signer.kid, x: signing.signer.x } : null,
+        signingProblem: signing.problem,
+        foundingMissing: foundingMissing(),
+      },
+      foundingPlaces: { used: await foundingUsed(), limit: FOUNDING_LIMIT },
       accounts: accounts.map((a) => ({
         id: a.id,
         email: a.email,
@@ -563,6 +587,7 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
         disabled: a.disabled,
         termsVersion: a.terms_version,
         stripeCustomerId: a.stripe_customer_id,
+        founding: { on: Boolean(a.founding_at), at: a.founding_at ?? null, gapSince: a.founding_gap_since ?? null, lostAt: a.founding_lost_at ?? null },
         createdAt: a.created_at,
         lastSignInAt: a.last_sign_in_at,
         shops: shops.filter((s) => s.accountId === a.id),

@@ -67,14 +67,15 @@
 
     <section>
       <h2>Accounts</h2>
-      <p class="muted">Shop owners' StitchHub accounts (<a href="/account">/account</a>): email, whether the address is confirmed, and the shops each one owns. "Resend" mails the set-password or confirmation link again. "Delete" is for an owner who asks: the account goes, its shops stay on the hub with no account.</p>
+      <p class="muted">Shop owners' StitchHub accounts (<a href="/account">/account</a>): email, whether the address is confirmed, and the shops each one owns. "Resend" mails the set-password or confirmation link again. "Delete" is for an owner who asks: the account goes, its shops stay on the hub with no account. "Founding shop" gives the account the founding prices ($15 Solo, $30 Shop a month; $150 / $300 a year) when it subscribes or switches: the first 25 only, kept while its subscription runs without a gap of more than 60 days (after that the mark goes by itself).</p>
       <p id="accountsProblem" class="bad" hidden></p>
-      <div class="scroll"><table><thead><tr><th>Email</th><th>Confirmed</th><th>Shops</th><th>Made</th><th>Last sign-in</th><th></th></tr></thead><tbody id="accounts"></tbody></table></div>
+      <p id="foundingPlaces" class="muted"></p>
+      <div class="scroll"><table><thead><tr><th>Email</th><th>Confirmed</th><th>Shops</th><th>Founding</th><th>Made</th><th>Last sign-in</th><th></th></tr></thead><tbody id="accounts"></tbody></table></div>
     </section>
 
     <section>
       <h2>Shops</h2>
-      <p class="muted">Every company that has told the hub about itself, with its standing: a 30-day trial from its first sync, a subscription ($25 a month or $250 a year, through Stripe), free while partnered with a repair shop in good standing (a sewing or quilt shop), or free with your compliments ("Comp": a last free day, or for good). "Lapse now" ends a shop's standing at once (the program is read-only from its next sync); a comp, a payment or "Undo lapse" takes it back. "Open in Stripe" shows the owner's customer, or the subscription, in your Stripe dashboard.</p>
+      <p class="muted">Every company that has told the hub about itself, with its standing: a 30-day trial from its first sync, a subscription through Stripe (Solo, up to 2 people signed in, $25 a month or $250 a year; Shop, everyone, $45 or $450; founding prices for founding accounts), free while partnered with a repair shop in good standing (a sewing or quilt shop), or free with your compliments ("Comp": a last free day, or for good). "Lapse now" ends a shop's standing at once (the program is read-only from its next sync); a comp, a payment or "Undo lapse" takes it back. "Open in Stripe" shows the owner's customer, or the subscription, in your Stripe dashboard.</p>
       <p id="billingState" class="muted"></p>
       <div class="scroll"><table><thead><tr><th>Shop</th><th>Member (install)</th><th>Kind</th><th>Program</th><th>Account</th><th>Standing</th><th>Last seen</th><th></th></tr></thead><tbody id="shops"></tbody></table></div>
     </section>
@@ -174,7 +175,7 @@
   const post = (path, body) => api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const standingText = (s) => {
     const sub = s.subscription;
-    const extra = [s.compNote && s.standing === "comped" ? s.compNote : null, sub ? `Stripe: ${sub.plan === "y" ? "yearly" : sub.plan === "m" ? "monthly" : "unknown price"}, ${sub.status}${sub.cancelAtPeriodEnd ? ", cancels at period end" : ""}${sub.periodEnd ? `, period ends ${sub.periodEnd}` : ""}${sub.unpaidSince ? `, ${sub.disputedAt ? "CHARGEBACK" : "refunded"} ${sub.unpaidSince}` : ""}` : null].filter(Boolean);
+    const extra = [s.compNote && s.standing === "comped" ? s.compNote : null, sub ? `Stripe: ${sub.plan === "solo" ? "Solo" : "Shop"}, ${sub.interval || "unknown interval"}${sub.founding ? ", founding price" : ""}, ${sub.status}${sub.cancelAtPeriodEnd ? ", cancels at period end" : ""}${sub.periodEnd ? `, period ends ${sub.periodEnd}` : ""}${sub.unpaidSince ? `, ${sub.disputedAt ? "CHARGEBACK" : "refunded"} ${sub.unpaidSince}` : ""}` : null].filter(Boolean);
     return `${s.standing}: ${s.message}${extra.length ? ` (${extra.join("; ")})` : ""}`;
   };
   function lapseButton(s) {
@@ -211,11 +212,23 @@
     stripeMode = a.billing?.stripeMode ?? null;
     window.hubShops = a.shops;
     const signing = a.billing?.signing ? `Keys are signed as ${a.billing.signing.kid} (public x ${a.billing.signing.x}: this line must be in license-keys.ts in both programs).` : a.billing?.signingProblem || "";
-    $("billingState").textContent = `${a.billing?.open ? `Subscriptions are open (Stripe ${a.billing.stripeMode} mode).` : a.billing?.problem || ""} ${signing}`;
+    const foundingGap = a.billing?.foundingMissing?.length ? ` Founding prices not set yet (a founding shop can't take that plan until they are): ${a.billing.foundingMissing.join(", ")}.` : "";
+    $("billingState").textContent = `${a.billing?.open ? `Subscriptions are open (Stripe ${a.billing.stripeMode} mode).` : a.billing?.problem || ""}${foundingGap} ${signing}`;
+    const places = a.foundingPlaces || { used: 0, limit: 25 };
+    $("foundingPlaces").textContent = `Founding shops: ${places.used} of ${places.limit} places used.`;
     $("accounts").replaceChildren(...a.accounts.map((x) => {
       const tr = document.createElement("tr");
-      tr.append(td(x.email + (x.disabled ? " (switched off)" : "")), td(x.verified ? "yes" : x.hasPassword ? "not yet (link mailed)" : "not yet (no password yet)"), td(x.shops.map((s) => s.name).join(", ") || "none"), td(when(x.createdAt)), td(when(x.lastSignInAt)));
+      const f = x.founding || {};
+      const foundingText = f.on ? `yes, since ${when(f.at)}${f.gapSince ? `; no subscription since ${when(f.gapSince)} (the mark goes after 60 days)` : ""}` : f.lostAt ? `lost ${when(f.lostAt)} (a gap over 60 days)` : "";
+      tr.append(td(x.email + (x.disabled ? " (switched off)" : "")), td(x.verified ? "yes" : x.hasPassword ? "not yet (link mailed)" : "not yet (no password yet)"), td(x.shops.map((s) => s.name).join(", ") || "none"), td(foundingText), td(when(x.createdAt)), td(when(x.lastSignInAt)));
       const c = document.createElement("td");
+      const fb = document.createElement("button"); fb.className = "plain"; fb.textContent = f.on ? "Not founding" : "Founding shop";
+      fb.onclick = async () => {
+        if (!f.on && !confirm(`Make ${x.email} a founding shop (${places.used} of ${places.limit} places used)? It gets the founding prices when it subscribes or switches.`)) return;
+        if (f.on && !confirm(`Take the founding mark off ${x.email}? A subscription already on a founding price keeps it in Stripe until it is changed there.`)) return;
+        try { await post(`/accounts/${x.id}/founding`, { founding: !f.on }); say(f.on ? "Founding mark taken off." : "Marked as a founding shop."); loadAccounts(); } catch (err) { say(err.message, true); }
+      };
+      c.append(fb, " ");
       if (!x.verified) { const r = document.createElement("button"); r.className = "plain"; r.textContent = "Resend"; r.onclick = async () => { try { await post(`/accounts/${x.id}/resend`, {}); say("Email sent again."); } catch (err) { say(err.message, true); } }; c.append(r, " "); }
       const off = document.createElement("button"); off.className = "plain"; off.textContent = x.disabled ? "Switch on" : "Switch off";
       off.onclick = async () => { try { await post(`/accounts/${x.id}/disable`, { disabled: !x.disabled }); loadAccounts(); } catch (err) { say(err.message, true); } };
