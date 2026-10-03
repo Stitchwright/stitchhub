@@ -80,8 +80,16 @@ only, no redistribution").] [LAWYER: draft that licence.]
 
 ## 5. Price
 
-- **One price for each shop**, however it runs: **$25 a month, or $250 a year**, in US dollars. A "shop" is one company
-  in the program (one company on a hosted service, or the one company on a Windows install).
+- **Two plans for each shop**, however it runs, in US dollars: **Solo**, $25 a month or $250 a year, for up to two
+  people signed in; and **Shop**, $45 a month or $450 a year, for everyone at the shop. Both plans include every
+  feature. A "shop" is one company in the program (one company on a hosted service, or the one company on a Windows
+  install). On Solo, a third person can't be added until the shop switches to Shop; nobody already signed in loses
+  access.
+- **Founding shops**: the first 25 shops we accept as founding shops pay $15 (Solo) or $30 (Shop) a month, or $150 or
+  $300 a year, for as long as their subscription runs without a gap of more than 60 days. [LAWYER: check that this
+  promise is worded so a later price change doesn't break it.]
+- **Price changes**: we change prices for new shops first. A shop already subscribed keeps its price for at least 12
+  months after a change and gets 60 days' notice before it pays more; at most one increase a year. [LAWYER: check.]
 - **Paid modules** (for example Vac Shop, Small Appliance Repair, Scheduling, Marketing, and the Assistant) cost extra.
   Their prices are shown where you buy them. [OWNER: list the module prices on the pricing page; the Assistant is
   planned at $15 a month or $150 a year with 300 requests a month, and 20 free plate reads a month without it.]
