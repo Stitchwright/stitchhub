@@ -161,6 +161,8 @@ export function trialChargeStart(shop, sub = null) {
 // ----- founding shops -----
 
 const RUNNING = new Set(["active", "trialing", "past_due"]);
+const ENDED = new Set(["canceled", "incomplete_expired"]);
+const CHARGEBACK = new Set(["needs_response", "under_review"]); // a dispute that took the money (warning_*: an inquiry)
 
 /**
  * Brings an account's founding mark up to date (in `client`'s transaction, or on its own): while any of its shops'
@@ -226,8 +228,9 @@ const subOut = (s) =>
         cancelAtPeriodEnd: s.cancel_at_period_end,
         unpaidSince: s.unpaid_since ? day(s.unpaid_since) : null,
         disputedAt: s.disputed_at ? day(s.disputed_at) : null,
-        // A card-company inquiry is open (no chargeback yet): shown to the admin; the shop keeps working.
+        // Card-company inquiries open (no chargeback yet): shown to the admin; the shop keeps working.
         inquiryAt: s.inquiry_at ? day(s.inquiry_at) : null,
+        inquiries: (s.inquiry_dispute_ids ?? []).length,
         // Subscribed inside the trial: Stripe's trial ends, and the first charge falls, on this day.
         trialEnd: s.status === "trialing" && s.current_period_end ? day(s.current_period_end) : null,
       }
@@ -572,9 +575,12 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
   });
 
   // "Switch to Shop" / "Switch to Solo": the subscription item moves to the other plan's price, same interval (the
-  // founding price for a founding account), with Stripe's proration: the difference for the rest of the period goes on
-  // the next invoice. The hub re-reads the subscription and writes it at once (the webhook that follows changes nothing
-  // more), so the next sync brings the program a key for the new plan.
+  // founding price for a founding account), with Stripe's proration. Moving up to Shop (everyone signed in) charges the
+  // difference for the rest of the period at once, and the change waits for that payment: the price, and so the plan the
+  // hub reads and the Shop key, change only when Stripe has it paid (a declined card leaves the shop on Solo until it is).
+  // Moving down to Solo credits the difference on the next invoice and takes effect at once. The hub re-reads the
+  // subscription and writes it at once (the webhooks that follow change nothing more), so the next sync brings the
+  // program a key for the plan it has.
   acct.post("/shops/:id/switch", async (c) => {
     ready();
     open();
@@ -590,6 +596,7 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
       throw fail(409, "This shop has no running subscription to switch. Subscribe to the plan you want instead.");
     }
     if (subTier(sub) === tier) throw fail(409, `This shop is already on ${TIER_WORDS[tier]}.`);
+    const up = tier === "shop";
     let updated;
     try {
       const s = await stripe.retrieveSubscription(sub.stripe_subscription_id);
@@ -600,13 +607,21 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
       const { founding } = await refreshFounding(null, a.id);
       const price = priceFor(tier, interval, founding);
       if (!price) throw foundingPriceMissing(tier, interval);
-      updated = await stripe.switchSubscriptionPrice({ id: s.id, itemId: item.id, price, idempotencyKey: `switch:${shop.id}:${crypto.randomBytes(8).toString("hex")}` });
+      updated = await stripe.switchSubscriptionPrice({ id: s.id, itemId: item.id, price, chargeNow: up, idempotencyKey: `switch:${shop.id}:${crypto.randomBytes(8).toString("hex")}` });
       await tx((client) => syncSubscription(client, s.id));
     } catch (e) {
       throw stripeFail(e);
     }
-    console.log(`billing: shop ${shop.id} switched to ${tier} (subscription ${updated?.id ?? sub.stripe_subscription_id})`);
-    return c.json({ ok: true, plan: tier, ...(await standingOf(shop).then((x) => ({ standing: x.standing, message: x.message, subscription: x.subscription }))) });
+    const after = await standingOf(shop);
+    const words = { standing: after.standing, message: after.message, subscription: after.subscription };
+    if (updated?.pending_update) {
+      // The card was declined for the difference: Stripe keeps the subscription on its price until that invoice is paid.
+      console.log(`billing: shop ${shop.id}'s switch to ${tier} waits for the payment of the difference (subscription ${updated.id})`);
+      const was = TIER_WORDS[subTier(sub)];
+      return c.json({ ok: true, pending: true, plan: subTier(sub), ...words, message: `The card was declined for the difference, so ${shop.name} stays on ${was} for now. It moves to ${TIER_WORDS[tier]} as soon as that payment goes through: update the card under Manage billing.` });
+    }
+    console.log(`billing: shop ${shop.id} switched to ${tier} (subscription ${updated?.id ?? sub.stripe_subscription_id}${up ? ", the difference charged now" : ", the difference credited on the next invoice"})`);
+    return c.json({ ok: true, pending: false, plan: tier, ...words });
   });
 
   // Manage billing: the Customer Portal (change the card or plan, cancel, invoices). Per account; reached from a shop row.
@@ -627,7 +642,30 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
 
   // ----- webhooks -----
 
-  /** Write what Stripe says about a subscription (re-read, never from the event's copy) to the shop it names. */
+  /**
+   * Whether the shop's stored subscription stays when another one (`s`) for the same shop comes in: it is replaced when
+   * it has ended and the incoming one runs or is newer, or when the incoming one runs and is newer. Otherwise (a late
+   * event for an older subscription: its cancellation, a retry, a payment) the stored one stays and the incoming one is
+   * ignored. Answers why it stays, or null.
+   */
+  async function keepsStored(storedId, s) {
+    let old;
+    try {
+      old = await stripe.retrieveSubscription(storedId);
+    } catch (e) {
+      if (e instanceof stripe.StripeError && e.status === 404) return null; // Stripe has no such subscription any more
+      throw e;
+    }
+    const newer = (s.created ?? 0) > (old.created ?? 0);
+    const oldEnded = ENDED.has(old.status);
+    if ((newer && (RUNNING.has(s.status) || oldEnded)) || (oldEnded && RUNNING.has(s.status))) return null;
+    return `${storedId} (${old.status})`;
+  }
+
+  /**
+   * Write what Stripe says about a subscription (re-read, never from the event's copy) to the shop it names. Null (logged)
+   * when it isn't written: no hub shop, another customer, or an older subscription than the shop's current one.
+   */
   async function syncSubscription(client, subId) {
     const s = await stripe.retrieveSubscription(subId);
     const shopId = s.metadata?.hub_shop_id;
@@ -636,6 +674,14 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
     if (!shop) return console.warn(`stripe: subscription ${subId} names a shop the hub doesn't have (${shopId}); ignored`);
     const customer = typeof s.customer === "string" ? s.customer : s.customer?.id;
     if (shop.account_customer && customer !== shop.account_customer) return console.warn(`stripe: subscription ${subId} isn't the shop's account's customer; ignored`);
+    const stored = (await client.query(`SELECT stripe_subscription_id FROM subscriptions WHERE shop_id = $1 FOR UPDATE`, [shop.id])).rows[0];
+    if (stored?.stripe_subscription_id && stored.stripe_subscription_id !== s.id) {
+      const kept = await keepsStored(stored.stripe_subscription_id, s);
+      if (kept) {
+        console.warn(`stripe: subscription ${s.id} (${s.status}) for shop ${shop.id} ignored: the shop's subscription is ${kept}`);
+        return null;
+      }
+    }
     const price = s.items?.data?.[0]?.price;
     const priceId = typeof price === "string" ? price : (price?.id ?? null);
     // The plan from the price. A price the hub doesn't know (one made in the dashboard and not added to the variables)
@@ -645,7 +691,8 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
     const tier = known?.tier ?? "shop";
     const founding = known?.founding ?? false;
     const periodEnd = s.current_period_end ? new Date(s.current_period_end * 1000) : null;
-    // A new subscription for a shop replaces the row (the old one ended, or Checkout was run twice: the admin sees both in Stripe).
+    // A new subscription for a shop replaces the row (the old one ended, or the shop subscribed again: the old one is
+    // cancelled when that Checkout completes).
     await client.query(
       `INSERT INTO subscriptions (shop_id, stripe_subscription_id, stripe_customer_id, plan, status, current_period_end, cancel_at_period_end, tier, founding, price_id)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
@@ -657,7 +704,8 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
          unpaid_charge_id = CASE WHEN subscriptions.stripe_subscription_id = EXCLUDED.stripe_subscription_id THEN subscriptions.unpaid_charge_id ELSE NULL END,
          refunded_in_trial = CASE WHEN subscriptions.stripe_subscription_id = EXCLUDED.stripe_subscription_id THEN subscriptions.refunded_in_trial ELSE false END,
          inquiry_at = CASE WHEN subscriptions.stripe_subscription_id = EXCLUDED.stripe_subscription_id THEN subscriptions.inquiry_at ELSE NULL END,
-         inquiry_dispute_id = CASE WHEN subscriptions.stripe_subscription_id = EXCLUDED.stripe_subscription_id THEN subscriptions.inquiry_dispute_id ELSE NULL END,
+         inquiry_dispute_ids = CASE WHEN subscriptions.stripe_subscription_id = EXCLUDED.stripe_subscription_id THEN subscriptions.inquiry_dispute_ids ELSE '{}' END,
+         chargeback_dispute_ids = CASE WHEN subscriptions.stripe_subscription_id = EXCLUDED.stripe_subscription_id THEN subscriptions.chargeback_dispute_ids ELSE '{}' END,
          mailed = CASE WHEN subscriptions.stripe_subscription_id = EXCLUDED.stripe_subscription_id THEN subscriptions.mailed ELSE '{}'::jsonb END,
          updated_at = now()`,
       [shop.id, s.id, customer ?? null, plan, s.status, periodEnd, Boolean(s.cancel_at_period_end), tier, founding, priceId],
@@ -688,10 +736,56 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
     return { ch, inv, subId };
   }
 
+  /** Cancels a Stripe subscription at once (no proration, no refund), unless it has ended already. Logged. */
+  async function cancelNow(subId, why) {
+    const s = await stripe.retrieveSubscription(subId);
+    if (ENDED.has(s.status)) return false;
+    await stripe.cancelSubscription(subId);
+    console.log(`billing: subscription ${subId} is cancelled in Stripe (${why})`);
+    return true;
+  }
+
+  /**
+   * A Checkout completed for a shop: any older subscription for that shop that hasn't ended (a past_due one Stripe still
+   * retries, a second Checkout) is cancelled at once, so it can't charge again. No refund: if both were paid for the
+   * same days, the hub admin refunds the older one by hand (the log says so).
+   */
+  async function cancelOlder(shopId, sub) {
+    const customer = typeof sub.customer === "string" ? sub.customer : sub.customer?.id;
+    if (!customer) return;
+    const list = await stripe.listSubscriptions(customer);
+    for (const o of list.data ?? []) {
+      if (o.id === sub.id || o.metadata?.hub_shop_id !== shopId || ENDED.has(o.status) || !((o.created ?? 0) < (sub.created ?? 0))) continue;
+      await stripe.cancelSubscription(o.id);
+      console.warn(`billing: shop ${shopId} subscribed again (${sub.id}), so its older subscription ${o.id} (${o.status}) is cancelled in Stripe; if both were paid for the same days, refund the older one by hand`);
+    }
+  }
+
+  /**
+   * Whether a paid invoice makes a taken-back period good again: its own payment stands (not refunded, not disputed) and
+   * it is newer than the invoice whose charge was refunded or disputed. A late or retried invoice.paid for that period
+   * (or an older one) changes nothing.
+   */
+  async function paidAgain(inv, takenChargeId) {
+    const chargeId = typeof inv.charge === "string" ? inv.charge : (inv.charge?.id ?? null);
+    if (chargeId) {
+      if (chargeId === takenChargeId) return false;
+      const ch = await stripe.retrieveCharge(chargeId);
+      if (ch.refunded || ch.amount_refunded > 0 || ch.disputed) return false;
+    }
+    if (!takenChargeId) return true;
+    const taken = await stripe.retrieveCharge(takenChargeId);
+    const takenInvoice = typeof taken.invoice === "string" ? taken.invoice : taken.invoice?.id;
+    if (!takenInvoice) return true;
+    return (inv.created ?? 0) > ((await stripe.retrieveInvoice(takenInvoice)).created ?? 0);
+  }
+
   /**
    * A refund or chargeback: the period is unpaid, the shop lapses at once, its subscription keys are named for removal.
    * A full refund of the subscription's first payment, made while the shop's trial still runs, sends the shop back to its
-   * trial instead (standingOf: refunded_in_trial); a partial refund, a later payment or a chargeback lapses it.
+   * trial instead (standingOf: refunded_in_trial); a partial refund, a later payment or a chargeback lapses it. A full
+   * refund also cancels the subscription in Stripe at once, so it can't charge the shop again (a chargeback cancels it
+   * when it is lost: disputeEvent).
    */
   async function tookBack(client, chargeId, disputed) {
     const found = await chargeOfSubscription(chargeId);
@@ -714,6 +808,7 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
     );
     await revokeLiveKeys(client, row.shop_id, ["m", "y"]);
     if (inTrial) console.log(`billing: the first payment of subscription ${subId} was refunded inside the trial; shop ${row.shop_id} is back on its trial`);
+    if (!disputed && full) await cancelNow(subId, inTrial ? "its first payment was refunded inside the trial" : `charge ${chargeId} was refunded in full`);
     if (row.account_id) await refreshFounding(client, row.account_id);
   }
 
@@ -756,12 +851,18 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
   }
 
   /**
-   * A dispute event (created, updated or closed), the dispute re-read from Stripe. An inquiry (status warning_*: the card
-   * company asking, a retrieval request, no money taken yet) is recorded on the subscription, shown to the admin and
-   * logged; the shop keeps working. A chargeback (needs_response, under_review), opened as one or an inquiry the hub
-   * recorded escalating into one, lapses the shop as before (tookBack); other updates to a chargeback (evidence, review)
-   * change nothing more. Closed: won undoes the chargeback (disputeWon), warning_closed clears the inquiry (nothing was
-   * taken), lost changes nothing (unless the hub still had it as an inquiry: then the money is gone and the shop lapses).
+   * A dispute event (created, updated or closed), the dispute re-read from Stripe; its status decides.
+   *   warning_* (open)  an inquiry: the card company asking, a retrieval request, no money taken yet. Recorded on the
+   *                     subscription (several can be open, one per charge), shown to the admin, logged; full use.
+   *   warning_closed    the inquiry closed without a chargeback: it goes from the list (nothing was taken).
+   *   needs_response, under_review
+   *                     a chargeback: on created, or on updated (an inquiry escalated, or one the hub didn't hold), the
+   *                     shop lapses at once (tookBack) and the dispute is written down as acted on; any later event for
+   *                     it (evidence, review) changes nothing more.
+   *   won               closed: the chargeback is undone (disputeWon). On created or updated (a late event): nothing.
+   *   lost              the chargeback stands and the subscription is cancelled in Stripe; one the hub never acted on
+   *                     (an inquiry it held, a dispute it never saw open) lapses the shop now.
+   *   charge_refunded   the refund decides (charge.refunded): nothing here.
    */
   async function disputeEvent(client, type, dp) {
     const chargeId = typeof dp.charge === "string" ? dp.charge : dp.charge?.id;
@@ -769,37 +870,54 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
     const status = String(dp.status ?? "");
     const found = await chargeOfSubscription(chargeId);
     if (!found) return;
-    const row = (await client.query(`SELECT shop_id, inquiry_dispute_id FROM subscriptions WHERE stripe_subscription_id = $1 FOR UPDATE`, [found.subId])).rows[0];
+    const row = (await client.query(`SELECT shop_id, inquiry_dispute_ids, chargeback_dispute_ids FROM subscriptions WHERE stripe_subscription_id = $1 FOR UPDATE`, [found.subId])).rows[0];
     if (!row) return console.warn(`stripe: dispute ${dp.id} is on subscription ${found.subId}, which isn't on the hub; ignored`);
-    const known = row.inquiry_dispute_id === dp.id; // the hub has it as an open inquiry
-    const clearInquiry = () => client.query(`UPDATE subscriptions SET inquiry_at = NULL, inquiry_dispute_id = NULL, updated_at = now() WHERE shop_id = $1 AND inquiry_dispute_id = $2`, [row.shop_id, dp.id]);
+    const inquiry = row.inquiry_dispute_ids.includes(dp.id); // an open inquiry the hub holds
+    const actedOn = row.chargeback_dispute_ids.includes(dp.id); // a chargeback the hub has already lapsed the shop for
+    const dropInquiry = () =>
+      client.query(
+        `UPDATE subscriptions SET inquiry_dispute_ids = array_remove(inquiry_dispute_ids, $2),
+           inquiry_at = CASE WHEN cardinality(array_remove(inquiry_dispute_ids, $2)) = 0 THEN NULL ELSE inquiry_at END, updated_at = now()
+         WHERE shop_id = $1`,
+        [row.shop_id, dp.id],
+      );
     const chargeback = async (why) => {
-      await clearInquiry();
+      await dropInquiry();
+      await client.query(`UPDATE subscriptions SET chargeback_dispute_ids = array_append(chargeback_dispute_ids, $2) WHERE shop_id = $1 AND NOT ($2 = ANY (chargeback_dispute_ids))`, [row.shop_id, dp.id]);
       await tookBack(client, chargeId, true);
       console.log(`billing: dispute ${dp.id} on charge ${chargeId} ${why} (${status}); shop ${row.shop_id} is read-only`);
     };
     if (status === "warning_closed") {
-      await clearInquiry();
-      return console.log(`billing: inquiry ${dp.id} on charge ${chargeId} closed without a chargeback; shop ${row.shop_id}'s inquiry flag is cleared`);
+      await dropInquiry();
+      return console.log(`billing: inquiry ${dp.id} on charge ${chargeId} closed without a chargeback; shop ${row.shop_id}'s inquiry is cleared`);
     }
-    if (type === "charge.dispute.closed") {
-      if (status === "won") {
-        await clearInquiry();
-        return disputeWon(client, dp);
-      }
-      if (status === "lost" && known) return chargeback("was an inquiry and is lost");
-      return console.log(`billing: dispute ${dp.id} closed (${status}); nothing changes`);
+    if (status === "won") {
+      await dropInquiry();
+      if (type !== "charge.dispute.closed") return console.log(`billing: dispute ${dp.id} (${type}) is won already; nothing changes`);
+      return disputeWon(client, dp);
     }
-    if (status.startsWith("warning_")) {
-      await client.query(
-        `UPDATE subscriptions SET inquiry_at = CASE WHEN inquiry_dispute_id = $2 THEN inquiry_at ELSE now() END, inquiry_dispute_id = $2, updated_at = now() WHERE shop_id = $1`,
-        [row.shop_id, dp.id],
-      );
-      if (!known) console.log(`billing: card-company inquiry ${dp.id} on charge ${chargeId} (${status}) for shop ${row.shop_id}: recorded for the admin; the shop keeps working (no chargeback yet)`);
+    if (status === "charge_refunded") {
+      await dropInquiry();
+      return console.log(`billing: dispute ${dp.id} on charge ${chargeId} ended with a refund; the refund decides`);
+    }
+    if (status === "lost") {
+      if (actedOn) console.log(`billing: dispute ${dp.id} on charge ${chargeId} was lost; the chargeback stands`);
+      else await chargeback(inquiry ? "was an inquiry and is lost" : "was lost (the hub hadn't seen it as a chargeback)");
+      await cancelNow(found.subId, `chargeback ${dp.id} was lost`);
       return;
     }
+    if (status.startsWith("warning_")) {
+      if (inquiry) return;
+      await client.query(
+        `UPDATE subscriptions SET inquiry_dispute_ids = array_append(inquiry_dispute_ids, $2), inquiry_at = coalesce(inquiry_at, now()), updated_at = now() WHERE shop_id = $1`,
+        [row.shop_id, dp.id],
+      );
+      return console.log(`billing: card-company inquiry ${dp.id} on charge ${chargeId} (${status}) for shop ${row.shop_id}: recorded for the admin; the shop keeps working (no chargeback yet)`);
+    }
+    if (actedOn) return; // an update to a chargeback already acted on (evidence, review)
     if (type === "charge.dispute.created") return chargeback("opened");
-    if (known) return chargeback("escalated from an inquiry");
+    if (type === "charge.dispute.updated" && CHARGEBACK.has(status)) return chargeback(inquiry ? "escalated from an inquiry" : "became a chargeback");
+    console.log(`billing: dispute ${dp.id} (${type}, ${status}); nothing changes`);
   }
 
   async function mailAccount(shopId, kind, periodKey, subject, text) {
@@ -826,7 +944,10 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
       case "checkout.session.completed": {
         const s = await stripe.retrieveSession(o.id);
         const subId = typeof s.subscription === "string" ? s.subscription : s.subscription?.id;
-        if (s.mode === "subscription" && subId) await syncSubscription(client, subId);
+        if (s.mode !== "subscription" || !subId) return;
+        const r = await syncSubscription(client, subId);
+        // The new subscription runs: an older one for the same shop that hasn't ended is cancelled, so it can't charge again.
+        if (r && RUNNING.has(r.sub.status)) await cancelOlder(r.shop.id, r.sub);
         return;
       }
       case "customer.subscription.created":
@@ -840,8 +961,16 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
         if (!subId) return;
         const r = await syncSubscription(client, subId);
         if (!r) return;
-        // Paid: a period that was taken back, or ended by the admin, is good again.
-        await client.query(`UPDATE subscriptions SET unpaid_since = NULL, unpaid_charge_id = NULL, refunded_in_trial = false, updated_at = now() WHERE shop_id = $1 AND stripe_subscription_id = $2`, [r.shop.id, subId]);
+        // Paid: a period that was taken back is good again when this payment stands and follows the one taken back (a late
+        // or retried invoice.paid for the refunded or disputed period changes nothing); the admin's "Lapse now" ends.
+        const taken = (await client.query(`SELECT unpaid_since, unpaid_charge_id FROM subscriptions WHERE shop_id = $1 AND stripe_subscription_id = $2`, [r.shop.id, subId])).rows[0];
+        if (taken?.unpaid_since) {
+          if (await paidAgain(inv, taken.unpaid_charge_id)) {
+            await client.query(`UPDATE subscriptions SET unpaid_since = NULL, unpaid_charge_id = NULL, refunded_in_trial = false, updated_at = now() WHERE shop_id = $1 AND stripe_subscription_id = $2`, [r.shop.id, subId]);
+          } else {
+            console.log(`billing: invoice ${inv.id} is paid, but it doesn't follow the refund or chargeback of charge ${taken.unpaid_charge_id ?? "(unknown)"}; shop ${r.shop.id}'s period stays taken back`);
+          }
+        }
         await client.query(`UPDATE shops SET lapsed_at = NULL WHERE id = $1 AND lapsed_at IS NOT NULL`, [r.shop.id]);
         if (r.shop.account_id) await refreshFounding(client, r.shop.account_id);
         return;
@@ -852,6 +981,8 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
         if (!subId) return;
         const r = await syncSubscription(client, subId);
         if (!r || !r.periodEnd) return;
+        // The difference for a switch to Shop, declined: the shop stays on Solo (the switch said so); no dunning mail.
+        if (inv.billing_reason === "subscription_update") return console.log(`billing: the difference for shop ${r.shop.id}'s switch wasn't paid (invoice ${inv.id}); it stays on its plan until it is`);
         const periodEnd = day(r.periodEnd);
         mails.push(() =>
           mailAccount(

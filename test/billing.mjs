@@ -7,8 +7,10 @@
 // key's l), founding shops (the admin's mark, 25 at most, founding prices, kept across a gap under 60 days and lost
 // after), the trial's edges (subscribing inside the trial is charged when it ends, Stripe's 48 hours, a full refund of
 // the first payment inside the trial goes back to the trial, a won chargeback is undone with the founding mark its gap
-// cost, a card-company inquiry only flags the shop until it closes or escalates), the export, and a hub with billing
-// closed. Every key the hub sends is verified here with the program's own
+// cost, a card-company inquiry only flags the shop until it closes or escalates), a full refund or a lost chargeback
+// cancelling the subscription, a switch up to Shop charged now (and waiting for a declined card), two subscriptions for
+// one shop (the old one's late events ignored, the old one cancelled when the new Checkout completes), late invoice.paid
+// and dispute events that change nothing, the export, and a hub with billing closed. Every key the hub sends is verified here with the program's own
 // verify logic (license.ts, copied). Each run makes a fresh database beside the one named (the founding places are
 // counted across a database, so a reused one fails) and drops it at the end.
 // usage: DATABASE_URL=postgresql://... (any database on a server where the role may create databases) node test/billing.mjs
@@ -208,8 +210,25 @@ const register = async (name) => (await ok(await call("/v1/register", { json: { 
 const browser = () => ({ cookie: "" });
 const page = (jar, p, json, extra = {}) => call(`/account/api${p}`, { jar, json, ...extra });
 const adminCall = (p, json, method) => call(`/v1/admin${p}`, { key: ADMIN, json, method });
-const mockPost = (p, json = {}) => fetch(mock.url + p, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(json) }).then((r) => r.json());
-const mockApi = (p, form) => fetch(mock.url + p, { method: "POST", headers: { Authorization: "Bearer sk_test_billingmock12345678", "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(form).toString() }).then((r) => r.json());
+/** Waits for the webhooks of the Stripe calls the hub made (a cancellation, a switch) and checks every webhook was taken. */
+const settle = async (what) => {
+  await mock.settle();
+  const bad = mock.webhooks.filter((w) => w.status !== 200);
+  assert.deepEqual(bad, [], `${what}: a webhook wasn't taken`);
+};
+const mockPost = async (p, json = {}) => {
+  const out = await fetch(mock.url + p, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(json) }).then((r) => r.json());
+  await settle(p);
+  return out;
+};
+const mockApi = async (p, form) => {
+  const out = await fetch(mock.url + p, { method: "POST", headers: { Authorization: "Bearer sk_test_billingmock12345678", "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(form).toString() }).then((r) => r.json());
+  await settle(p);
+  return out;
+};
+/** A webhook as Stripe would send it late (a new event id, the object by id only): the hub re-reads the object. */
+let lateEvents = 0;
+const lateEvent = (type, id) => ({ id: `evt_late_${RUN}_${++lateEvents}`, type, data: { object: { id } } });
 const day = (d) => new Date(d).toISOString().slice(0, 10);
 const today = () => day(Date.now());
 const plusDays = (n, from = Date.now()) => day(from + n * 86400_000);
@@ -401,7 +420,10 @@ try {
   const yearlyKeyId = k.id;
   const refund = await mockApi("/v1/refunds", { charge: paid2.invoice.charge });
   assert.equal(refund.object, "refund");
-  assert.equal(mock.webhooks.at(-1).status, 200, "charge.refunded was taken");
+  assert.equal(mock.subscriptions.get(paid2.subscription.id).status, "canceled", "a full refund cancels the subscription in Stripe, so it can't charge again");
+  assert.match(hubLog, new RegExp(`subscription ${paid2.subscription.id} is cancelled in Stripe \\(charge ${paid2.invoice.charge} was refunded in full\\)`));
+  // A late invoice.paid for the refunded period doesn't make it good again.
+  assert.equal((await postWebhook(lateEvent("invoice.paid", paid2.invoice.id))).status, 200);
   st = await standing(keyA, "shopA2");
   assert.equal(st.standing, "lapsed");
   assert.match(st.message, /refunded on/);
@@ -422,10 +444,12 @@ try {
   const monthlyKeyId = checkKey((await standing(keyA, "shopA")).key, shopA, "new monthly key").id;
   const dpA = await mockPost(`/__charges/${paid3.invoice.charge}/dispute`);
   allDelivered(dpA, "dispute");
+  assert.equal((await postWebhook(lateEvent("invoice.paid", paid3.invoice.id))).status, 200, "a late invoice.paid for the disputed period");
   st = await standing(keyA, "shopA");
   assert.equal(st.standing, "lapsed");
   assert.match(st.message, /disputed with the card company/);
   assert.ok(st.revokeKeyIds.includes(monthlyKeyId));
+  assert.equal(mock.subscriptions.get(paid3.subscription.id).status, "active", "an open chargeback doesn't cancel the subscription (it may be won)");
   let list = await ok(await adminCall("/accounts"));
   assert.deepEqual([list.billing.open, list.billing.stripeMode, list.billing.signing.kid, list.billing.signing.x], [true, "test", "hub1", HUB1_X]);
   const adminA = list.shops.find((s) => s.id === shopA);
@@ -469,11 +493,15 @@ try {
   await status(await page(pj, `/shops/${shopP}/switch`, { plan: "solo" }), 409, "already on Solo");
   await status(await page(pj, `/shops/${shopP}/switch`, { plan: "team" }), 400, "not a plan to switch to");
   await status(await page(b, `/shops/${shopP}/switch`, { plan: "shop" }), 404, "another account's shop");
-  // Switch to Shop: the item moves to Shop's monthly price with proration, the hub has it at once, a new key says shop.
+  // Switch to Shop: the item moves to Shop's monthly price and the difference is charged now (always_invoice, the change
+  // waiting for that payment); paid at once, the hub has it at once and a new key says shop.
   const sw = await ok(await page(pj, `/shops/${shopP}/switch`, { plan: "shop" }));
-  assert.deepEqual([sw.plan, sw.subscription.plan], ["shop", "shop"]);
+  await settle("switch to Shop");
+  assert.deepEqual([sw.pending, sw.plan, sw.subscription.plan], [false, "shop", "shop"]);
   const mSubP = mock.subscriptions.get(subP);
-  assert.deepEqual([mSubP.items.data[0].price.id, mSubP.last_proration_behavior], [PRICES.shopMonthly, "create_prorations"]);
+  assert.deepEqual([mSubP.items.data[0].price.id, mSubP.last_proration_behavior, mSubP.last_payment_behavior], [PRICES.shopMonthly, "always_invoice", "pending_if_incomplete"]);
+  const upInvoice = [...mock.invoices.values()].filter((i) => i.subscription === subP && i.billing_reason === "subscription_update").at(-1);
+  assert.deepEqual([upInvoice?.amount_paid, Boolean(upInvoice?.charge)], [2000, true], "the difference is charged now");
   st = await standing(keyP, "shopP");
   assert.deepEqual([st.standing, st.plan, st.interval], ["active", "shop", "monthly"]);
   assert.match(st.message, /Subscribed to Shop \(monthly\)/);
@@ -481,8 +509,28 @@ try {
   assert.deepEqual([kShop.p, kShop.l, kShop.u], ["m", "shop", k.u], "the same period, the other plan");
   assert.notEqual(kShop.id, k.id, "a plan switch signs a new key");
   assert.ok(mock.webhooks.filter((w) => w.type === "customer.subscription.updated").every((w) => w.status === 200), "the switch's webhook was taken");
-  await ok(await page(pj, `/shops/${shopP}/switch`, { plan: "solo" }));
+  const swDown = await ok(await page(pj, `/shops/${shopP}/switch`, { plan: "solo" }));
+  await settle("switch to Solo");
+  assert.deepEqual([swDown.pending, swDown.plan], [false, "solo"]);
+  assert.deepEqual([mSubP.last_proration_behavior, mSubP.last_payment_behavior], ["create_prorations", null], "down to Solo: a credit on the next invoice");
+  assert.equal([...mock.invoices.values()].filter((i) => i.subscription === subP && i.billing_reason === "subscription_update").length, 1, "nothing charged moving down");
   assert.equal(checkKey((await standing(keyP, "shopP")).key, shopP, "Solo again").l, "solo");
+  // The card declined for the difference: Stripe keeps the subscription on Solo (a pending update) and so does the hub;
+  // no Shop key and no dunning mail until it's paid, then Shop.
+  await mockPost(`/__customers/${mSubP.customer}/decline_next`);
+  const swDeclined = await ok(await page(pj, `/shops/${shopP}/switch`, { plan: "shop" }));
+  await settle("a declined switch");
+  assert.deepEqual([swDeclined.pending, swDeclined.plan], [true, "solo"]);
+  assert.equal(swDeclined.message, "The card was declined for the difference, so P Repair stays on Solo for now. It moves to Shop as soon as that payment goes through: update the card under Manage billing.");
+  assert.ok(mSubP.pending_update, "Stripe holds the change until the difference is paid");
+  st = await standing(keyP, "shopP");
+  assert.deepEqual([st.standing, st.plan], ["active", "solo"]);
+  assert.equal(checkKey(st.key, shopP, "still Solo").l, "solo", "no Shop key before the difference is paid");
+  assert.ok(!/subject: Payment for P Repair didn't go through/.test(hubLog), "a declined switch isn't a failed renewal: no dunning mail");
+  const openUp = [...mock.invoices.values()].filter((i) => i.subscription === subP && !i.paid).at(-1);
+  allDelivered(await mockPost(`/__invoices/${openUp.id}/pay`), "the difference paid");
+  st = await standing(keyP, "shopP");
+  assert.deepEqual([st.plan, checkKey(st.key, shopP, "Shop once paid").l], ["shop", "shop"]);
   // Several prices count as one plan (decision 12): an older Solo price further down the list is still Solo; the single
   // price from before the plans is Shop; a price the hub doesn't know is Shop (and logged), never Solo.
   allDelivered(await mockPost(`/__subscriptions/${subP}`, { price: PRICES.soloMonthlyOld }), "an older Solo price");
@@ -547,6 +595,7 @@ try {
   assert.equal((await db.query(`SELECT founding_gap_since FROM accounts WHERE id = $1`, [accP.id])).rows[0].founding_gap_since, null, "running again: no gap");
   // A founding account switches to the founding price of the other plan.
   await ok(await page(pj, `/shops/${shopP}/switch`, { plan: "shop" }));
+  await settle("founding switch to Shop");
   assert.equal(mock.subscriptions.get(paidF.subscription.id).items.data[0].price.id, PRICES.shopYearlyFounding);
   st = await standing(keyP, "shopP");
   assert.deepEqual([st.plan, st.interval, st.founding], ["shop", "yearly", true]);
@@ -636,14 +685,14 @@ try {
   assert.deepEqual([st.standing, paidKeyF.p], ["active", "m"]);
   // Case 2: a partial refund lapses the shop, as before ...
   assert.equal((await mockApi("/v1/refunds", { charge: paidF2.invoice.charge, amount: "1000" })).object, "refund");
-  assert.equal(mock.webhooks.at(-1).status, 200, "charge.refunded (partial) was taken");
+  assert.equal(mock.subscriptions.get(paidF2.subscription.id).status, "active", "a partial refund doesn't cancel the subscription");
   st = await standing(keyE, "shopF");
   assert.equal(st.standing, "lapsed", "a partial refund lapses the shop");
   assert.match(st.message, /refunded on/);
   // ... and once the whole first payment is refunded while the trial still runs, the shop is back on its trial until the
   // trial's original end; the paid period's key is named for removal and the trial key comes back.
   assert.equal((await mockApi("/v1/refunds", { charge: paidF2.invoice.charge })).object, "refund");
-  assert.equal(mock.webhooks.at(-1).status, 200, "charge.refunded (the rest) was taken");
+  assert.equal(mock.subscriptions.get(paidF2.subscription.id).status, "canceled", "refunded in full: cancelled in Stripe");
   st = await standing(keyE, "shopF");
   assert.deepEqual([st.standing, st.lastDay, st.plan], ["trial", trialLastF, "shop"]);
   assert.equal(st.message, `The payment for this shop was refunded on ${today()}, so it's back on its free trial through ${trialLastF}. Subscribe on your StitchHub account page to keep working after that.`);
@@ -673,12 +722,16 @@ try {
   await db.query(`UPDATE accounts SET founding_gap_since = now() - interval '61 days' WHERE id = $1`, [accB.id]);
   me = await ok(await page(b, "/me"));
   assert.equal(me.billing.founding.on, false, "the gap passed 60 days: the founding mark went");
-  // A lost dispute changes nothing: A's chargeback (section 9) stands.
+  // A lost dispute: A's chargeback (section 9) stands, and its subscription is cancelled in Stripe.
   allDelivered(await mockPost(`/__disputes/${dpA.dispute.id}/close`, { status: "lost" }), "A's dispute lost");
   st = await standing(keyA, "shopA");
   assert.equal(st.standing, "lapsed");
   assert.match(st.message, /disputed with the card company/);
-  assert.match(hubLog, new RegExp(`dispute ${dpA.dispute.id} closed \\(lost\\); nothing changes`));
+  assert.match(hubLog, new RegExp(`dispute ${dpA.dispute.id} on charge ${paid3.invoice.charge} was lost; the chargeback stands`));
+  assert.equal(mock.subscriptions.get(paid3.subscription.id).status, "canceled", "a lost chargeback cancels the subscription");
+  // A late update for it (status lost) changes nothing more.
+  assert.equal((await postWebhook(lateEvent("charge.dispute.updated", dpA.dispute.id))).status, 200);
+  assert.equal((await standing(keyA, "shopA")).standing, "lapsed");
   // Won: the period counts again with a fresh key, the founding mark is back, the admin's flag is gone; logged.
   const wonE = await mockPost(`/__disputes/${dpE.dispute.id}/close`, { status: "won" });
   allDelivered(wonE, "E's dispute won");
@@ -697,53 +750,102 @@ try {
   assert.deepEqual([adminE.standing, adminE.subscription.disputedAt, adminE.subscription.unpaidSince], ["active", null, null]);
   const closedEv = mock.events.filter((e) => e.type === "charge.dispute.closed").at(-1);
   assert.match((await mockPost(`/__replay/${closedEv.id}`)).delivered[0].body, /"replay":true/, "a replayed close does nothing");
-  // A card-company inquiry (warning_*: no money taken yet) doesn't lock a paying shop: recorded, shown to the admin, logged.
+  // A late charge.dispute.created for the dispute E won (Stripe's status: won) changes nothing.
+  assert.equal((await postWebhook(lateEvent("charge.dispute.created", dpE.dispute.id))).status, 200);
+  assert.equal((await standing(keyE, "shopE")).standing, "active", "a late event for a won dispute doesn't lapse the shop");
+  assert.match(hubLog, new RegExp(`dispute ${dpE.dispute.id} \\(charge.dispute.created\\) is won already; nothing changes`));
+  // Card-company inquiries (warning_*: no money taken yet) don't lock a paying shop: recorded, shown to the admin, logged.
+  // Two can be open at once (two charges), and the first one escalating still counts.
   const renew2E = await mockPost(`/__subscriptions/${subE}/renew`, { paid: true });
   allDelivered(renew2E, "E's next month");
-  st = await standing(keyE, "shopE");
-  const keyE2 = checkKey(st.key, shopE, "E's key for the next month");
   const inqE = await mockPost(`/__charges/${renew2E.invoice.charge}/dispute`, { status: "warning_needs_response" });
   allDelivered(inqE, "an inquiry opens");
-  st = await standing(keyE, "shopE");
-  assert.deepEqual([st.standing, st.lastDay], ["active", day(renew2E.subscription.current_period_end * 1000)], "an inquiry: full use");
-  assert.equal(checkKey(st.key, shopE, "E's key during the inquiry").id, keyE2.id, "the same key, nothing revoked");
-  assert.ok(!st.revokeKeyIds.includes(keyE2.id));
-  list = await ok(await adminCall("/accounts"));
-  let subAdminE = list.shops.find((s) => s.id === shopE).subscription;
-  assert.deepEqual([subAdminE.inquiryAt, subAdminE.disputedAt, subAdminE.unpaidSince], [today(), null, null], "the admin sees the inquiry");
-  assert.match(hubLog, new RegExp(`card-company inquiry ${inqE.dispute.id} on charge ${renew2E.invoice.charge} \\(warning_needs_response\\) for shop ${shopE}: recorded for the admin`));
-  // It closes without a chargeback (warning_closed): the flag goes; nothing was taken, so nothing to restore.
-  allDelivered(await mockPost(`/__disputes/${inqE.dispute.id}/close`, { status: "warning_closed" }), "the inquiry closes");
-  st = await standing(keyE, "shopE");
-  assert.equal(st.standing, "active");
-  assert.equal(checkKey(st.key, shopE, "E's key after the inquiry").id, keyE2.id);
-  list = await ok(await adminCall("/accounts"));
-  assert.equal(list.shops.find((s) => s.id === shopE).subscription.inquiryAt, null, "the inquiry flag is cleared");
-  assert.match(hubLog, new RegExp(`inquiry ${inqE.dispute.id} on charge ${renew2E.invoice.charge} closed without a chargeback`));
-  // Another inquiry escalates into a chargeback (charge.dispute.updated, needs_response): the shop lapses as for any chargeback.
   const renew3E = await mockPost(`/__subscriptions/${subE}/renew`, { paid: true });
   allDelivered(renew3E, "E's month after");
-  const keyE3 = checkKey((await standing(keyE, "shopE")).key, shopE, "E's key for the month after");
+  st = await standing(keyE, "shopE");
+  const keyE3 = checkKey(st.key, shopE, "E's key for the month after");
   const inq2E = await mockPost(`/__charges/${renew3E.invoice.charge}/dispute`, { status: "warning_needs_response" });
-  allDelivered(inq2E, "a second inquiry");
-  assert.equal((await standing(keyE, "shopE")).standing, "active");
-  allDelivered(await mockPost(`/__disputes/${inq2E.dispute.id}/update`, { status: "warning_under_review" }), "the inquiry under review");
+  allDelivered(inq2E, "a second inquiry opens");
+  st = await standing(keyE, "shopE");
+  assert.deepEqual([st.standing, st.lastDay], ["active", day(renew3E.subscription.current_period_end * 1000)], "inquiries: full use");
+  assert.equal(checkKey(st.key, shopE, "E's key during the inquiries").id, keyE3.id, "the same key, nothing revoked");
+  assert.ok(!st.revokeKeyIds.includes(keyE3.id));
+  list = await ok(await adminCall("/accounts"));
+  let subAdminE = list.shops.find((s) => s.id === shopE).subscription;
+  assert.deepEqual([subAdminE.inquiryAt, subAdminE.inquiries, subAdminE.disputedAt, subAdminE.unpaidSince], [today(), 2, null, null], "the admin sees both inquiries");
+  assert.match(hubLog, new RegExp(`card-company inquiry ${inqE.dispute.id} on charge ${renew2E.invoice.charge} \\(warning_needs_response\\) for shop ${shopE}: recorded for the admin`));
+  // The first, under review, then escalated into a chargeback (charge.dispute.updated, needs_response): read-only at once.
+  allDelivered(await mockPost(`/__disputes/${inqE.dispute.id}/update`, { status: "warning_under_review" }), "the first inquiry under review");
   assert.equal((await standing(keyE, "shopE")).standing, "active", "still an inquiry: full use");
-  allDelivered(await mockPost(`/__disputes/${inq2E.dispute.id}/update`, { status: "needs_response" }), "the inquiry escalates");
+  allDelivered(await mockPost(`/__disputes/${inqE.dispute.id}/update`, { status: "needs_response" }), "the first inquiry escalates");
   st = await standing(keyE, "shopE");
   assert.equal(st.standing, "lapsed", "escalated into a chargeback: read-only at once");
   assert.match(st.message, /disputed with the card company/);
   assert.ok(st.revokeKeyIds.includes(keyE3.id), "the period's key is named for removal");
+  assert.match(hubLog, new RegExp(`dispute ${inqE.dispute.id} on charge ${renew2E.invoice.charge} escalated from an inquiry \\(needs_response\\); shop ${shopE} is read-only`));
   list = await ok(await adminCall("/accounts"));
   subAdminE = list.shops.find((s) => s.id === shopE).subscription;
-  assert.deepEqual([subAdminE.inquiryAt, subAdminE.disputedAt, subAdminE.unpaidSince], [null, today(), today()], "now a chargeback on the admin page");
-  assert.match(hubLog, new RegExp(`dispute ${inq2E.dispute.id} on charge ${renew3E.invoice.charge} escalated from an inquiry \\(needs_response\\); shop ${shopE} is read-only`));
-  // Paid again, a later update to that chargeback (evidence under review) changes nothing more.
-  allDelivered(await mockPost(`/__subscriptions/${subE}/renew`, { paid: true }), "E pays again");
+  assert.deepEqual([subAdminE.inquiryAt, subAdminE.inquiries, subAdminE.disputedAt, subAdminE.unpaidSince], [today(), 1, today(), today()], "a chargeback, and the second inquiry still open");
+  // The second closes without a chargeback (warning_closed): no inquiry left; nothing was taken, so nothing to restore.
+  allDelivered(await mockPost(`/__disputes/${inq2E.dispute.id}/close`, { status: "warning_closed" }), "the second inquiry closes");
+  list = await ok(await adminCall("/accounts"));
+  subAdminE = list.shops.find((s) => s.id === shopE).subscription;
+  assert.deepEqual([subAdminE.inquiryAt, subAdminE.inquiries], [null, 0], "the inquiry flag is cleared");
+  assert.match(hubLog, new RegExp(`inquiry ${inq2E.dispute.id} on charge ${renew3E.invoice.charge} closed without a chargeback`));
+  // A late invoice.paid for the disputed month changes nothing; a newer payment that stands makes it good again; a later
+  // update to that chargeback (evidence under review) changes nothing more.
+  assert.equal((await postWebhook(lateEvent("invoice.paid", renew2E.invoice.id))).status, 200);
+  assert.equal((await standing(keyE, "shopE")).standing, "lapsed", "a late invoice.paid for the disputed month");
+  const renew4E = await mockPost(`/__subscriptions/${subE}/renew`, { paid: true });
+  allDelivered(renew4E, "E pays again");
   assert.equal((await standing(keyE, "shopE")).standing, "active");
-  allDelivered(await mockPost(`/__disputes/${inq2E.dispute.id}/update`, { status: "under_review" }), "the chargeback under review");
+  allDelivered(await mockPost(`/__disputes/${inqE.dispute.id}/update`, { status: "under_review" }), "the chargeback under review");
   assert.equal((await standing(keyE, "shopE")).standing, "active", "an update to a chargeback already handled doesn't lapse the shop again");
+  // A dispute the hub never saw open, already lost: read-only, and the subscription is cancelled in Stripe.
+  const lostE = await mockPost(`/__charges/${renew4E.invoice.charge}/dispute`, { status: "lost" });
+  allDelivered(lostE, "a dispute already lost");
+  st = await standing(keyE, "shopE");
+  assert.equal(st.standing, "lapsed");
+  assert.match(st.message, /disputed with the card company/);
+  assert.equal(mock.subscriptions.get(subE).status, "canceled");
   console.log("the trial's edges (subscribe inside it, a refund inside it, a won chargeback, inquiries): ok");
+
+  // ----- 9e. Two subscriptions for one shop: past_due, lapsed after its grace, subscribed again. Completing the new
+  // Checkout cancels the old one in Stripe, and the old one's late events (its update, payments, cancellation) are
+  // ignored: the shop stays on the new one. -----
+  const keyG = await register("Billing Test Twice G");
+  const claimG = await claim(keyG, { shopRef: "shopG", shopName: "G Repair", kind: "repair", program: "StitchBench", version: "1.8.0", sole: true });
+  const shopG = claimG.shop.id;
+  await connectTo(b, keyG, "shopG", "G Repair");
+  await db.query(`UPDATE shops SET created_at = now() - interval '40 days' WHERE id = $1`, [shopG]);
+  const coG1 = await ok(await page(b, `/shops/${shopG}/checkout`, { plan: "shop", interval: "monthly" }));
+  const paidG1 = await mockPost(`/__pay/${coG1.sessionId}`);
+  allDelivered(paidG1, "G's first subscription");
+  const subG1 = paidG1.subscription.id;
+  allDelivered(await mockPost(`/__subscriptions/${subG1}/renew`, { paid: false }), "G's payment fails");
+  const pastG = Math.floor(Date.now() / 1000) - 15 * 86400;
+  allDelivered(await mockPost(`/__subscriptions/${subG1}`, { current_period_end: pastG, current_period_start: pastG - 30 * 86400 }), "G's grace runs out");
+  assert.equal((await standing(keyG, "shopG")).standing, "lapsed");
+  assert.equal(mock.subscriptions.get(subG1).status, "past_due", "Stripe may still retry the old one");
+  const coG2 = await ok(await page(b, `/shops/${shopG}/checkout`, { plan: "shop", interval: "monthly" }));
+  const paidG2 = await mockPost(`/__pay/${coG2.sessionId}`);
+  allDelivered(paidG2, "G subscribes again");
+  const subG2 = paidG2.subscription.id;
+  assert.equal(mock.subscriptions.get(subG1).status, "canceled", "the new Checkout cancels the old subscription in Stripe");
+  assert.match(hubLog, new RegExp(`older subscription ${subG1} \\(past_due\\) is cancelled in Stripe`));
+  const lastG = day(paidG2.subscription.current_period_end * 1000);
+  st = await standing(keyG, "shopG");
+  assert.deepEqual([st.standing, st.lastDay], ["active", lastG]);
+  const keyG2 = checkKey(st.key, shopG, "G's new key").id;
+  allDelivered(await mockPost(`/__subscriptions/${subG1}`, { status: "past_due" }), "the old subscription's late update");
+  allDelivered(await mockPost(`/__subscriptions/${subG1}/renew`, { paid: false }), "the old subscription's failed payment");
+  allDelivered(await mockPost(`/__subscriptions/${subG1}/renew`, { paid: true }), "the old subscription's payment");
+  allDelivered(await mockPost(`/__subscriptions/${subG1}/cancel`, { at_period_end: false }), "the old subscription's cancellation");
+  st = await standing(keyG, "shopG");
+  assert.deepEqual([st.standing, st.lastDay, checkKey(st.key, shopG, "G's key after the old events").id], ["active", lastG, keyG2], "the shop stays on its new subscription");
+  assert.equal((await db.query(`SELECT stripe_subscription_id FROM subscriptions WHERE shop_id = $1`, [shopG])).rows[0].stripe_subscription_id, subG2);
+  assert.match(hubLog, new RegExp(`subscription ${subG1} \\(\\w+\\) for shop ${shopG} ignored: the shop's subscription is ${subG2} \\(active\\)`));
+  console.log("two subscriptions for one shop: ok");
 
   // ----- 10. Waived: a retail shop partnered with a repair shop in good standing; "both" pays; the waiver ends. -----
   const keyR = await register("Billing Test Repair R");

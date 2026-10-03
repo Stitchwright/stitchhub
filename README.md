@@ -207,13 +207,23 @@ so the subscription starts on Stripe's trial (`trialing`), the shop shows as sub
 falls the day the trial ends (the account page says which day, before and after subscribing); with less left it is
 charged at once. The owner moves between the plans with **Switch to Shop / Switch to Solo** on the same page
 (the subscription item moves to the other plan's price, same interval, founding if the account is, with Stripe's
-proration: the difference for the rest of the period goes on the next invoice), and changes the card, cancels or
-downloads invoices under Manage billing (Stripe's Customer Portal). The hub never sees a card number.
+proration). **Up to Shop** charges the difference for the rest of the period at once (`always_invoice`), and the change
+waits for that payment (`payment_behavior: pending_if_incomplete`): the hub reads the plan from the price, so the Shop
+key is signed only once Stripe has the difference paid, usually at once; a declined card leaves the shop on Solo (the
+page says so, no dunning mail) until the invoice is paid. **Down to Solo** credits the difference on the next invoice
+and takes effect at once. The owner changes the card, cancels or downloads invoices under Manage billing (Stripe's
+Customer Portal). The hub never sees a card number. A shop has one subscription on the hub: when a Checkout completes
+while an older subscription for the same shop hasn't ended (a past_due one Stripe still retries, a second Checkout),
+the older one is cancelled in Stripe at once (no refund: if both were paid for the same days the log says to refund the
+older one by hand), and a late event for an older subscription (its update, a retry, a payment, its cancellation) is
+logged and ignored, never written over the shop's current one.
 
 **The Customer Portal** (Stripe dashboard → Settings → Billing → Customer portal): turn on "Customers can switch plans",
 add the one product with its four regular prices (Solo and Shop, monthly and yearly; add the founding prices too if
-founding shops may switch there), choose "Prorate charges and credits" (the same proration as the hub's own Switch,
-invoiced at the next renewal), allow "Update payment methods", "Cancel subscriptions" (at the end of the billing period)
+founding shops may switch there), choose to prorate and to **invoice the proration immediately** (the API's
+`always_invoice`; with the default, invoiced at the next renewal, a switch up to Shop made in the portal would get every
+login for up to a year before paying the difference; or leave "Customers can switch plans" off so every switch goes
+through the hub's Switch), allow "Update payment methods", "Cancel subscriptions" (at the end of the billing period)
 and "Invoice history". Leave quantity changes off: a plan is per shop, not per seat. Whatever the portal switches to,
 the webhook re-reads the subscription and the hub takes its plan from the price.
 
@@ -243,18 +253,25 @@ key is sent at every claim so a program that lost it gets it back; a lapsed shop
 it holds (a comp that ran out keeps its 14 days of grace), but a key the program believes is still live when the standing
 has ended (a comp taken away) is replaced by one ending today, so the grace runs from today; `revokeKeyIds` names the
 keys of a refunded or charged-back period (and of a "Lapse now") for the program to drop. A refund or chargeback lapses
-the shop at once, with two exceptions. **A full refund of the subscription's first payment while the trial's original end
+the shop at once, with two exceptions (below). **A full refund also cancels the subscription in Stripe at once** (no
+proration, nothing refunded beyond what was), so it can't charge the shop again; a partial refund doesn't. A paid
+invoice makes a refunded or charged-back period good again only when its own payment stands (not refunded, not
+disputed) and it is newer than the one taken back: a late or retried `invoice.paid` for that period changes nothing. **A full refund of the subscription's first payment while the trial's original end
 is still ahead** puts the shop back on its trial until that day (the trial key comes back, the paid period's key is still
 named for removal; after that day it is a trial that ended); a partial refund, a refund of a later payment or a chargeback
 inside the trial still lapses it. **A chargeback the shop wins** (`charge.dispute.closed` with status `won`, the dispute
 re-read from Stripe) is undone: the period counts again, the subscription is re-read, the admin's dispute flag goes, a
 founding mark the dispute's gap cost comes back while a place is free, the next sync gets a fresh key (the revoked ones
-stay revoked), and the hub's log says so. A lost dispute changes nothing, and a won one whose period was also refunded is
-left as it is. **A card-company inquiry** (a dispute whose status starts with `warning_`: a retrieval request, no money
-taken yet) doesn't lock the shop: the hub records it on the subscription, the admin page shows it as INQUIRY and the
-log says so, and the shop keeps full use. Only a real chargeback (`needs_response`, `under_review`) lapses the shop,
-whether it opens as one or an inquiry escalates into one (`charge.dispute.updated` with the new status; a lost inquiry
-the hub still holds counts too); an inquiry that closes as `warning_closed` just clears the flag, since nothing was taken. When a subscription ends while the trial still runs, the shop is back on
+stay revoked), and the hub's log says so; a won one whose period was also refunded is left as it is. **A lost
+chargeback** stands and cancels the subscription in Stripe; one the hub never acted on (an inquiry it held, a dispute it
+never saw open) lapses the shop then. **A card-company inquiry** (a dispute whose status starts with `warning_`: a
+retrieval request, no money taken yet) doesn't lock the shop: the hub records it on the subscription (several can be
+open, one per charge), the admin page shows it as INQUIRY and the log says so, and the shop keeps full use. Only a real
+chargeback (`needs_response`, `under_review`) lapses the shop, whether it opens as one or an inquiry escalates into one
+(`charge.dispute.updated` with the new status, for any open inquiry); an inquiry that closes as `warning_closed` just
+leaves the list, since nothing was taken. The hub keeps the disputes it has acted on, so a late or repeated dispute
+event (evidence submitted, a review, a `created` or `updated` for a dispute already won, one ending in a refund) never
+lapses the shop a second time. When a subscription ends while the trial still runs, the shop is back on
 its trial. A partnered shop that also pays is told it can cancel and stay free; the hub never cancels for it. Dunning mail
 goes once per period: when a payment fails, 7 days into the grace, the day the shop lapses, and 30 days before a yearly
 renewal (Stripe sends the receipts).
@@ -378,13 +395,17 @@ beside it for the run (dropped at the end), starts a hub with the Stripe mock (`
 Checkout in subscription mode with Stripe's `trial_end` and its 48 hours, the Portal, signed webhooks, refunds (whole or
 partial) and disputes (chargebacks and inquiries, opened, updated, then won, lost or closed), with hooks to fail or renew a payment)
 and a throwaway `hub1` key, and walks a shop from its trial through subscribe → active → past_due → lapsed → paid again,
-cancelling, a yearly plan, a refund and a chargeback (keys revoked), Solo and Shop (Switch with proration, an older price
+cancelling, a yearly plan, a refund and a chargeback (keys revoked; a full refund and a lost chargeback cancel the
+subscription; late `invoice.paid` and dispute events change nothing), Solo and Shop (Switch up charged now, a declined
+card waiting on Solo until the difference is paid, Switch down credited, an older price
 still counted, the old single price and an unknown price counted as Shop, lapsed keeping its plan, the key's `l`),
 founding shops (the admin's mark and the 26th refused, founding prices at Checkout and Switch, back within 60 days, the
 mark lost after), the trial's edges (subscribing inside the trial is `trialing` and charged when it ends, no `trial_end`
 under 48 hours, a partial refund lapses, a full refund of the first payment goes back to the trial and then ends with it,
 a lost dispute changes nothing, a won one restores the period, a fresh key and the founding mark its gap cost; an
-inquiry keeps full use and shows to the admin, closes with the flag cleared, or escalates and lapses the shop), a
+inquiry keeps full use and shows to the admin, two at once, the first escalating and lapsing the shop, the second
+closing with the flag cleared), two subscriptions for one shop (the new Checkout cancels the old one, whose late events
+are ignored), a
 partnered retail shop waived and the waiver ending, comps, "Lapse now", replayed and badly signed
 webhooks, one account unable to subscribe another's shop, the export, and a hub with billing closed. The database must be
 fresh because the founding places are counted across it; the test makes its own each run. Every key the hub sends is verified with the program's own verify logic (a copy of
@@ -444,9 +465,11 @@ account, on Stripe's trial to the end of the hub's when more than 48 hours of it
 null when charged at once; 404 for
 another account's, 409 when it already has a subscription, 503 while subscriptions are closed or when a founding price
 isn't set, 400 without `acceptTerms` while the account accepted an older terms version; `termsVersion` is the version the
-page showed: 409 when it isn't the one in force), `shops/:id/switch { plan: "solo" | "shop" }` → `{ plan, standing,
-message, subscription }` (moves a running subscription to the other plan's price with proration; 409 when there is none
-running or it is already on that plan) and
+page showed: 409 when it isn't the one in force), `shops/:id/switch { plan: "solo" | "shop" }` → `{ plan, pending,
+standing, message, subscription }` (moves a running subscription to the other plan's price with proration: up to Shop the
+difference is charged now and `pending: true` with `message` says the card was declined and the shop stays on Solo until
+it is paid; down to Solo it is credited on the next invoice; 409 when there is none running or it is already on that
+plan) and
 `shops/:id/portal` → `{ url }` (Stripe's Customer Portal for the account; 409 before it has ever subscribed),
 `hosted { program, shopName, ownerName, timeZone }` → `{ shopRef, setPasswordUrl, expiresAt, appUrl, tied }` (503 for a
 program this hub doesn't offer, 429 within 10 minutes of the last) and `shops/:id/reset-owner` → `{ id, expiresAt }`
