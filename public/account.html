@@ -82,8 +82,8 @@
     <section id="shops" hidden>
       <h2>Your shops</h2>
       <p class="muted" id="shopsEmpty" hidden>No shop is connected to this account yet. In the program, open Settings → Account, choose "I already have an account" and type the code it shows below.</p>
-      <div class="scroll"><table id="shopsTable"><thead><tr><th>Shop</th><th>Program</th><th>Standing</th><th>Last synced</th></tr></thead><tbody id="shopRows"></tbody></table></div>
-      <p class="muted">Subscriptions aren't open yet. Every shop is free while the hub is in its community period.</p>
+      <div class="scroll"><table id="shopsTable"><thead><tr><th>Shop</th><th>Program</th><th>Standing</th><th>Billing</th><th>Last synced</th></tr></thead><tbody id="shopRows"></tbody></table></div>
+      <p class="muted" id="billingNote"></p>
       <h2 style="margin-top:18px">Connect a shop</h2>
       <form id="connectForm" class="row">
         <input id="code" placeholder="Code from Settings → Account, like 7KQPM-2XH9T" autocomplete="off" required style="max-width:260px">
@@ -130,8 +130,26 @@
     document.title = `${me.hubName} account`; $("title").textContent = me.hubName;
     $("meEmail").textContent = me.account.email;
     $("shopsEmpty").hidden = me.shops.length > 0; $("shopsTable").hidden = !me.shops.length;
-    $("shopRows").replaceChildren(...me.shops.map((s) => { const tr = document.createElement("tr"); tr.append(td(s.name), td([s.program, s.version].filter(Boolean).join(" ") || s.installName), td(s.message), td(when(s.lastSeenAt))); return tr; }));
+    $("shopRows").replaceChildren(...me.shops.map((s) => { const tr = document.createElement("tr"); tr.append(td(s.name), td([s.program, s.version].filter(Boolean).join(" ") || s.installName), td(s.message), billingCell(s, me.billing), td(when(s.lastSeenAt))); return tr; }));
+    $("billingNote").textContent = me.billing.open
+      ? `One price for every shop: ${me.billing.monthly} or ${me.billing.yearly}. A sewing or quilt shop that is partnered with a repair shop in good standing is free. Cards, plans, cancelling and invoices are handled on Stripe's pages; the hub never sees your card.`
+      : "Subscriptions aren't open yet. Every shop is free while the hub is in its community period.";
     show("app", where === "settings" ? "settings" : "shops");
+  }
+
+  // Subscribe (Stripe Checkout) and Manage billing (Stripe's Customer Portal): the hub answers with the page to go to.
+  function billingCell(s, billing) {
+    const c = document.createElement("td");
+    const go = (path, body, label) => {
+      const b = document.createElement("button"); b.className = "plain"; b.style.marginTop = "0"; b.textContent = label;
+      b.onclick = async () => { b.disabled = true; try { const r = await api(`/shops/${s.id}${path}`, body); location.href = r.url; } catch (err) { say(err.message, true); b.disabled = false; } };
+      return b;
+    };
+    if (!billing.open) { c.textContent = s.standing === "comped" ? "free" : "coming soon"; c.className = "muted"; return c; }
+    if (s.canSubscribe) { c.append(go("/checkout", { plan: "monthly" }, `Subscribe, ${billing.monthly}`), " ", go("/checkout", { plan: "yearly" }, `Subscribe, ${billing.yearly}`)); if (s.standing === "waived") c.append(" ", Object.assign(document.createElement("span"), { className: "muted", textContent: "(free while partnered; no need)" })); }
+    if (s.canManage) c.append(s.canSubscribe ? " " : "", go("/portal", {}, "Manage billing"));
+    if (!c.childNodes.length) { c.textContent = s.standing === "comped" ? "free" : ""; c.className = "muted"; }
+    return c;
   }
 
   async function start() {
@@ -145,6 +163,9 @@
         catch (e) { $("verifyText").textContent = e.message; }
         return;
       }
+      const back = new URLSearchParams(location.search);
+      if (back.get("done")) { say("Thank you. Your subscription is set up; the shop's standing here and in the program updates within a minute of Stripe's confirmation."); history.replaceState(null, "", "/account/shops"); }
+      else if (back.get("cancelled")) { say("Checkout was cancelled. Nothing was charged.", true); history.replaceState(null, "", "/account/shops"); }
       await loadMe(page);
     } catch (e) { say(e.message, true); }
   }

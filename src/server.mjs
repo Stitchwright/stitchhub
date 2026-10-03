@@ -17,6 +17,7 @@ import { registerMarket, listingsByIds, sellerBlocked, claimListings, actingShop
 import { registerUsage } from "./usage.mjs";
 import { registerPartners } from "./partners.mjs";
 import { registerAccounts } from "./accounts.mjs";
+import { registerBilling } from "./billing.mjs";
 import { discordBody } from "./discord.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
@@ -162,6 +163,7 @@ const ADMIN_UPLOAD = (Number(process.env.ADMIN_UPLOAD_MB) || 1024) * MB; // bulk
 
 function maxBody(p) {
   if (p === "/v1/register" || p === "/v1/partners/join" || p === "/v1/accounts/start") return 16 * KB; // no key needed: a join key, code or email and a name
+  if (p === "/v1/stripe") return 256 * KB; // a Stripe webhook event (an invoice with its lines)
   if (p === "/v1/posts") return 12 * 3 * MB + MB; // a note with up to 12 photos of 3 MB
   if (p === "/v1/listings") return 8 * 3 * MB + MB; // a listing with up to 8 photos
   if (/^\/v1\/figures\/[^/]+$/.test(p)) return 2 * MB;
@@ -871,8 +873,12 @@ registerParts({ member, admin, fail, newId, writeLimit, validUrl });
 registerMarket({ member, fail, newId, writeLimit, notify, feedPage });
 registerUsage({ member, fail, writeLimit: usageLimit });
 registerPartners({ app, member, fail, newId, allow, clientIp, sha, hubName: HUB_NAME, createInstall });
-// Shop owners' accounts, their shops and standing (src/accounts.mjs, the /account pages; mail through src/mail.mjs).
-registerAccounts({ app, member, admin, fail, newId, allow, bucket, clientIp, hubName: HUB_NAME, createInstall, installByKey, claimListings, root: ROOT });
+// Shop owners' accounts, their shops and standing (src/accounts.mjs, the /account pages; mail through src/mail.mjs), and
+// billing (src/billing.mjs: Stripe Checkout and Portal on the account page, the webhook at /v1/stripe, the keys the hub
+// signs for the program, the admin's "Lapse now").
+const accounts = registerAccounts({ app, member, admin, fail, newId, allow, bucket, clientIp, hubName: HUB_NAME, createInstall, installByKey, claimListings, root: ROOT });
+registerBilling({ app, acct: accounts.acct, admin, fail, allow, clientIp, hubName: HUB_NAME, hubUrl: accounts.hubUrl, requireAccount: accounts.requireAccount, ready: accounts.ready });
+app.route("/account/api", accounts.acct);
 
 // Admin first: the member routes below would otherwise answer /v1/admin/* with their key check.
 app.route("/v1/admin", admin);

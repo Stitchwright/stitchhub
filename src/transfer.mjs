@@ -16,9 +16,20 @@ export const TABLES = [
   // Shop owners' accounts (hashed passwords), their shops with standing, the links and codes out (hashed), and signed-in
   // browsers: a move keeps everyone signed in and every link they were sent working.
   { t: "account", table: "accounts", cols: ["id", "email", "password_hash", "verified_at", "terms_version", "terms_at", "stripe_customer_id", "disabled", "created_at", "last_sign_in_at"] },
-  { t: "shop", table: "shops", cols: ["id", "install_id", "shop_ref", "name", "kind", "program", "version", "account_id", "comp_until", "comp_note", "created_at", "last_seen_at"] },
+  { t: "shop", table: "shops", cols: ["id", "install_id", "shop_ref", "name", "kind", "program", "version", "account_id", "comp_until", "comp_note", "lapsed_at", "created_at", "last_seen_at"] },
   { t: "account_token", table: "account_tokens", cols: ["token_hash", "kind", "account_id", "shop_id", "expires_at", "used_at", "created_at"], key: "token_hash" },
   { t: "session", table: "sessions", cols: ["id_hash", "account_id", "created_at", "last_seen_at", "expires_at"], key: "id_hash" },
+  // Billing: each shop's subscription as Stripe last reported it, the webhook events handled (a replay on the new hub
+  // does nothing either), and every key the hub signed (the program keeps working on a moved hub; a kid can be retired).
+  {
+    t: "subscription",
+    table: "subscriptions",
+    cols: ["shop_id", "stripe_subscription_id", "stripe_customer_id", "plan", "status", "current_period_end", "cancel_at_period_end", "unpaid_since", "disputed_at", "mailed", "created_at", "updated_at"],
+    key: "shop_id",
+    json: ["mailed"],
+  },
+  { t: "stripe_event", table: "stripe_events", cols: ["id", "type", "received_at"] },
+  { t: "license_issue", table: "license_issues", cols: ["key_id", "shop_id", "kid", "plan", "modules", "first_day", "last_day", "grace_days", "key", "issued_at", "revoked_at"], key: "key_id" },
   {
     t: "link",
     table: "links",
