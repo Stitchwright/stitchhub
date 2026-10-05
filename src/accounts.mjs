@@ -203,7 +203,10 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
       message: st.message,
       plan: st.plan,
       source: st.source,
-      waivedBy: st.waivedBy ? { name: st.waivedBy.shopName } : null,
+      // The real-partnership rule (billing.mjs waiverRule): the partner, its standing, repairs lately and the grace.
+      waivedBy: st.waivedBy
+        ? { name: st.waivedBy.shopName, partnerStanding: st.waivedBy.partner?.standing ?? null, repairs: st.waivedBy.repairs ?? 0, lastRepair: st.waivedBy.lastRepair ?? null, graceEnd: st.waivedBy.grace?.end ?? null, graceReason: st.waivedBy.grace?.reason ?? null }
+        : null,
       subscription: st.subscription,
       lapsedAt: s.lapsed_at ?? null,
       // A subscription started now is first charged on this day, when the trial ends (null: at once).

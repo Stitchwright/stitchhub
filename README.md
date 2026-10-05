@@ -244,9 +244,26 @@ A shop's **standing**, worked out at every claim:
 | `trial` | 30 days from the shop's first claim | plan `t`, from the first claim through the trial's last day; `l: "shop"` |
 | `active` | Stripe says the subscription is paid (`active`), or on its trial (`trialing`: subscribed inside the hub's trial, the first charge on the trial's last day), or it is cancelled but paid through the period end | plan `m` or `y`, through the current period end (the trial's last day while `trialing`); `l` the subscription's plan |
 | `past_due` | the last payment failed; 14 days' grace past the period end while Stripe retries | the same key (it already carries 14 days of grace) |
-| `waived` | a **retail** shop (StitchShop, `kind: "retail"`) that is the retail side of an `ACTIVE` partner link whose repair shop is `trial`, `active`, `past_due` or `comped`. A repair shop is never waived, and a `both` shop counts as repair and pays | plan `w`, a 35-day key signed fresh each day the waiver holds, so an offline install works about a month past the end of its partnership and no longer |
+| `waived` | a **retail** shop (StitchShop, `kind: "retail"`) on the retail side of an `ACTIVE` partner link while **the real-partnership rule** holds (below). A repair shop is never waived, and a `both` shop counts as repair and pays. In its grace period the standing is still `waived`, `lastDay` is the grace's end and the message is the friendly notice | plan `w`, a 35-day key signed fresh each day the waiver holds (in a grace, ending with the grace), so an offline install works about a month past the end of its partnership and no longer |
 | `comped` | the admin's "Comp": free through a day, or for good (`2099-12-31`) | plan `c` through that day |
 | `lapsed` | the trial ended; the subscription ended or its grace ran out; a refund or chargeback (but see below: a full refund of the first payment inside the trial, a chargeback won); the admin's "Lapse now"; a waiver that ended more than 35 days ago | a key that is over: the trial's or period's own (grace from its last day); after a refund, a chargeback or "Lapse now", a one-day key with no grace, so the program is read-only from its next sync |
+
+**The real-partnership rule** (owner decided 5 Oct 2026; `billing.mjs` `waiverRule`). A partnered quilt shop's free plan (the waiver: the
+Shop plan, base only; add-ons are always paid, the hub signs the waiver's key for `base` alone) holds while BOTH (1) its repair partner is a
+paying subscriber (`active` by a subscription: paid, or trialing with a card; not a free trial without a card, a comp, past_due, lapsed,
+or itself waived) and (2) a repair passed between the two shops in the last calendar quarter or the current one. The hub measures (2)
+from what it already relays: the distinct `job.new` messages the quilt shop sent over the link plus finished pickup runs (`pickup.done`)
+in `partner_messages`, since the first day of last quarter (UTC); nothing new is reported by the programs. A link is exempt from (2) for
+its first 90 days, so a new partnership is waived at once. When (1) or (2) stops, `waiver_grace` (migration 022) records the first day the
+hub found the rule broken for that link and a 30-day grace runs: the shop is still `waived`, its key ends with the grace and the program
+shows "Your free StitchShop comes with your repair partnership with X. Subscribe to keep going after <date>; nothing is locked or
+lost." If the rule holds again inside the grace (a repair passes, the partner subscribes) the row is deleted and nothing changes. After
+the grace the shop falls back to its normal standing by the existing rules (its trial if unused, else lapsed: read-only, never deleted);
+if the rule holds again later it is waived again. The grace starts when the hub first notices, which is at the shop's or the admin page's
+next look, never later than the next daily claim. The admin page lists, for each waived shop, its partner, the partner's standing, the
+repairs counted, the last repair date and the grace end. A partner message isn't signed end to end yet (handoff item L134), so a quilt
+shop could fake `job.new` messages to keep its waiver; the hub's per-hour limits apply, and the review of partnered shops' support hours
+and add-on uptake (six months in) is the check.
 
 Rules of thumb: a key is re-signed only when the plan, the login plan or last day changes (a renewal, a switch, a new comp date), and the current
 key is sent at every claim so a program that lost it gets it back; a lapsed shop's key is never cut shorter than the one
@@ -406,7 +423,7 @@ a lost dispute changes nothing, a won one restores the period, a fresh key and t
 inquiry keeps full use and shows to the admin, two at once, the first escalating and lapsing the shop, the second
 closing with the flag cleared), two subscriptions for one shop (the new Checkout cancels the old one, whose late events
 are ignored), a
-partnered retail shop waived and the waiver ending, comps, "Lapse now", replayed and badly signed
+partnered retail shop waived and the waiver ending (the real-partnership rule: a paying partner and a repair in the quarter; grace and fallback for each break; add-ons never waived), comps, "Lapse now", replayed and badly signed
 webhooks, one account unable to subscribe another's shop, the export, and a hub with billing closed. The database must be
 fresh because the founding places are counted across it; the test makes its own each run. Every key the hub sends is verified with the program's own verify logic (a copy of
 `license.ts`'s `verifyLicense`) and checked to be for the right shop. The mock also runs on its own

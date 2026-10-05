@@ -259,6 +259,11 @@ const postWebhook = (ev, secret = WEBHOOK_SECRET) => {
   const body = JSON.stringify(ev);
   return fetch(`${HUB}/v1/stripe`, { method: "POST", headers: { "Content-Type": "application/json", "stripe-signature": signWebhook(body, secret) }, body });
 };
+/** The first day of the calendar quarter `back` quarters before the one holding ymd (as src/billing.mjs quarterStart). */
+const quarterStart = (ymd, back = 0) => {
+  const idx = Number(ymd.slice(0, 4)) * 4 + Math.floor((Number(ymd.slice(5, 7)) - 1) / 3) - back;
+  return `${Math.floor(idx / 4)}-${String((idx % 4) * 3 + 1).padStart(2, "0")}-01`;
+};
 const daysBetween = (a, b) => Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86400_000);
 
 try {
@@ -848,6 +853,14 @@ try {
   console.log("two subscriptions for one shop: ok");
 
   // ----- 10. Waived: a retail shop partnered with a repair shop in good standing; "both" pays; the waiver ends. -----
+  // The real-partnership rule (owner, 5 Oct 2026): the repair partner must be a paying subscriber (here: a subscription
+  // row, as the webhook writes it) and a repair must have passed in the last quarter or this one (a new link is fine for 90 days).
+  const subscribeRow = (shopId, status = "active", extra = "") =>
+    db.query(
+      `INSERT INTO subscriptions (shop_id, stripe_subscription_id, plan, tier, status, current_period_end) VALUES ($1, $2, 'm', 'shop', $3, now() + interval '20 days')
+       ON CONFLICT (shop_id) DO UPDATE SET status = excluded.status, current_period_end = excluded.current_period_end ${extra}`,
+      [shopId, `sub_row_${shopId}`, status],
+    );
   const keyR = await register("Billing Test Repair R");
   const keyS = await register("Billing Test Quilts S");
   const claimR = await claim(keyR, { shopRef: "shopR", shopName: "R Repair", kind: "repair", program: "StitchBench", version: "1.7.0", sole: true });
@@ -855,6 +868,7 @@ try {
   const claimS = await claim(keyS, { shopRef: "shopS", shopName: "S Quilts", kind: "retail", program: "StitchShop", version: "1.0.0", sole: true });
   const shopS = claimS.shop.id;
   const claimT = await claim(keyS, { shopRef: "shopT", shopName: "T Both", kind: "both", program: "StitchShop", version: "1.0.0" });
+  await subscribeRow(shopR);
   // S's and T's trials are long over, so only the partnership can keep them working.
   await db.query(`UPDATE shops SET created_at = now() - interval '40 days' WHERE id = ANY($1)`, [[shopS, claimT.shop.id]]);
   await db.query(`DELETE FROM license_issues WHERE shop_id = ANY($1)`, [[shopS, claimT.shop.id]]);
@@ -864,7 +878,7 @@ try {
   const red = await ok(await call("/v1/partners/redeem", { key: keyS, json: { code: inv.code, shopRef: "shopS", shopName: "S Quilts" } }));
   assert.equal(red.side, "retail");
   st = await standing(keyS, "shopS");
-  assert.deepEqual([st.standing, st.lastDay], ["waived", null]);
+  assert.deepEqual([st.standing, st.lastDay], ["waived", null], "a new partnership with a paying partner: waived at once, no grace");
   assert.match(st.message, /Free while you're partnered with R Repair/);
   k = checkKey(st.key, shopS, "waived key");
   assert.deepEqual([k.p, k.f, k.u, k.g, k.l, st.plan], ["w", today(), plusDays(34), 14, "shop", "shop"], "partnered: Shop, free");
@@ -874,8 +888,8 @@ try {
   const inv2 = await ok(await call("/v1/partners/invites", { key: keyR, json: { shopRef: "shopR", shopName: "R Repair", side: "repair" } }));
   await ok(await call("/v1/partners/redeem", { key: keyS, json: { code: inv2.code, shopRef: "shopT", shopName: "T Both" } }));
   assert.equal((await standing(keyS, "shopT")).standing, "lapsed", "a both shop is a repair shop: it pays");
-  // The repair shop is never waived by its partners, and a repair shop that lapses takes the waiver with it.
-  assert.equal((await standing(keyR, "shopR")).standing, "trial");
+  // The repair shop is never waived by its partners, and a repair shop that lapses puts the waiver in its grace.
+  assert.equal((await standing(keyR, "shopR")).standing, "active");
   const lapsedR = await ok(await adminCall(`/shops/${shopR}/lapse`, { lapsed: true }));
   assert.equal(lapsedR.shop.standing, "lapsed");
   st = await standing(keyR, "shopR");
@@ -885,14 +899,18 @@ try {
   k = checkKey(st.key, shopR, "R's cut key");
   assert.deepEqual([k.p, k.g], ["t", 0]);
   st = await standing(keyS, "shopS");
-  assert.deepEqual([st.standing, st.lastDay], ["trial", plusDays(34)], "notice: the waived key runs on, then it lapses");
-  assert.match(st.message, /free use through a partner repair shop has ended/);
-  assert.equal(checkKey(st.key, shopS, "S after R lapsed").id, waivedKeyId, "no new key: the one it holds runs out");
-  // Undo: R is back on its trial, S is waived again.
+  assert.deepEqual([st.standing, st.lastDay], ["waived", plusDays(30)], "the partner stopped paying: a 30-day grace, still waived");
+  assert.match(st.message, /Your free StitchShop comes with your repair partnership with R Repair\. Subscribe to keep going after \d{4}-\d\d-\d\d; nothing is locked or lost\./);
+  k = checkKey(st.key, shopS, "S key in grace");
+  assert.deepEqual([k.p, k.u], ["w", plusDays(30)], "the waived key never runs past the grace");
+  const graceKeyId = k.id;
+  assert.equal(checkKey((await standing(keyS, "shopS")).key, shopS, "grace again").id, graceKeyId, "one key for the whole grace");
+  // Undo: R is back to a paying subscriber, S is waived again and the grace is cleared.
   await ok(await adminCall(`/shops/${shopR}/lapse`, { lapsed: false }));
-  assert.equal((await standing(keyR, "shopR")).standing, "trial");
-  assert.equal(checkKey((await standing(keyR, "shopR")).key, shopR, "R back on trial").p, "t");
-  assert.equal((await standing(keyS, "shopS")).standing, "waived");
+  assert.equal((await standing(keyR, "shopR")).standing, "active");
+  st = await standing(keyS, "shopS");
+  assert.deepEqual([st.standing, st.lastDay], ["waived", null]);
+  assert.equal((await db.query(`SELECT count(*)::int AS n FROM waiver_grace WHERE link_id = $1`, [red.link.id])).rows[0].n, 0, "the grace is cleared the day the rule holds");
   // The partnership ends: notice again; when the last waived key is over, lapsed, with that key left to run out.
   await ok(await call(`/v1/partners/links/${red.link.id}/end`, { key: keyR, json: { shopRef: "shopR" } }));
   st = await standing(keyS, "shopS");
@@ -901,8 +919,118 @@ try {
   await db.query(`UPDATE license_issues SET last_day = current_date - 1, first_day = current_date - 35 WHERE shop_id = $1 AND plan = 'w'`, [shopS]);
   st = await standing(keyS, "shopS");
   assert.equal(st.standing, "lapsed");
-  assert.equal(checkKey(st.key, shopS, "S lapsed").id, waivedKeyId, "the key it holds already ends the right day: nothing new");
+  const lastW = (await db.query(`SELECT key_id FROM license_issues WHERE shop_id = $1 AND revoked_at IS NULL ORDER BY issued_at DESC LIMIT 1`, [shopS])).rows[0].key_id;
+  assert.equal(checkKey(st.key, shopS, "S lapsed").id, lastW, "the key it holds already ends the right day: nothing new");
   console.log("waived: ok");
+
+  // ----- 10b. The real-partnership rule: paid partner + a repair in the quarter; grace and fallback for each break. -----
+  const quarterBefore = (n) => `${new Date(Date.parse(`${quarterStart(today(), n)}T00:00:00Z`) - 86400_000).toISOString().slice(0, 10)}`; // the day before the quarter n back began
+  // One repair install and one quilt install hold every pair (registering is rate limited); each pair has its own shop refs.
+  const kr = await register("Rule Repair Install");
+  const ks = await register("Rule Quilts Install");
+  let pairN = 0;
+  const pair = async (name, { trialOver = true } = {}) => {
+    const n = ++pairN;
+    const cr = await claim(kr, { shopRef: `r${n}`, shopName: `${name} Repair`, kind: "repair", program: "StitchBench", version: "1.7.0" });
+    const cs = await claim(ks, { shopRef: `s${n}`, shopName: `${name} Quilts`, kind: "retail", program: "StitchShop", version: "1.0.0" });
+    if (trialOver) {
+      await db.query(`UPDATE shops SET created_at = now() - interval '40 days' WHERE id = $1`, [cs.shop.id]);
+      await db.query(`DELETE FROM license_issues WHERE shop_id = $1`, [cs.shop.id]);
+    }
+    const i = await ok(await call("/v1/partners/invites", { key: kr, json: { shopRef: `r${n}`, shopName: `${name} Repair`, side: "repair" } }));
+    const rd = await ok(await call("/v1/partners/redeem", { key: ks, json: { code: i.code, shopRef: `s${n}`, shopName: `${name} Quilts` } }));
+    // An old partnership, so its first-quarter ease is over and only the rule itself decides.
+    await db.query(`UPDATE partner_links SET created_at = now() - interval '200 days' WHERE id = $1`, [rd.link.id]);
+    return { ref: `s${n}`, shopR: cr.shop.id, shopS: cs.shop.id, link: rd.link.id };
+  };
+  let msgN = 0;
+  const repairPassed = (link, when = "now()") =>
+    db.query(`INSERT INTO partner_messages (id, link_id, from_side, type, data, bytes, created_at) VALUES ($1, $2, 'retail', 'job.new', $3, 10, ${when})`, [`m${RUN}${++msgN}`, link, { id: `job${RUN}${msgN}` }]);
+  const graceRow = async (link) => (await db.query(`SELECT since::text AS since, reason FROM waiver_grace WHERE link_id = $1`, [link])).rows[0];
+  // 31 days on: the grace row is that old and the waived keys signed in it (which end with it) are over.
+  const endGrace = async (link) => {
+    await db.query(`UPDATE waiver_grace SET since = current_date - 31 WHERE link_id = $1`, [link]);
+    await db.query(`UPDATE license_issues SET last_day = current_date - 1, first_day = current_date - 35 WHERE plan = 'w' AND shop_id IN (SELECT s.id FROM partner_links l JOIN shops s ON s.install_id = l.retail_install_id AND s.shop_ref = l.retail_shop_ref WHERE l.id = $1)`, [link]);
+  };
+
+  // (a) Partner paid (trialing with a card counts) and a repair this quarter: waived, no grace; the admin sees why.
+  const pa = await pair("PA");
+  await subscribeRow(pa.shopR, "trialing");
+  await repairPassed(pa.link);
+  st = await standing(ks, pa.ref);
+  assert.deepEqual([st.standing, st.lastDay], ["waived", null], "partner paid + a repair: waived");
+  assert.equal(await graceRow(pa.link), undefined);
+  const listed = (await ok(await adminCall("/accounts"))).shops.find((s) => s.id === pa.shopS);
+  assert.deepEqual([listed.waivedBy.name, listed.waivedBy.partnerStanding, listed.waivedBy.repairs, listed.waivedBy.lastRepair, listed.waivedBy.graceEnd], ["PA Repair", "active", 1, today(), null], "the admin sees the partner, its standing, the last repair, no grace");
+  // A repair only in the quarter before last doesn't count; one in the last quarter does.
+  const pq = await pair("PQ");
+  await subscribeRow(pq.shopR);
+  await repairPassed(pq.link, `'${quarterBefore(1)}'::date`); // the day before last quarter began: too old
+  assert.equal((await standing(ks, pq.ref)).lastDay, plusDays(30), "a repair older than last quarter: grace");
+  await repairPassed(pq.link, `'${quarterStart(today(), 1)}'::date`); // the first day of last quarter: counts
+  st = await standing(ks, pq.ref);
+  assert.deepEqual([st.standing, st.lastDay], ["waived", null], "a repair in the last quarter counts");
+  assert.equal(await graceRow(pq.link), undefined, "and the grace it started is cleared");
+
+  // (b) The partner lapses (a subscription that ended): grace with the notice, then the shop's normal standing: lapsed
+  // here (its trial was used up).
+  const pb = await pair("PB");
+  await subscribeRow(pb.shopR);
+  await repairPassed(pb.link);
+  assert.equal((await standing(ks, pb.ref)).standing, "waived");
+  await db.query(`UPDATE subscriptions SET status = 'canceled', current_period_end = now() - interval '2 days' WHERE shop_id = $1`, [pb.shopR]);
+  st = await standing(ks, pb.ref);
+  assert.deepEqual([st.standing, st.lastDay], ["waived", plusDays(30)], "partner lapsed: grace");
+  assert.equal((await graceRow(pb.link)).reason, "partner");
+  assert.match(st.message, new RegExp(`Subscribe to keep going after ${plusDays(30)}; nothing is locked or lost`));
+  assert.equal(checkKey(st.key, pb.shopS, "PB grace key").u, plusDays(30));
+  assert.equal((await adminCall("/accounts").then(ok)).shops.find((s) => s.id === pb.shopS).waivedBy.graceEnd, plusDays(30), "the admin sees the grace end");
+  await endGrace(pb.link); // 31 days on
+  st = await standing(ks, pb.ref);
+  assert.equal(st.standing, "lapsed", "after the grace: the normal lapse rules (read-only, nothing deleted)");
+  assert.equal((await db.query(`SELECT count(*)::int AS n FROM shops WHERE id = $1`, [pb.shopS])).rows[0].n, 1);
+  // The same fall back for a quilt shop whose trial is unused: back to its trial.
+  const pt = await pair("PT", { trialOver: false });
+  await repairPassed(pt.link); // partner only on its own trial: not a payer
+  st = await standing(ks, pt.ref);
+  assert.deepEqual([st.standing, st.lastDay], ["waived", plusDays(30)], "a partner on a free trial is not paid: grace from the first day");
+  assert.equal((await graceRow(pt.link)).reason, "partner");
+  await endGrace(pt.link);
+  st = await standing(ks, pt.ref);
+  assert.equal(st.standing, "trial", "an unused trial is what it falls back to");
+  assert.match(st.message, /Free trial through/);
+
+  // (c) No repair for a quarter: grace, then fallback; (d) activity resumes inside the grace: stays waived.
+  const pc = await pair("PC");
+  await subscribeRow(pc.shopR);
+  st = await standing(ks, pc.ref);
+  assert.deepEqual([st.standing, st.lastDay], ["waived", plusDays(30)], "no repair in the quarter: grace");
+  assert.equal((await graceRow(pc.link)).reason, "activity");
+  assert.match(st.message, /No repair has passed between you in the last quarter/);
+  await repairPassed(pc.link); // (d)
+  st = await standing(ks, pc.ref);
+  assert.deepEqual([st.standing, st.lastDay], ["waived", null], "a repair inside the grace keeps the waiver");
+  assert.equal(await graceRow(pc.link), undefined);
+  const pd = await pair("PD");
+  await subscribeRow(pd.shopR);
+  await standing(ks, pd.ref);
+  await endGrace(pd.link);
+  assert.equal((await standing(ks, pd.ref)).standing, "lapsed", "no repair and the grace over: lapsed, never deleted");
+  // After the fall back, the partner paying and a repair passing don't undo what the program already holds, but the next
+  // claim finds the rule holding again: waived once more (the waiver is a rule, not a one-way door).
+  await repairPassed(pd.link);
+  assert.equal((await standing(ks, pd.ref)).standing, "waived", "the rule holding again waives it again");
+
+  // (e) A brand new partnership is waived at once even with no repair yet and a partner that pays.
+  const pn = await pair("PN");
+  await subscribeRow(pn.shopR);
+  await db.query(`UPDATE partner_links SET created_at = now() - interval '10 days' WHERE id = $1`, [pn.link]);
+  assert.deepEqual([(await standing(ks, pn.ref)).standing, (await standing(ks, pn.ref)).lastDay], ["waived", null], "first quarter: no repair needed yet");
+
+  // (f) Add-ons are never waived: every key the hub signs for a waived shop is for "base" alone.
+  const mods = (await db.query(`SELECT DISTINCT modules FROM license_issues WHERE shop_id = ANY($1)`, [[pa.shopS, pb.shopS, pc.shopS, pd.shopS, pn.shopS, shopS]])).rows.map((r) => r.modules.join(","));
+  assert.deepEqual(mods, ["base"], "the waiver covers the base plan only; add-ons stay paid");
+  console.log("partnership rule: ok");
 
   // ----- 11. Comped: for good, then to a day, then taken away. -----
   await ok(await adminCall(`/shops/${shopS}/comp`, { until: "forever", note: "founding member" }));

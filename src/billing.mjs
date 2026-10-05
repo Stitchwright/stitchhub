@@ -30,7 +30,6 @@ export const TRIAL_DAYS = 30;
 export const GRACE_DAYS = 14;
 export const WAIVER_DAYS = 35; // a waived key runs today and 34 more days, and a fresh one is signed each day the waiver holds
 export const FOREVER = new Date(`${NO_END}T00:00:00Z`);
-const WAIVER_GOOD = new Set(["trial", "active", "past_due", "comped"]); // the repair side's standing that waives its retail partner
 const PLAN_WORDS = { m: "monthly", y: "yearly" };
 const REVOKED_FOR_DAYS = 90; // how long a revoked key is still named to the program (an install that was offline)
 // Stripe wants a Checkout subscription's trial_end at least 48 hours ahead; an hour more covers clocks and a slow Checkout.
@@ -317,22 +316,77 @@ function fromSubscription(shop, sub, t) {
   }
 }
 
-/** The repair shop whose ACTIVE partner link waives this retail shop, or null. "both" shops pay, so only kind retail. */
-async function waiverFor(shop) {
+// ----- the real-partnership rule -----
+// A partnered quilt shop's free plan holds while BOTH (1) its repair partner is a paying subscriber (standing "active"
+// by a subscription: paid, or trialing with a card; not a free trial, a comp, a lapse, or itself waived) and (2) a repair
+// passed between the two shops in the last calendar quarter or the current one (partner_messages the hub already relays:
+// a job.new from the quilt shop, or a finished pickup run). A link is also fine for 90 days from its start (a new
+// partnership is waived at once). When either stops: WAIVER_GRACE_DAYS of grace (table waiver_grace), still waived, with
+// a friendly notice; a rule that holds again inside the grace clears it. After the grace the shop falls back to its normal
+// standing (trial if unused, else the lapse rules: read-only, nothing deleted).
+export const WAIVER_GRACE_DAYS = 30;
+export const NEW_LINK_DAYS = 90;
+const ACTIVITY_SQL = `((m.type = 'job.new' AND m.from_side = 'retail') OR m.type = 'pickup.done')`;
+
+/** The first day of the calendar quarter `back` quarters before the one holding `ymd` (UTC). */
+export function quarterStart(ymd, back = 0) {
+  const y = Number(ymd.slice(0, 4));
+  const m = Number(ymd.slice(5, 7)) - 1;
+  const idx = y * 4 + Math.floor(m / 3) - back;
+  return `${Math.floor(idx / 4)}-${String((idx % 4) * 3 + 1).padStart(2, "0")}-01`;
+}
+
+/** Repairs between the two shops of a link in the last calendar quarter and this one: how many, and the latest ever. */
+export async function partnerActivity(linkId, t = today()) {
+  const r = await one(`SELECT count(DISTINCT coalesce(m.data->>'id', m.id))::int AS n FROM partner_messages m WHERE m.link_id = $1 AND m.created_at >= $2::date AND ${ACTIVITY_SQL}`, [linkId, quarterStart(t, 1)]);
+  const ever = await one(`SELECT max(m.created_at) AS last FROM partner_messages m WHERE m.link_id = $1 AND ${ACTIVITY_SQL}`, [linkId]);
+  return { count: r.n, last: ever?.last ? day(ever.last) : null };
+}
+
+/**
+ * How the rule stands for one retail shop's ACTIVE links, for the link that serves it best (one that holds, else the one
+ * with the latest grace end): { shopName, shopId, linkId, ok, grace: null | { since, end, reason }, partner: { standing,
+ * source }, repairs, lastRepair }, or null when no link holds or is in grace. Writes and clears waiver_grace as the rule
+ * breaks and mends. "both" shops pay, so only kind retail.
+ */
+export async function waiverRule(shop) {
   if (shop.kind !== "retail") return null;
+  const t = today();
   const rows = (
     await q(
-      `SELECT l.id AS link_id, rs.* FROM partner_links l JOIN shops rs ON rs.install_id = l.repair_install_id AND rs.shop_ref = l.repair_shop_ref
+      `SELECT l.id AS link_id, l.created_at AS link_created, rs.* FROM partner_links l JOIN shops rs ON rs.install_id = l.repair_install_id AND rs.shop_ref = l.repair_shop_ref
        WHERE l.status = 'ACTIVE' AND l.retail_install_id = $1 AND l.retail_shop_ref = $2 ORDER BY l.created_at`,
       [shop.install_id, shop.shop_ref],
     )
   ).rows;
+  let best = null;
   for (const rs of rows) {
     const st = await standingOf(rs, { noWaiver: true });
-    if (WAIVER_GOOD.has(st.standing)) return { shopName: rs.name, shopId: rs.id, linkId: rs.link_id };
+    const partnerOk = st.standing === "active" && st.source === "subscription";
+    const act = await partnerActivity(rs.link_id, t);
+    const isNew = day(rs.link_created) > addDays(t, -NEW_LINK_DAYS);
+    const activityOk = isNew || act.count > 0;
+    const info = { shopName: rs.name, shopId: rs.id, linkId: rs.link_id, partner: { standing: st.standing, source: st.source }, repairs: act.count, lastRepair: act.last };
+    if (partnerOk && activityOk) {
+      await q(`DELETE FROM waiver_grace WHERE link_id = $1`, [rs.link_id]);
+      return { ...info, ok: true, grace: null };
+    }
+    const reason = !partnerOk && !activityOk ? "both" : !partnerOk ? "partner" : "activity";
+    const g = await one(`INSERT INTO waiver_grace (link_id, since, reason) VALUES ($1, $2, $3) ON CONFLICT (link_id) DO UPDATE SET reason = excluded.reason RETURNING since::text AS since`, [rs.link_id, t, reason]);
+    const end = addDays(g.since, WAIVER_GRACE_DAYS);
+    if (end >= t && (!best || end > best.grace.end)) best = { ...info, ok: false, grace: { since: g.since, end, reason } };
   }
-  return null;
+  return best;
 }
+
+/** The friendly words for a waiver in grace (the program shows them as they are). */
+export function graceMessage(w) {
+  const why = { partner: `${w.shopName} isn't a paying StitchBench subscriber right now.`, activity: "No repair has passed between you in the last quarter.", both: `${w.shopName} isn't a paying StitchBench subscriber right now, and no repair has passed between you in the last quarter.` }[w.grace.reason];
+  return `Your free StitchShop comes with your repair partnership with ${w.shopName}. Subscribe to keep going after ${w.grace.end}; nothing is locked or lost. ${why}`;
+}
+
+/** The repair shop whose ACTIVE partner link waives this retail shop (or holds it in grace), or null. */
+const waiverFor = waiverRule;
 
 /**
  * Where a shop stands today. `want` is the key the program should hold for it (null: leave what it has), `source` says
@@ -371,7 +425,7 @@ export async function standingOf(shop, { noWaiver = false } = {}) {
   // 2. A subscription that is paid, or in its grace.
   if (subState && subState.standing !== "lapsed") {
     const waiver = noWaiver ? null : await waiverFor(shop);
-    const note = waiver ? ` You're partnered with ${waiver.shopName}, so this shop would be free without a subscription: you can cancel under Manage billing and stay free.` : "";
+    const note = waiver && !waiver.grace ? ` You're partnered with ${waiver.shopName}, so this shop would be free without a subscription: you can cancel under Manage billing and stay free.` : "";
     return fromSub({ ...subState, source: "subscription", message: subState.message + note, waivedBy: waiver });
   }
   // 3. The admin's comp.
@@ -389,12 +443,15 @@ export async function standingOf(shop, { noWaiver = false } = {}) {
   // 4. Free while partnered: a retail shop whose repair shop is in good standing.
   const waiver = noWaiver ? null : await waiverFor(shop);
   if (waiver) {
+    // In grace (the rule broke, see waiverRule): still waived, the key never runs past the grace, the last day is its end.
+    const last = waiver.grace ? earlier(addDays(t, WAIVER_DAYS - 1), waiver.grace.end) : addDays(t, WAIVER_DAYS - 1);
     return out({
       standing: "waived",
       source: "waiver",
       waivedBy: waiver,
-      message: `Free while you're partnered with ${waiver.shopName}.`,
-      want: billingOpen() ? { plan: "w", f: t, u: addDays(t, WAIVER_DAYS - 1), g: GRACE_DAYS, tier: "shop" } : null,
+      lastDay: waiver.grace ? waiver.grace.end : null,
+      message: waiver.grace ? graceMessage(waiver) : `Free while you're partnered with ${waiver.shopName}.`,
+      want: billingOpen() ? { plan: "w", f: t, u: last, g: GRACE_DAYS, tier: "shop" } : null,
     });
   }
   // 5. A subscription that ended (unless the trial is still running; a refund or chargeback lapses the shop even then,
