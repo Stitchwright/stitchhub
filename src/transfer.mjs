@@ -114,6 +114,16 @@ export const TABLES = [
     table: "partner_links",
     cols: ["id", "repair_install_id", "repair_shop_ref", "repair_name", "retail_install_id", "retail_shop_ref", "retail_name", "terms", "status", "created_at", "ended_at", "repair_key", "repair_proof", "retail_key", "retail_proof"],
   },
+  // The Assistant proxy's counts (src/assistant.mjs): tokens and cost per company and month, never any text.
+  { t: "assistant_shop", table: "assistant_shops", cols: ["install_id", "shop_ref", "tz", "comp_until", "comp_note", "updated_at"], key: "install_id || '|' || shop_ref", conflict: ["install_id", "shop_ref"] },
+  {
+    t: "assistant_usage",
+    table: "assistant_usage",
+    cols: ["install_id", "shop_ref", "month", "calls", "bonus", "free_reads", "input_tokens", "output_tokens", "cost_millicents", "updated_at"],
+    key: "install_id || '|' || shop_ref || '|' || month",
+    conflict: ["install_id", "shop_ref", "month"],
+  },
+  { t: "assistant_call", table: "assistant_calls", cols: ["id", "install_id", "shop_ref", "feature", "class", "model", "free", "input_tokens", "cache_tokens", "output_tokens", "cost_millicents", "ms", "error", "created_at"] },
   // The 30-day grace of the real-partnership rule (billing.mjs): after the links it hangs on.
   { t: "waiver_grace", table: "waiver_grace", cols: ["link_id", "since", "reason", "created_at"], key: "link_id" },
   {

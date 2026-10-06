@@ -338,6 +338,21 @@ replaces any older one. The program fetches it at its sync, checks everything ag
 …: Allow / Refuse" in its own window on the PC only; Allow shows the new password there, once. Its answer comes back
 (`done`) and the grant is spent. Turning the option off withdraws a request still waiting. Three requests an hour per shop.
 
+## The Assistant proxy
+
+StitchBench's Assistant add-on (drafts, likely causes, plate reading, manual questions) calls the model through the hub, so the
+Anthropic key exists in one place. Set `ANTHROPIC_API_KEY` on the hub's service only (never on a shop's PC, the installer or
+the hosted StitchBench / StitchShop services). `POST /v1/assistant` takes `{ shopRef, tz, feature, model: draft | suggest | read
+| manuals, system, messages, maxTokens, image?, key }` with the install key; `key` is the company's `assistant` license key text,
+checked against `ASSISTANT_PUBLIC_KEYS` (JSON, `{"k1":"<x from license:keygen>"}`) and the hub's own signing key. 300 calls a
+month per company (the month turns in `tz`), top-ups of 300 from `POST /v1/admin/assistant/topup { installId, shopRef }`, an
+admin comp from `POST /v1/admin/assistant/comp { installId, shopRef, until }`, and 20 free plate reads a month without the
+module. `GET /v1/admin/assistant/usage?month=2026-10` lists calls, tokens and cost per company. Variables:
+`ASSISTANT_MODEL_DRAFT` / `_SUGGEST` (claude-sonnet-5-5), `_READ` (claude-haiku-4-5-20251001), `_MANUALS` (claude-opus-5-5),
+`ASSISTANT_MONTHLY_CALLS`, `ASSISTANT_TOPUP_CALLS`, `ASSISTANT_FREE_READS`, `ASSISTANT_HOURLY_CALLS` (60 per company), and
+`ANTHROPIC_API_BASE` (the mock, for a test hub). The hub keeps counts, tokens and cost, never a prompt or an answer.
+`npm run test:assistant` (needs the dev Postgres on 127.0.0.1:5433; it makes and drops its own database).
+
 ## Terms of Service and Privacy Policy
 The hub serves both documents from markdown files in `legal/`: `terms-<version>.md` and `privacy-<version>.md`, one
 version string for the pair. A version is the day it comes into force, `YYYY-MM-DD` (`YYYY-MM-DD.2` for a second one
