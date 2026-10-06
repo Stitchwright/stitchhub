@@ -118,6 +118,8 @@ for (let i = 0; ; i++) {
   if (i > 300) throw new Error(`the hub didn't start:\n${hubLog}`);
   await new Promise((r) => setTimeout(r, 200));
 }
+// A scratch database that was used before keeps the join key the admin page saved then (it wins over JOIN_KEY), so set ours.
+await fetch(`${HUB}/v1/admin/join-key`, { method: "PUT", headers: { Authorization: `Bearer ${ADMIN}`, "Content-Type": "application/json" }, body: JSON.stringify({ joinKey: JOIN }) }).then((r) => { if (!r.ok) throw new Error(`could not set the join key: ${r.status}`); });
 
 // ----- helpers: an install's calls, and a browser's (a cookie jar each) -----
 async function call(p, { key, method = "GET", json, jar, headers = {} } = {}) {
