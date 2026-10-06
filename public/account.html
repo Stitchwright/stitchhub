@@ -91,7 +91,7 @@
     <section id="shops" hidden>
       <h2>Your shops</h2>
       <p class="muted" id="shopsEmpty" hidden>No shop is connected to this account yet. In the program, open Settings → Account, choose "I already have an account" and type the code it shows below.</p>
-      <div class="scroll"><table id="shopsTable"><thead><tr><th>Shop</th><th>Program</th><th>Standing</th><th>Billing</th><th>Last synced</th><th>Owner password</th></tr></thead><tbody id="shopRows"></tbody></table></div>
+      <div class="scroll"><table id="shopsTable"><thead><tr><th>Shop</th><th>Program</th><th>Standing</th><th>Billing</th><th>Last synced</th><th>Owner password</th><th>Off-site backup</th></tr></thead><tbody id="shopRows"></tbody></table></div>
       <p class="muted" id="billingNote"></p>
       <h2 style="margin-top:18px">Connect a shop</h2>
       <form id="connectForm" class="row">
@@ -156,7 +156,7 @@
     $("meEmail").textContent = me.account.email;
     $("shopsEmpty").hidden = me.shops.length > 0; $("shopsTable").hidden = !me.shops.length;
     showTermsPrompt(me.terms);
-    $("shopRows").replaceChildren(...me.shops.map((s) => { const tr = document.createElement("tr"); tr.append(td(s.name), td([s.program, s.version].filter(Boolean).join(" ") || s.installName), td(s.message), billingCell(s, me.billing, me.terms), td(when(s.lastSeenAt)), resetCell(s, me)); return tr; }));
+    $("shopRows").replaceChildren(...me.shops.map((s) => { const tr = document.createElement("tr"); tr.append(td(s.name), td([s.program, s.version].filter(Boolean).join(" ") || s.installName), td(s.message), billingCell(s, me.billing, me.terms), td(when(s.lastSeenAt)), resetCell(s, me), restoreCell(s)); return tr; }));
     // Start a hosted shop: for a verified account, when this hub offers one.
     const offered = Object.entries(me.hosted || {}).filter(([, on]) => on).map(([name]) => name);
     $("hosted").hidden = !me.account.verified || !offered.length;
@@ -277,6 +277,26 @@
       catch (err) { say(err.message, true); b.disabled = false; }
     };
     c.append(b, note);
+    return c;
+  }
+
+  // Off-site backup: a restore code (24 hours) for restoring this shop on another computer from its backups. The program's
+  // own recovery key, from the printed sheet, is still needed to open them.
+  function restoreCell(s) {
+    const c = document.createElement("td");
+    const b = Object.assign(document.createElement("button"), { className: "plain", textContent: "Restore this shop on another computer" });
+    b.style.marginTop = "0";
+    const out = Object.assign(document.createElement("div"), { className: "muted" });
+    b.onclick = async () => {
+      b.disabled = true;
+      try {
+        const r = await api(`/shops/${s.id}/restore-code`, {});
+        out.textContent = `Restore code: ${r.code} (good until ${when(r.expiresAt)}, one company). On the new computer, restore from off-site backup with this code and the recovery key from the printed sheet. Making a new code stops the old one.`;
+        say("Restore code made. It is shown here only now.");
+      } catch (err) { say(err.message, true); }
+      b.disabled = false;
+    };
+    c.append(b, out);
     return c;
   }
 
