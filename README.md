@@ -402,6 +402,11 @@ link to another site refused, a service not on this hub, one that doesn't answer
 program allows it, the grant's signature and fields, fetched and answered by that install only, replaced, answered once,
 withdrawn with the opt-in, the limit), and the export.
 
+`DATABASE_URL=<a fresh scratch database> npm run test:signing` starts a hub of its own and walks two companies with Ed25519 keys through
+a signed invite and redeem, signed messages the hub verifies and marks, the refusals (changed payload, type or id, a wrong key,
+a bad proof, unsigned once a key is on file, one side signing for the other), a partnership made without keys and the
+export. test/billing.mjs section 10b (g) covers the waiver rule on a keyed partnership.
+
 `DATABASE_URL=<a fresh scratch database> npm run test:terms` starts a hub with a legal folder of its own and the Stripe
 mock and checks the pages (the version in force, older and newer versions, 404s, the DRAFT banner, the markdown and its
 escaping), `GET /v1/terms/current`, acceptance from the program, at sign-up, on `/account` and at Checkout (refused

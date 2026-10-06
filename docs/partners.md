@@ -4,9 +4,9 @@ A partner link connects one **repair shop** with one **sewing or quilt shop** (S
 for it, buys parts and notions from it, and sells its stock on consignment. The hub relays typed JSON messages
 between the two shops and stores nothing else about them. Only the two shops on a link receive its messages.
 
-The hub does not act on the messages, but it does not hide or sign them either: they are stored as plain JSON for a
-year (and are part of an export), so whoever runs the hub can read them, and could send one as either shop. The
-apps take the hub's word for who a message is from. Run or join a hub you trust with this.
+The hub does not act on the messages and does not hide them: they are stored as plain JSON for a year (and are part
+of an export), so whoever runs the hub can read them. Run or join a hub you trust with that. They are signed, though
+(next section): a program checks every message against the key it pinned for its partner, so the hub cannot make one up.
 
 An install can host several shops (companies), so every call names the shop inside the install: `shopRef` (the
 shop's id in that install). Both shops of a link can even be in the same install.
@@ -24,6 +24,44 @@ shop's id in that install). Both shops of a link can even be in the same install
 3. The hub sends both sides a `link.created` message carrying the link.
 
 Linking the same two shops again reuses (and reopens) their link.
+
+## Signing
+
+Each company's program makes an Ed25519 key pair (the private key never leaves it). Keys travel as base64 of the
+SPKI DER; `fingerprint(key)` is the first 10 bytes of the key's sha256 as five groups of four hex digits.
+
+- Invite: `POST /v1/partners/invites` also takes `publicKey` and `proof: { issuedAt, sig }`, where `sig` signs
+  `SBINV1 
+ fingerprint 
+ side 
+ shopRef 
+ sha256(canonical terms) 
+ issuedAt`. The answer carries `fingerprint`.
+- Redeem and join also take `publicKey` and `proof`, signing `SBRDM1 
+ sha256(code without dashes) 
+ side 
+ shopRef 
+ issuedAt`.
+  The link the hub sends (`link.created`, the redeem answer) has `repair` and `retail` each with `publicKey` and `proof`
+  (null for a side whose program sends none). A new code for the same pair replaces both keys: that is how a company
+  that lost its key is trusted again.
+- Messages: `POST .../messages` also takes `sig: { v: 1, pub, seq, ts, sig }`, `sig` signing
+  `SBPM1 
+ link id 
+ sender's side 
+ type 
+ message id 
+ seq 
+ ts 
+ sha256(canonical data)` (canonical JSON:
+  keys sorted). `seq` is a millisecond clock that only goes up per link and sender. The hub checks the signature
+  against the key on file for that side (a side with none takes the key of its first valid signature), stores `sig`
+  and marks the message `verified`. A bad signature or a key other than the one on file is a 400; an unsigned message
+  from a side that has a key on file is a 400 too. Unsigned messages from older programs are still stored (unverified).
+  The feed gives each message's `sig` so the receiving program verifies it itself.
+- The real-partnership rule (`waiverRule`, billing.mjs) counts plain `job.new` / `pickup.done` messages only while a
+  side of the link has no key. With a key on both sides it counts only what the repair shop signed and the hub
+  verified: its `job.update` and `pickup.done`.
 
 ## Messages
 
