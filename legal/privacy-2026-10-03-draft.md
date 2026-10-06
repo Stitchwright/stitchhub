@@ -146,8 +146,9 @@ don't send you marketing. [OWNER: confirm. If you ever send product news, it mus
 
 ### 5.7 The Assistant (optional)
 
-[OWNER: the Assistant is designed but not built. Publish this section when it ships, and check it against what
-shipped.]
+[OWNER: the Assistant is built on branch `assistant` except "Ask the manuals" and the parts helpers (rows marked "later"
+below, which can stay or go until they ship). Publish this section when the Assistant ships, and check it against what
+shipped. The hub keeps counts, tokens and cost only (migration 040); the "first time on each ticket" preview is built.]
 
 The Assistant uses AI models made by **Anthropic**. It runs **only when someone presses a button**: never on a page
 load, a timer or in the background.

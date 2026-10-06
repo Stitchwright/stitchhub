@@ -225,6 +225,8 @@
     ];
     const f = billing.founding;
     if (f?.on) lines.push(f.losesOn ? `This account is a founding shop: subscribe again by ${f.losesOn} to keep the founding prices (they stay while a subscription runs without a gap of more than 60 days).` : "This account is a founding shop: these are the founding prices, locked while a subscription runs without a gap of more than 60 days.");
+    const ap = billing.assistantPrices;
+    if (ap) lines.push(`The Assistant (drafts, likely causes, plate reads, parts and manuals help; 300 calls a month) is a separate add-on for any shop: ${[ap.monthly, ap.yearly].filter(Boolean).join(" or ")}${ap.topup ? `; ${ap.topUpCalls} more calls this month for ${ap.topup}` : ""}.`);
     lines.push("Cards, cancelling and invoices are handled on Stripe's pages; the hub never sees your card.");
     return lines.join(" ");
   }
@@ -239,7 +241,7 @@
       const b = document.createElement("button"); b.className = "plain"; b.style.marginTop = "0"; b.textContent = label;
       b.onclick = async () => {
         let send = body;
-        if (path === "/checkout") {
+        if (path === "/checkout" || path === "/assistant/checkout") {
           if (terms?.needsAccept && !$("tpTick").checked) { say("Tick the box at the top to accept the updated terms first.", true); $("tpTick").focus(); return; }
           send = { ...body, ...(terms?.current ? { termsVersion: terms.current } : {}), ...(terms?.needsAccept ? { acceptTerms: true } : {}) };
         }
@@ -286,6 +288,22 @@
       const row = Object.assign(document.createElement("div"), { className: "row" }); row.style.marginBottom = "6px";
       row.append(Object.assign(document.createElement("span"), { textContent: `On ${TIER[sub.plan] || "Shop"}${sub.interval ? `, ${sub.interval}` : ""}${sub.founding ? ", founding price" : ""}.` }), b);
       c.append(row);
+    }
+    // The Assistant (its own subscription, $15 a month or $150 a year, 300 calls; 300 more for $10).
+    const ap = billing.assistantPrices;
+    const as = s.assistant;
+    if (ap && as) {
+      const box = Object.assign(document.createElement("div"), { className: "row" }); box.style.marginTop = "8px";
+      if (as.canAdd) {
+        box.append(Object.assign(document.createElement("span"), { textContent: "Add the Assistant:" }));
+        if (ap.monthly) box.append(go("/assistant/checkout", { interval: "monthly" }, `Add the Assistant (${ap.monthly})`));
+        if (ap.yearly) box.append(go("/assistant/checkout", { interval: "yearly" }, `${ap.yearly}, two months free`));
+      } else if (as.status !== "none") {
+        const words = as.status === "ending" ? `Assistant on, cancelled: paid through ${as.paidThrough}.` : as.status === "past_due" ? "Assistant: the last payment didn't go through. Update your card under Manage billing." : as.status === "active" ? `Assistant on, paid through ${as.paidThrough}.` : "Assistant ended.";
+        box.append(Object.assign(document.createElement("span"), { textContent: words }));
+      }
+      if (as.canTopUp && ap.topup) box.append(go("/assistant/topup", {}, `Buy ${ap.topUpCalls} more (${ap.topup})`));
+      if (box.childNodes.length) c.append(box);
     }
     if (s.canManage) c.append(go("/portal", {}, "Manage billing"));
     if (!c.childNodes.length) { c.textContent = s.standing === "comped" ? "free" : ""; c.className = "muted"; }

@@ -25,6 +25,7 @@ import { sendMail } from "./mail.mjs";
 import * as stripe from "./stripe.mjs";
 import { signer as hubSigner, signKey, NO_END } from "./license.mjs";
 import { checkShown, currentVersion, needsAccept, recordAcceptance } from "./terms.mjs";
+import { assistantKeysFor, assistantOffer, assistantPriceFor, assistantStanding, creditTopupSession, isAssistantSub, syncAssistantSub, RUNNING as ASSISTANT_RUNNING } from "./assistant-billing.mjs";
 
 export const TRIAL_DAYS = 30;
 export const GRACE_DAYS = 14;
@@ -502,7 +503,7 @@ export async function keyFor(shop, st) {
   const { signer } = hubSigner();
   if (!signer) return { key: null, revokeKeyIds };
   const stored = await one(
-    `SELECT key_id, plan, tier, founding, first_day::text AS first_day, last_day::text AS last_day, grace_days, key FROM license_issues WHERE shop_id = $1 AND revoked_at IS NULL ORDER BY issued_at DESC LIMIT 1`,
+    `SELECT key_id, plan, tier, founding, first_day::text AS first_day, last_day::text AS last_day, grace_days, key FROM license_issues WHERE shop_id = $1 AND revoked_at IS NULL AND 'base' = ANY(modules) ORDER BY issued_at DESC LIMIT 1`,
     [shop.id],
   );
   let want = st.want ? { ...st.want } : null;
@@ -550,13 +551,15 @@ export async function keyFor(shop, st) {
 export async function claimAnswer(shop) {
   const st = await standingOf(shop);
   const { key, revokeKeyIds } = await keyFor(shop, st);
-  return { standing: st.standing, lastDay: st.lastDay, message: st.message, plan: st.plan, interval: st.interval, founding: st.founding, key, revokeKeyIds };
+  // The Assistant's keys (module "assistant", its own subscription: src/assistant-billing.mjs), apart from the program's.
+  const { keys: moduleKeys } = await assistantKeysFor(shop);
+  return { standing: st.standing, lastDay: st.lastDay, message: st.message, plan: st.plan, interval: st.interval, founding: st.founding, key, moduleKeys, revokeKeyIds };
 }
 
 /** Every live key of a shop is revoked (the program is told to drop them at its next sync). */
 export async function revokeLiveKeys(client, shopId, plans = null) {
   await client.query(
-    `UPDATE license_issues SET revoked_at = now() WHERE shop_id = $1 AND revoked_at IS NULL AND last_day + grace_days >= current_date AND ($2::text[] IS NULL OR plan = ANY($2))`,
+    `UPDATE license_issues SET revoked_at = now() WHERE shop_id = $1 AND revoked_at IS NULL AND 'base' = ANY(modules) AND last_day + grace_days >= current_date AND ($2::text[] IS NULL OR plan = ANY($2))`,
     [shopId, plans],
   );
 }
@@ -691,6 +694,74 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
     return c.json({ ok: true, pending: false, plan: tier, ...words });
   });
 
+  // Add the Assistant ($15 a month, $150 a year): its own subscription Checkout for one shop (src/assistant-billing.mjs says why it
+  // isn't an item on the base plan's). Needs the Assistant prices set; the terms are accepted as at any Checkout.
+  acct.post("/shops/:id/assistant/checkout", async (c) => {
+    ready();
+    open();
+    const a = await requireAccount(c);
+    if (!allow(`checkout:${a.id}`, 20)) throw fail(429, "Too many tries. Wait an hour.");
+    const body = await c.req.json().catch(() => ({}));
+    const interval = intervalOf(body.interval);
+    if (!interval) throw fail(400, "Pick monthly or yearly.");
+    if (!assistantOffer().subscribe) throw fail(503, "The Assistant isn't for sale on this hub yet. Ask the hub admin.");
+    const shop = await ownShop(c, a);
+    const st = await assistantStanding(shop.id);
+    if (st.status === "active" || st.status === "past_due" || (st.status === "ending" && ASSISTANT_RUNNING.has(st.sub?.status))) throw fail(409, "This shop already has the Assistant. Use Manage billing to change it.");
+    const price = assistantPriceFor(interval === "y" ? "yearly" : "monthly");
+    const terms = currentVersion();
+    checkShown(body, fail);
+    if (needsAccept(a.terms_version) && body.acceptTerms !== true) throw fail(400, "Tick the box to accept the updated terms and privacy policy first.");
+    let session;
+    try {
+      const customer = await customerFor(a);
+      const metadata = { hub_shop_id: shop.id, hub_account_id: a.id, hub_product: "assistant", ...(terms ? { hub_terms_version: terms } : {}) };
+      session = await stripe.createSubscriptionCheckout({
+        customer,
+        price,
+        successUrl: `${hubUrl}/account/shops?done=1`,
+        cancelUrl: `${hubUrl}/account/shops?cancelled=1`,
+        reference: shop.id,
+        trialEnd: null,
+        metadata,
+        idempotencyKey: `assistant:${shop.id}:${crypto.randomBytes(8).toString("hex")}`,
+      });
+    } catch (e) {
+      throw stripeFail(e);
+    }
+    await tx((client) => recordAcceptance(client, { accountId: a.id, version: terms, via: "checkout", shopId: shop.id, checkoutId: session.id ?? null }));
+    return c.json({ ok: true, url: session.url, sessionId: session.id });
+  });
+
+  // Buy 300 more calls ($10, one time) for this month: a payment Checkout, credited by the webhook to the company's month.
+  // Only for a shop that has the Assistant (a top-up adds to a subscription's allowance; without one it would buy nothing).
+  acct.post("/shops/:id/assistant/topup", async (c) => {
+    ready();
+    open();
+    const a = await requireAccount(c);
+    if (!allow(`topup:${a.id}`, 20)) throw fail(429, "Too many tries. Wait an hour.");
+    if (!assistantOffer().topup) throw fail(503, "Extra calls aren't for sale on this hub yet. Ask the hub admin.");
+    const shop = await ownShop(c, a);
+    const st = await assistantStanding(shop.id);
+    if (st.status !== "active" && st.status !== "ending" && st.status !== "past_due") throw fail(409, "Add the Assistant to this shop first: more calls add to its monthly allowance.");
+    let session;
+    try {
+      const customer = await customerFor(a);
+      session = await stripe.createPaymentCheckout({
+        customer,
+        price: assistantPriceFor("topup"),
+        successUrl: `${hubUrl}/account/shops?done=1`,
+        cancelUrl: `${hubUrl}/account/shops?cancelled=1`,
+        reference: shop.id,
+        metadata: { hub_shop_id: shop.id, hub_account_id: a.id, hub_product: "assistant_topup" },
+        idempotencyKey: `topup:${shop.id}:${crypto.randomBytes(8).toString("hex")}`,
+      });
+    } catch (e) {
+      throw stripeFail(e);
+    }
+    return c.json({ ok: true, url: session.url, sessionId: session.id });
+  });
+
   // Manage billing: the Customer Portal (change the card or plan, cancel, invoices). Per account; reached from a shop row.
   acct.post("/shops/:id/portal", async (c) => {
     ready();
@@ -735,6 +806,11 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
    */
   async function syncSubscription(client, subId) {
     const s = await stripe.retrieveSubscription(subId);
+    // The Assistant's own subscription is kept apart from the shop's base plan (src/assistant-billing.mjs).
+    if (isAssistantSub(s)) {
+      await syncAssistantSub(client, s);
+      return null;
+    }
     const shopId = s.metadata?.hub_shop_id;
     if (!shopId) return console.warn(`stripe: subscription ${subId} names no hub shop; ignored`);
     const shop = (await client.query(`SELECT s.*, a.stripe_customer_id AS account_customer FROM shops s LEFT JOIN accounts a ON a.id = s.account_id WHERE s.id = $1`, [shopId])).rows[0];
@@ -822,7 +898,7 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
     if (!customer) return;
     const list = await stripe.listSubscriptions(customer);
     for (const o of list.data ?? []) {
-      if (o.id === sub.id || o.metadata?.hub_shop_id !== shopId || ENDED.has(o.status) || !((o.created ?? 0) < (sub.created ?? 0))) continue;
+      if (o.id === sub.id || o.metadata?.hub_shop_id !== shopId || o.metadata?.hub_product === "assistant" || ENDED.has(o.status) || !((o.created ?? 0) < (sub.created ?? 0))) continue;
       await stripe.cancelSubscription(o.id);
       console.warn(`billing: shop ${shopId} subscribed again (${sub.id}), so its older subscription ${o.id} (${o.status}) is cancelled in Stripe; if both were paid for the same days, refund the older one by hand`);
     }
@@ -1010,6 +1086,10 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
     switch (ev.type) {
       case "checkout.session.completed": {
         const s = await stripe.retrieveSession(o.id);
+        if (s.mode === "payment") {
+          await creditTopupSession(client, s);
+          return;
+        }
         const subId = typeof s.subscription === "string" ? s.subscription : s.subscription?.id;
         if (s.mode !== "subscription" || !subId) return;
         const r = await syncSubscription(client, subId);
