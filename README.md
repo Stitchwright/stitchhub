@@ -393,8 +393,26 @@ lawyer's review, a takedown and a restore run on a test hub). With it unset, `PO
   names too, not in picture or font data, where the bytes turn up by chance). A file the reader can't make sense of is
   flagged for review. **Markings**: the first three pages and the last are read for scan_markings.py's words; a hit is a
   flag in the review queue with the page and the words around it, never a refusal. The reader follows the page tree
-  and reads plain text with standard encodings; a scan or a font with its own encoding gives "not checked for markings:
-  scan or unreadable text", for the owner to look at the cover himself (no OCR yet).
+  and reads plain text with standard encodings; a scan or a font with its own encoding has no usable text layer. **OCR** (`src/ocr.mjs`; `REPO_OCR=off` turns it off, and
+  then such a file gives "not checked for markings: scan or unreadable text", for the owner to look at the cover himself):
+  the pages among the first three and the last that have no text are drawn to an image and read after the upload is
+  filed, off the request path (one job at a time; the review queue says "checking for markings" until done, then the
+  same flag as for text, with "(read by OCR)", or "not checked: OCR failed / timed out" for the owner to look at the cover). A hub restart
+  puts files still "checking" back in the queue. Pure JS/WASM, nothing installed on the machine: `pdfjs-dist` (draws the
+  page; handles CCITT, JBIG2, JPEG and Flate scans) on `@napi-rs/canvas` (prebuilt binary, Linux x64 glibc and musl
+  (the Dockerfile's alpine), Windows, macOS; no compiler), then `tesseract.js` (WASM, in a worker thread) with the English
+  `best_int` traineddata from `@tesseract.js-data/eng`, read from node_modules (nothing fetched from a CDN, no cache
+  written). Limits: `REPO_OCR_PAGE_MS` 20000 a page (the engine is restarted after a timeout), `REPO_OCR_MAX_MB` 60 (a
+  bigger file isn't read), `REPO_OCR_MAX_RSS_MB` 1200 (a page waits, then is skipped, while the process is that big);
+  pages are drawn at about 200 dpi, at most 3200 px on the long side; the engine is stopped after 60 s idle.
+  **Cost**: node_modules grows by about 130 MB on disk (tesseract.js-core 44 MB, the platform canvas binary about 37 MB,
+  pdfjs-dist 35 MB, the English data 14 MB incl. an unused second copy, tesseract.js 2 MB) and so does the Railway image
+  (the first build after this is slower). Memory: nothing is loaded until the first scan arrives; reading then
+  takes roughly 200 to 350 MB resident while a page is worked on (measured about 240 MB for a 3-page scan on
+  Windows), freed in part when the engine stops 60 s later; with the 1 GB-class Railway plan this fits beside the hub's
+  own use, and the RSS guard above keeps a busy hub from taking it further. Time: about 3 seconds a page here
+  (1.4 s drawing, 1.5 to 2 s reading) after a cold start of a few seconds (up to 12 s on a cold disk), so a 4-page check takes about
+  15 seconds. Test: `npm run test:ocr` (about 2 minutes).
 - **Review**: the admin page's "Manual repository" section lists what waits (offer as made, flags, markings, the people
   who offered the same bytes, published files for the same brand, model and type); preview opens the file for five
   minutes; **Approve** (with corrected metadata) puts it in the feed and on the Manuals page; **Reject** takes a reason

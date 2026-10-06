@@ -14,7 +14,8 @@
 // service personnel only, not to be given to end users). The page tree is followed from /Root, each page's content
 // streams inflated (Flate, or none), and the strings of the text operators collected. That reads plain text with a
 // standard encoding, which is how covers and stamps are mostly set; text in a font with its own encoding (Identity-H
-// subsets) comes out as noise and a scan has none, so a page with under 20 letters counts as "not read". If none of the
+// subsets) comes out as noise and a scan has none, so a page with under 20 letters counts as "not read" and, with { ocr: true }, is listed in
+// markings.ocrPages for src/ocr.mjs (status "checking" until that has run). If none of the
 // pages read, the answer is "not checked: scan or unreadable text" for the owner to look at the cover himself. A hit is
 // a flag with the page and the words around it, never a refusal (lawyer question L1).
 import zlib from "node:zlib";
@@ -246,12 +247,13 @@ function textOfContent(bytes) {
 const letters = (t) => (t.match(/[A-Za-z]/g) ?? []).length;
 
 /** The markings part: which pages were read and what they say. */
-function markingsOf(objs, order) {
+function markingsOf(objs, order, ocr) {
   if (!order || !order.pages.length) return { status: "not-checked", reason: "not checked for markings: the file's pages couldn't be found", hits: [], pagesRead: [] };
   const n = order.pages.length;
   const want = [...new Set([0, 1, 2, n - 1].filter((i) => i >= 0 && i < n))];
   const hits = [];
   const read = [];
+  const ocrPages = [];
   for (const i of want) {
     const page = objs.get(order.pages[i]);
     const c = /\/Contents\s*(\[[^\]]*\]|\d+\s+\d+\s+R\b)/.exec(page?.dict ?? "")?.[1];
@@ -270,15 +272,20 @@ function markingsOf(objs, order) {
     } catch {
       continue;
     }
-    if (letters(text) < 20) continue;
+    if (letters(text) < 20) {
+      ocrPages.push(i + 1);
+      continue;
+    }
     read.push(i + 1);
     hits.push(...markingHits(text, i + 1));
   }
+  // Pages with no text layer (a scan): with OCR on they are read afterwards (src/ocr.mjs), and the answer waits.
+  if (ocr && ocrPages.length) return { status: "checking", reason: "checking for markings (reading the scanned pages)", hits, pagesRead: read, ocrPages };
   if (!read.length) return { status: "not-checked", reason: "not checked for markings: scan or unreadable text (look at the cover yourself)", hits: [], pagesRead: [] };
   return { status: hits.length ? "flagged" : "clean", reason: null, hits, pagesRead: read };
 }
 
-export function inspectPdf(buf) {
+export function inspectPdf(buf, { ocr = false } = {}) {
   if (buf.length < 8 || buf.subarray(0, 5).toString("latin1") !== "%PDF-") return { refused: "That file isn't a PDF (it doesn't start with %PDF-)." };
   const raw = buf.toString("latin1");
   const flags = [];
@@ -303,7 +310,7 @@ export function inspectPdf(buf) {
   if (!order) flags.push({ code: "no-page-tree", text: "The page tree couldn't be followed: the page count and the markings aren't known." });
   let markings;
   try {
-    markings = markingsOf(objs, order);
+    markings = markingsOf(objs, order, ocr);
   } catch (e) {
     markings = { status: "not-checked", reason: `not checked for markings: ${e.message}`, hits: [], pagesRead: [] };
   }
