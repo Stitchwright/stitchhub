@@ -119,6 +119,11 @@ function catalogFromEnv() {
     const monthly = m[2] ? amounts[`${m[1]}${m[3] ?? ""}`] : 2500;
     for (const id of String(value).split(",").map((x) => x.trim()).filter(Boolean)) out.push({ id, interval: yearly ? "year" : "month", amount: yearly ? monthly * 10 : monthly });
   }
+  // The Assistant's prices (src/assistant-billing.mjs): $15 a month, $150 a year, $10 one time.
+  const assistant = { MONTHLY: ["month", 1500], YEARLY: ["year", 15000], TOPUP: ["once", 1000] };
+  for (const [kind, [interval, amount]] of Object.entries(assistant)) {
+    for (const id of String(process.env[`STRIPE_PRICE_ASSISTANT_${kind}`] ?? "").split(",").map((x) => x.trim()).filter(Boolean)) out.push({ id, interval, amount });
+  }
   return out;
 }
 
@@ -146,7 +151,7 @@ export async function startStripeMock(o = {}) {
   // A price id the catalog doesn't have (put on a subscription by the test hook) is a monthly price of no amount.
   const priceOf = (id) => {
     const p = catalog.get(id);
-    return { id, object: "price", active: true, recurring: { interval: p?.interval ?? "month" }, unit_amount: p?.amount ?? 0, currency: "usd" };
+    return { id, object: "price", active: true, recurring: p?.interval === "once" ? null : { interval: p?.interval ?? "month" }, unit_amount: p?.amount ?? 0, currency: "usd" };
   };
   let port = o.port ?? Number(process.env.STRIPE_MOCK_PORT ?? 3403);
 
@@ -222,6 +227,13 @@ export async function startStripeMock(o = {}) {
     if (!s) return null;
     if (s.status === "complete") return { session: s, delivered: [] };
     const price = priceOf(s.line_items.data[0].price.id);
+    // A one-time payment (an Assistant top-up): paid at once, no subscription, one event.
+    if (s.mode === "payment") {
+      s.status = "complete";
+      s.payment_status = "paid";
+      s.payment_intent = `pi_${hex(12)}`;
+      return { session: s, delivered: [await emit("checkout.session.completed", s)] };
+    }
     const start = now();
     // subscription_data[trial_end]: trialing until then, the period is the trial, the first invoice is $0.
     const trialEnd = s.subscription_data?.trial_end ? Number(s.subscription_data.trial_end) : null;
@@ -271,7 +283,7 @@ export async function startStripeMock(o = {}) {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
         return res.end(
           `<!doctype html><html><head><title>Stripe mock checkout</title></head><body style="font-family:sans-serif;max-width:480px;margin:40px auto">` +
-            `<h1>Stripe mock checkout</h1><p>${escapeHtml(customers.get(s.customer)?.email ?? "")}</p><p>Subscription: $${(price.unit_amount / 100).toFixed(2)} a ${price.recurring.interval}</p>` +
+            `<h1>Stripe mock checkout</h1><p>${escapeHtml(customers.get(s.customer)?.email ?? "")}</p><p>${price.recurring ? "Subscription" : "Payment"}: ${(price.unit_amount / 100).toFixed(2)}${price.recurring ? ` a ${price.recurring.interval}` : ""}</p>` +
             `<form method="post"><button type="submit">Subscribe</button></form><p><a href="${escapeHtml(s.cancel_url)}">Cancel</a></p></body></html>`,
         );
       }
@@ -399,7 +411,7 @@ export async function startStripeMock(o = {}) {
       if (m && req.method === "GET") return customers.has(m[1]) ? json(res, 200, customers.get(m[1])) : stripeError(res, 404, `No such customer: '${m[1]}'`);
       if (p === "/v1/checkout/sessions" && req.method === "POST") {
         const f = parseForm(await readBody(req));
-        if (f.mode !== "subscription") return stripeError(res, 400, "This mock sells subscriptions only (mode=subscription).");
+        if (f.mode !== "subscription" && f.mode !== "payment") return stripeError(res, 400, "This mock sells subscriptions and one-time payments only (mode=subscription | payment).");
         if (!f.success_url || !f.cancel_url) return stripeError(res, 400, "Missing required param: success_url / cancel_url.");
         if (!f.customer || !customers.has(f.customer)) return stripeError(res, 400, `No such customer: '${f.customer ?? ""}'`);
         const lines = Array.isArray(f.line_items) ? f.line_items : [];
@@ -418,7 +430,7 @@ export async function startStripeMock(o = {}) {
           id,
           object: "checkout.session",
           url: `http://127.0.0.1:${port}/pay/${id}`,
-          mode: "subscription",
+          mode: f.mode,
           status: "open",
           payment_status: "unpaid",
           customer: f.customer,

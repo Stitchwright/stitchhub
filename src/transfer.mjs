@@ -50,6 +50,14 @@ export const TABLES = [
     key: "shop_id",
     json: ["mailed"],
   },
+  // The Assistant's own subscription per shop and its paid top-ups (src/assistant-billing.mjs).
+  {
+    t: "assistant_subscription",
+    table: "assistant_subscriptions",
+    cols: ["shop_id", "stripe_subscription_id", "stripe_customer_id", "stripe_created", "plan", "status", "current_period_end", "cancel_at_period_end", "price_id", "created_at", "updated_at"],
+    key: "shop_id",
+  },
+  { t: "assistant_topup", table: "assistant_topups", cols: ["stripe_session_id", "shop_id", "calls", "month", "created_at"], key: "stripe_session_id" },
   { t: "stripe_event", table: "stripe_events", cols: ["id", "type", "received_at"] },
   { t: "license_issue", table: "license_issues", cols: ["key_id", "shop_id", "kid", "plan", "modules", "first_day", "last_day", "grace_days", "key", "issued_at", "revoked_at", "tier", "founding"], key: "key_id" },
   {

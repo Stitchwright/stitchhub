@@ -10,8 +10,8 @@ import crypto from "node:crypto";
 import { one, q, tx } from "./db.mjs";
 import { signer } from "./license.mjs";
 
-const MONTHLY_CALLS = Math.max(1, Math.floor(Number(process.env.ASSISTANT_MONTHLY_CALLS)) || 300);
-const TOPUP_CALLS = Math.max(1, Math.floor(Number(process.env.ASSISTANT_TOPUP_CALLS)) || 300);
+export const MONTHLY_CALLS = Math.max(1, Math.floor(Number(process.env.ASSISTANT_MONTHLY_CALLS)) || 300);
+export const TOPUP_CALLS = Math.max(1, Math.floor(Number(process.env.ASSISTANT_TOPUP_CALLS)) || 300);
 const FREE_READS = Math.max(0, Math.floor(Number(process.env.ASSISTANT_FREE_READS ?? 20)));
 const HOURLY = Math.max(1, Math.floor(Number(process.env.ASSISTANT_HOURLY_CALLS)) || 60);
 
@@ -53,6 +53,24 @@ export function zoneDay(at, tz) {
   } catch {
     return null;
   }
+}
+
+/**
+ * Adds `calls` to the company's month (the month in the zone it last sent, UTC before its first call): the admin's top-up
+ * and a paid top-up Checkout (src/assistant-billing.mjs) both land here. `run` is a query function (`q`, or a transaction
+ * client's query) so a webhook's credit is written in the same transaction as the event that caused it.
+ */
+export async function creditTopup(run, installId, shopRef, calls, now = new Date()) {
+  const shop = (await run(`SELECT tz FROM assistant_shops WHERE install_id = $1 AND shop_ref = $2`, [installId, shopRef])).rows[0];
+  const month = zoneDay(now, shop?.tz ?? "UTC").slice(0, 7);
+  const row = (
+    await run(
+      `INSERT INTO assistant_usage (install_id, shop_ref, month, bonus) VALUES ($1, $2, $3, $4)
+       ON CONFLICT (install_id, shop_ref, month) DO UPDATE SET bonus = assistant_usage.bonus + EXCLUDED.bonus, updated_at = now() RETURNING calls, bonus`,
+      [installId, shopRef, month, calls],
+    )
+  ).rows[0];
+  return { month, calls: row.calls, limit: MONTHLY_CALLS + row.bonus };
 }
 
 // ----- license keys -----
@@ -333,16 +351,10 @@ export function registerAssistant({ member, admin, fail, allow, newId }) {
     if (!installId || !shopRef) throw fail(400, "Send installId and shopRef.");
     const calls = b.calls === undefined ? TOPUP_CALLS : b.calls;
     if (!Number.isInteger(calls) || calls < 1 || calls > 5000) throw fail(400, "calls is a whole number from 1 to 5000.");
-    const shop = await one(`SELECT tz FROM assistant_shops WHERE install_id = $1 AND shop_ref = $2`, [installId, shopRef]);
     const inst = await one(`SELECT id FROM installs WHERE id = $1`, [installId]);
     if (!inst) throw fail(404, "No such install.");
-    const month = zoneDay(nowOf(c), shop?.tz ?? "UTC").slice(0, 7);
-    const row = await one(
-      `INSERT INTO assistant_usage (install_id, shop_ref, month, bonus) VALUES ($1, $2, $3, $4)
-       ON CONFLICT (install_id, shop_ref, month) DO UPDATE SET bonus = assistant_usage.bonus + EXCLUDED.bonus, updated_at = now() RETURNING calls, bonus`,
-      [installId, shopRef, month, calls],
-    );
-    return c.json({ ok: true, month, calls: row.calls, limit: MONTHLY_CALLS + row.bonus });
+    const r = await creditTopup(q, installId, shopRef, calls, nowOf(c));
+    return c.json({ ok: true, ...r });
   });
 
   // "Assistant free until <day>" (the admin's comp: the Assistant without a key); an empty `until` takes it away.

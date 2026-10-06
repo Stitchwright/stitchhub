@@ -154,3 +154,25 @@ export function signWebhook(rawBody, secret, now = new Date()) {
   const t = Math.floor(now.getTime() / 1000);
   return `t=${t},v1=${crypto.createHmac("sha256", secret).update(`${t}.${rawBody}`).digest("hex")}`;
 }
+
+/**
+ * A Checkout Session for a one-time payment (a top-up of Assistant calls): one price, back to the account page after.
+ * The metadata goes on the session and on its payment, so the webhook can read what was bought and for whom.
+ */
+export const createPaymentCheckout = (a) =>
+  call(
+    "POST",
+    "/v1/checkout/sessions",
+    {
+      mode: "payment",
+      customer: a.customer,
+      line_items: [{ price: a.price, quantity: 1 }],
+      success_url: a.successUrl,
+      cancel_url: a.cancelUrl,
+      client_reference_id: a.reference,
+      metadata: a.metadata,
+      payment_intent_data: { metadata: a.metadata },
+      allow_promotion_codes: true,
+    },
+    a.idempotencyKey,
+  );
