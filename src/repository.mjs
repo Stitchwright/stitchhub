@@ -389,8 +389,13 @@ export function registerRepository({ app, member, admin, acct, fail, newId, allo
     const same = offered.brand
       ? (await q(`SELECT id, brand, models, doc_type, year, status, file_id FROM manuals WHERE lower(brand) = lower($1) AND doc_type = $2 AND ($3::text[] && model_keys) AND status = 'published' LIMIT 20`, [offered.brand, offered.docType, keys])).rows
       : [];
+    // Any notice that named this brand (the checklist's item 6: a work an earlier notice named is flagged).
+    const named = offered.brand
+      ? (await q(`SELECT id, status, received_at FROM takedown_notices WHERE kind = 'notice' AND status IN ('actioned', 'countered', 'restored', 'lawsuit') AND position(lower($1) in lower(coalesce(work, '') || ' ' || coalesce(locations, ''))) > 0 LIMIT 10`, [offered.brand])).rows
+      : [];
     return {
       fileId: f.id,
+      earlierNotices: named.map((n) => ({ id: n.id, status: n.status, receivedAt: n.received_at })),
       sha256: f.sha256,
       sizeBytes: Number(f.size_bytes),
       pages: f.pages,

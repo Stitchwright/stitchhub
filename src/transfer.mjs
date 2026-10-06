@@ -67,6 +67,14 @@ export const TABLES = [
     cols: ["id", "shop_id", "account_id", "install_id", "shop_ref", "by_name", "sha256", "size_bytes", "offered", "original_name", "statement_version", "statement_at", "state", "reason", "file_id", "manual_id", "created_at", "updated_at"],
     json: ["offered"],
   },
+  // The takedown process (src/takedown.mjs): notices and counter-notices with their timelines, and the strikes.
+  {
+    t: "takedown_notice",
+    table: "takedown_notices",
+    cols: ["id", "kind", "parent_id", "via", "status", "missing", "complainant", "work", "locations", "statements", "signature", "raw_text", "manual_ids", "file_ids", "account_id", "reason", "received_at", "actioned_at", "countered_at", "restore_earliest", "restore_latest", "reminded_at", "restored_at", "closed_at", "notes", "updated_at"],
+    json: ["complainant", "statements", "notes"],
+  },
+  { t: "strike", table: "strikes", cols: ["id", "account_id", "install_id", "shop_id", "notice_id", "file_id", "created_at", "withdrawn_at"] },
   { t: "blocked_hash", table: "blocked_hashes", cols: ["sha256", "why", "notice_id", "file_id", "created_at", "lifted_at"], key: "sha256" },
   {
     t: "repo_download",

@@ -24,6 +24,7 @@ import { registerMoves } from "./moves.mjs";
 import { registerProvisioning } from "./provisioning.mjs";
 import { registerTerms } from "./terms.mjs";
 import { registerRepository } from "./repository.mjs";
+import { registerTakedown } from "./takedown.mjs";
 import { discordBody } from "./discord.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
@@ -168,7 +169,7 @@ const MB = 1024 * KB;
 const ADMIN_UPLOAD = (Number(process.env.ADMIN_UPLOAD_MB) || 1024) * MB; // bulk imports, data sets, moving the hub
 
 function maxBody(p) {
-  if (p === "/v1/register" || p === "/v1/partners/join" || p === "/v1/accounts/start" || p === "/v1/shops/move") return 16 * KB; // no key needed: a join key, code, move token or email and a name
+  if (p === "/v1/register" || p === "/v1/partners/join" || p === "/v1/accounts/start" || p === "/v1/shops/move" || p === "/copyright/notice") return 16 * KB; // no key needed: a join key, code, move token or email and a name
   if (p === "/v1/stripe") return 256 * KB; // a Stripe webhook event (an invoice with its lines)
   if (p === "/v1/posts") return 12 * 3 * MB + MB; // a note with up to 12 photos of 3 MB
   if (p === "/v1/listings") return 8 * 3 * MB + MB; // a listing with up to 8 photos
@@ -236,7 +237,7 @@ app.get("/", async (c) => {
 Manual links point to where makers publish them.${s.manuals > 0 ? " A community manual library is free with a StitchHub account (<a href=\"/account/manuals\">Manuals</a>)." : ""}</p>
 <p>${s.links} manual links · ${s.posts} shared notes · ${s.installs} shops</p>
 <p>To join, open StitchBench → Settings → Community hub and enter this address and the join key you were given.</p>
-<p><a href="/account">Your account</a> · <a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · <a href="/admin">Hub admin</a></p></body>`);
+<p><a href="/account">Your account</a> · <a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · <a href="/copyright">Copyright</a> · <a href="/admin">Hub admin</a></p></body>`);
 });
 
 app.get("/admin", (c) => c.html(fs.readFileSync(path.join(ROOT, "public", "admin.html"), "utf8")));
@@ -894,6 +895,8 @@ registerProvisioning({ member, acct: accounts.acct, fail, newId, allow, clientIp
 // The manual repository (src/repository.mjs, docs/plans/manual-repository-design.md): upload slots, the owner's review,
 // the repository feed and download URLs, and the free "Manuals" page on /account. Uploads stay off until REPO_UPLOADS=on.
 registerRepository({ app, member, admin, acct: accounts.acct, fail, newId, allow, clientIp, requireAccount: accounts.requireAccount });
+// Takedown notices, counter-notices, strikes and /copyright (src/takedown.mjs): the process the repository's safe harbor rests on.
+registerTakedown({ app, admin, acct: accounts.acct, fail, newId, allow, clientIp, requireAccount: accounts.requireAccount, hubName: HUB_NAME, hubUrl: accounts.hubUrl });
 app.route("/account/api", accounts.acct);
 // A company moving from one install to another: the move token, its redemption (with or without an install key), the
 // admin's list and move by hand (src/moves.mjs). Before the member routes, so a program on no hub yet can redeem.
