@@ -278,17 +278,51 @@ export function registerAssistant({ member, admin, fail, allow, newId }) {
   });
 
   // ----- the owner's view and top-ups -----
+  // The owner's view (public/admin.html, Assistant): every company with usage in the month (default: this month in UTC) or a comp,
+  // with its limit (300 + top-ups), what it cost, and its comp. Counts and money only: the hub keeps no text.
   admin.get("/assistant/usage", async (c) => {
-    const month = String(c.req.query("month") ?? "") || null;
+    const month = String(c.req.query("month") ?? "").trim() || nowOf(c).toISOString().slice(0, 7);
+    if (!/^\d{4}-\d{2}$/.test(month)) throw fail(400, "month is YYYY-MM.");
     const rows = (
       await q(
-        `SELECT u.install_id, i.name AS install_name, u.shop_ref, s.name AS shop_name, u.month, u.calls, u.bonus, u.free_reads, u.input_tokens, u.output_tokens, u.cost_millicents
-         FROM assistant_usage u JOIN installs i ON i.id = u.install_id LEFT JOIN shops s ON s.install_id = u.install_id AND s.shop_ref = u.shop_ref
-         WHERE ($1::text IS NULL OR u.month = $1) ORDER BY u.month DESC, u.cost_millicents DESC LIMIT 500`,
+        `WITH pairs AS (
+           SELECT install_id, shop_ref FROM assistant_usage WHERE month = $1
+           UNION SELECT install_id, shop_ref FROM assistant_shops WHERE comp_until IS NOT NULL
+         )
+         SELECT p.install_id, i.name AS install_name, p.shop_ref, s.name AS shop_name, $1::text AS month,
+                COALESCE(u.calls, 0) AS calls, COALESCE(u.bonus, 0) AS bonus, COALESCE(u.free_reads, 0) AS free_reads,
+                COALESCE(u.input_tokens, 0) AS input_tokens, COALESCE(u.output_tokens, 0) AS output_tokens, COALESCE(u.cost_millicents, 0) AS cost_millicents,
+                a.comp_until::text AS comp_until, a.comp_note, COALESCE(a.tz, 'UTC') AS tz
+         FROM pairs p
+         JOIN installs i ON i.id = p.install_id
+         LEFT JOIN shops s ON s.install_id = p.install_id AND s.shop_ref = p.shop_ref
+         LEFT JOIN assistant_usage u ON u.install_id = p.install_id AND u.shop_ref = p.shop_ref AND u.month = $1
+         LEFT JOIN assistant_shops a ON a.install_id = p.install_id AND a.shop_ref = p.shop_ref
+         ORDER BY COALESCE(u.cost_millicents, 0) DESC, s.name NULLS LAST, p.shop_ref LIMIT 500`,
         [month],
       )
     ).rows;
-    return c.json({ monthlyCalls: MONTHLY_CALLS, topUpCalls: TOPUP_CALLS, rows });
+    const at = nowOf(c);
+    return c.json({
+      monthlyCalls: MONTHLY_CALLS,
+      topUpCalls: TOPUP_CALLS,
+      month,
+      rows: rows.map((r) => ({ ...r, limit: MONTHLY_CALLS + r.bonus, comped: Boolean(r.comp_until && r.comp_until >= zoneDay(at, r.tz)) })),
+    });
+  });
+
+  // The latest failed calls (a refusal, the model's 5xx, a timeout): what went wrong and for whom, never any text.
+  admin.get("/assistant/errors", async (c) => {
+    const limit = Math.min(200, Math.max(1, Math.floor(Number(c.req.query("limit"))) || 50));
+    const rows = (
+      await q(
+        `SELECT k.id, k.install_id, i.name AS install_name, k.shop_ref, s.name AS shop_name, k.feature, k.class, k.model, k.error, k.ms, k.created_at
+         FROM assistant_calls k JOIN installs i ON i.id = k.install_id LEFT JOIN shops s ON s.install_id = k.install_id AND s.shop_ref = k.shop_ref
+         WHERE k.error IS NOT NULL ORDER BY k.created_at DESC LIMIT $1`,
+        [limit],
+      )
+    ).rows;
+    return c.json({ rows });
   });
 
   // Another 300 calls for this month (the month in the company's zone as last seen). `calls` overrides the amount.

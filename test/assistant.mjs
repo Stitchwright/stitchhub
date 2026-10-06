@@ -295,6 +295,34 @@ try {
   assert.ok(mock.requests.every((r) => r.headers["x-api-key"] === ANTHROPIC_KEY));
   const adminView = await ok(await call("/v1/admin/assistant/usage?month=2026-10", { key: ADMIN }));
   assert.ok(adminView.rows.length >= 4 && adminView.rows[0].cost_millicents > 0, "the owner's usage list");
+  // The admin page's Assistant section (public/admin.html): the usage list with limit, top-ups and comp, the recent errors,
+  // and every Assistant call the page makes is a route this hub answers (so a renamed route can't break the page quietly).
+  const usageNow = await ok(await call("/v1/admin/assistant/usage?month=2026-10", { key: ADMIN, headers: { "x-test-now": NOW } }));
+  assert.equal(usageNow.month, "2026-10");
+  assert.equal(usageNow.topUpCalls, 5);
+  const rowA = usageNow.rows.find((r) => r.shop_ref === SA);
+  assert.deepEqual([rowA.calls, rowA.bonus, rowA.limit, rowA.comped], [6, 5, 10, false], "limit = the month's calls plus top-ups; not comped");
+  assert.ok(rowA.cost_millicents > 0 && rowA.install_name, "cost and the member's name");
+  const rowC = usageNow.rows.find((r) => r.shop_ref === SC);
+  assert.equal(rowC.comped, true, "a comped company is listed even with no calls this month");
+  assert.equal(rowC.comp_until, "2026-12-31");
+  assert.equal(rowC.comp_note, "friend");
+  const lateRow = (await ok(await call("/v1/admin/assistant/usage?month=2026-10", { key: ADMIN, headers: { "x-test-now": "2027-01-02T18:00:00Z" } }))).rows.find((r) => r.shop_ref === SC);
+  assert.equal(lateRow.comped, false, "after its last day the comp shows off");
+  const thisMonthRows = await ok(await call("/v1/admin/assistant/usage", { key: ADMIN, headers: { "x-test-now": NOW } }));
+  assert.equal(thisMonthRows.month, "2026-10", "no month = the current one");
+  await refused(await call("/v1/admin/assistant/usage?month=October", { key: ADMIN }), 400, /YYYY-MM/, "a bad month");
+  await refused(await call("/v1/admin/assistant/usage", { key: "wrong" }), 401, /admin token/, "usage needs the admin token");
+  const errs = await ok(await call("/v1/admin/assistant/errors?limit=10", { key: ADMIN }));
+  assert.ok(errs.rows.length >= 1 && errs.rows.every((r) => r.error && r.feature && r.install_name), "failed calls with what and for whom");
+  assert.ok(!JSON.stringify(errs).includes(SENTINEL) && !JSON.stringify(errs).includes(ANTHROPIC_KEY), "no text and no key in the error list");
+  assert.ok(errs.rows.length <= 10);
+  await refused(await call("/v1/admin/assistant/errors", { key: "wrong" }), 401, /admin token/, "errors need the admin token");
+  const html = await (await call("/admin")).text();
+  const used = new Set([...html.matchAll(/(?:api|post)\("(\/assistant\/[a-z]+)/g)].map((m) => m[1]));
+  assert.deepEqual([...used].sort(), ["/assistant/comp", "/assistant/errors", "/assistant/topup", "/assistant/usage"], "the page calls exactly these");
+  for (const id of ["assistantSection", "aShops", "aErrors", "aMonth", "aForm"]) assert.ok(html.includes(`id="${id}"`), `${id} is on the page`);
+  console.log("assistant admin page: ok");
   const exportBody = Buffer.from(await (await call("/v1/admin/export", { key: ADMIN })).arrayBuffer());
   assert.ok(!(await import("node:zlib")).gunzipSync(exportBody).toString().includes(ANTHROPIC_KEY), "the export never holds the Anthropic key");
   console.log("assistant proxy: ok");
