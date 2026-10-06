@@ -83,9 +83,9 @@ const invite = (k, side, shopRef, shopName, terms = {}) => {
   return { shopRef, shopName, side, terms, publicKey: k.pub, proof: { issuedAt, sig: signText(k, inviteText({ pub: k.pub, side, shopRef, terms, issuedAt })) } };
 };
 const sha = (s) => crypto.createHash("sha256").update(s).digest("hex");
-const redeem = (k, code, side, shopRef, shopName) => {
+const redeem = (k, code, _side, shopRef, shopName) => {
   const issuedAt = new Date().toISOString();
-  return { code, shopRef, shopName, publicKey: k.pub, proof: { issuedAt, sig: signText(k, redeemText({ codeHash: sha(code.replace(/-/g, "")), side, shopRef, issuedAt })) } };
+  return { code, shopRef, shopName, publicKey: k.pub, proof: { issuedAt, sig: signText(k, redeemText({ codeHash: sha(code.replace(/-/g, "")), shopRef, issuedAt })) } };
 };
 const post = (key, link, body) => call(`/v1/partners/links/${link}/messages`, { key, json: body });
 const feed = async (key) => (await ok(call("/v1/partners/messages?since=0&limit=500", { key }))).messages;
