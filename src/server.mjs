@@ -19,6 +19,7 @@ import { registerPartners } from "./partners.mjs";
 import { registerAccounts } from "./accounts.mjs";
 import { registerBilling } from "./billing.mjs";
 import { registerMoves } from "./moves.mjs";
+import { registerBackups } from "./backups.mjs";
 import { registerProvisioning } from "./provisioning.mjs";
 import { registerTerms } from "./terms.mjs";
 import { discordBody } from "./discord.mjs";
@@ -888,6 +889,10 @@ registerBilling({ app, acct: accounts.acct, admin, fail, allow, clientIp, hubNam
 // "Start a hosted StitchShop / StitchBench" from the account page, and a password reset from the account to a Windows
 // install that allows it: the grant the hub signs, fetched and answered by the program (src/provisioning.mjs).
 registerProvisioning({ member, acct: accounts.acct, fail, newId, allow, clientIp, requireAccount: accounts.requireAccount });
+// Off-site backup storage: upload and download addresses for the programs, and the restore code from the account page
+// (src/backups.mjs, src/s3.mjs; BACKUP_S3_* in the environment).
+// (before the account routes are mounted: Hono copies a router's routes when it is mounted)
+registerBackups({ app, member, acct: accounts.acct, fail, newId, allow, bucket, requireAccount: accounts.requireAccount });
 app.route("/account/api", accounts.acct);
 // A company moving from one install to another: the move token, its redemption (with or without an install key), the
 // admin's list and move by hand (src/moves.mjs). Before the member routes, so a program on no hub yet can redeem.
