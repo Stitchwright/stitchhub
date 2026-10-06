@@ -7,7 +7,8 @@ StitchHub is the one small shared server that the shops sync with. It holds only
 
 - **Manual links.** Where each service, parts or operator manual can be downloaded, with a status (working, dead,
   or blocks robots) that the hub rechecks every week. Anyone can fix a dead link. Every change is kept and can be
-  rolled back. **The hub never stores manuals**, only links to where they're published.
+  rolled back. **The hub stores manuals only in the manual repository** (off until you switch it on, see below); everywhere
+  else it holds links to where they're published.
 - **Tech notes.** An issue found, how it was fixed, or a tip, per brand and model, with photos (wiring and
   connectors, inside the machine, parts). Customer names and serial numbers are never sent.
 - **Figure snapshots.** Small crops of manual pages that show a timing or adjustment, so a tech on a phone can see
@@ -361,6 +362,56 @@ placeholders and open questions are listed). Never edit a published version: add
   keeps the latest (`accounts.terms_version`, `terms_at`), `terms_acceptances` keeps each one (version, how, and for a
   Checkout the shop and the Checkout Session). A page left open over a version change is told to reload (409).
 
+## Manual repository
+Design: `docs/plans/manual-repository-design.md` in the StitchBench repo (read its sections 1 and 4 and the lawyer
+questions before you open it: **a plan, not legal advice**). Packages `repo-storage` and `repo-hub` are built here;
+the takedown package (`/copyright`, notices, strikes, counter-notices) is not, so **leave `REPO_UPLOADS` unset until it
+and the launch gate in section 7 of the design are done**. With it unset, `POST /v1/repository/uploads` answers
+403 "The manual repository opens soon." and nothing else changes; reading what is published needs no switch.
+
+- **Storage**: one private Cloudflare R2 bucket, `src/r2.mjs` (AWS Signature V4 by hand, no SDK: presigned PUT and GET,
+  and the hub's own HEAD, ranged GET, copy and delete). Variables: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`,
+  `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` (on the hub's service only; `R2_ENDPOINT` points a test at the mock in
+  `test/r2-mock.mjs`). Keys: `incoming/<upload id>.pdf` (the program PUTs here; lifecycle rule: delete after 1 day),
+  `files/<sha256>.pdf`, `retired/<sha256>.pdf` (a removed file; 30 days), `held/` (copyright, with the takedown package;
+  120 days). Bytes never pass through the hub except for the one verifying read of an upload (a whole file in memory,
+  two at a time, `REPO_MAX_MB` 150).
+- **Who may offer** (`POST /v1/repository/uploads`, install key and `X-Shop-Ref`): a company claimed by a verified,
+  enabled StitchHub account, on a member install (partner and pending installs are refused before the route), with
+  standing not lapsed, not in `REPO_OPERATOR_ACCOUNTS` (account emails or ids, comma separated: the hub's owner uploads
+  nothing of his own), and not stopped (`accounts.repo_uploads_off`, `installs.repo_uploads_off`, set from the admin
+  API). The offer names category, brand, models, a document type from the library's list, year, language and carries
+  the statement's version (`REPO_STATEMENT_VERSION`, when set, must match). Limits: 25 offers a day per company, 100 and
+  2 GB a day per account, 50 waiting per account.
+- **The flow**: offer -> `{ uploadId, putUrl, putHeaders, expiresAt }` (15 minutes; type and length signed) -> the program
+  PUTs to R2 -> `POST /uploads/:id/sent` -> the hub reads the object, checks size and sha256 and the PDF itself
+  (`src/pdfcheck.mjs`), deletes it if refused, otherwise files it under `files/` as **pending**. The same bytes already
+  there or waiting answer `{ duplicate, id }`; a removed or blocked hash answers `{ blocked }` (no slot).
+- **The PDF check** (no dependency): refused when it isn't a PDF, is encrypted, or names `/JavaScript`, `/JS`, `/Launch`,
+  `/EmbeddedFile`, `/RichMedia` or `/XFA` (searched in the file's own syntax and in inflated object streams, `#`-escaped
+  names too, not in picture or font data, where the bytes turn up by chance). A file the reader can't make sense of is
+  flagged for review. **Markings**: the first three pages and the last are read for scan_markings.py's words; a hit is a
+  flag in the review queue with the page and the words around it, never a refusal. The reader follows the page tree
+  and reads plain text with standard encodings; a scan or a font with its own encoding gives "not checked for markings:
+  scan or unreadable text", for the owner to look at the cover himself (no OCR yet).
+- **Review**: the admin page's "Manual repository" section lists what waits (offer as made, flags, markings, the people
+  who offered the same bytes, published files for the same brand, model and type); preview opens the file for five
+  minutes; **Approve** (with corrected metadata) puts it in the feed and on the Manuals page; **Reject** takes a reason
+  the uploader sees, deletes the object and can block the hash. `POST /v1/admin/repository/manuals/:id/remove` takes
+  a published manual down (`withdrawn` or `replaced`; bytes to `retired/`). Merge, and removal for copyright, are not
+  built yet.
+- **The feed and downloads**: `GET /v1/repository/changes?since=N` (its own cursor on the same change numbers; an old
+  program never calls it), `POST /v1/repository/files/:id/url` (the feed's id; published manuals only; 300 an hour and
+  3,000 a day per install; the URL lasts 5 minutes with the library's file name forced). `GET /v1/repository/uploads`
+  lists the company's own offers and their states.
+- **The free side**: signed in to `/account`, the **Manuals** page searches published manuals (brand, model, words,
+  type) and gives a short-lived download link: 25 a day per account and per address (an address is kept only as a hash).
+  The programs add convenience, not access.
+- Moving a hub: the export carries the tables (`manuals`, `manual_files`, `uploads`, `blocked_hashes`,
+  `repo_downloads`), not the bytes, which stay in the bucket.
+- **Migration numbering**: this branch's migration is `030_repository.sql` so it can't clash with the migrations of other
+  branches (023 on `hub-accounts`); renumber it at merge (files apply in name order, once each).
+
 ## Checking a hub
 ```
 HUB_URL=http://localhost:8080 ADMIN_TOKEN=... JOIN_KEY=... npm test
@@ -387,6 +438,19 @@ limits.
 `DATABASE_URL=<a scratch database> npm run test:companies` does the same for companies on one install: a listing, order,
 note, link, part, usage report and figure made under a company's name shows that name (and the install's when none is
 named), two companies on one install are kept apart in ratings and usage counts, and one can't change the other's rows.
+
+`node test/r2.mjs` (`npm run test:r2`, no database) checks the R2 signing: AWS's documented examples yield their
+published signatures, and presigned PUT, HEAD, ranged GET, copy and delete work against the in-memory R2 mock, which
+refuses expired and altered URLs. (The design's one real 1 MB round trip against the bucket is done by hand once there
+is a bucket.)
+
+`DATABASE_URL=<a database on a server where the role may create databases> npm run test:repository` makes two fresh
+databases beside it (dropped at the end), starts hubs with the R2 mock and walks the repository: the PDF check (scripts,
+encryption, markings on the first three pages and the last), uploads off by default, the account rule, slot -> PUT ->
+sent -> pending, wrong hash, wrong size, not a PDF, encrypted and JavaScript refused with the object deleted,
+duplicates, blocked hashes, the 26th offer of a day and the 51st waiting (429), approve and reject, the feed, download
+URLs for published files only, one company never seeing another's offers, the free Manuals page and its 25 a day, and
+export and import into a second hub.
 
 `DATABASE_URL=<a fresh scratch database> npm run test:move` walks a company moving from one install to another: the move
 token (answered once, replaced, cancelled, expired, wrong, used), every table rewritten for that company only (legacy

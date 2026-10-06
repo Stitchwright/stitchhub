@@ -88,6 +88,13 @@
     </section>
 
     <section>
+      <h2>Manual repository</h2>
+      <p class="muted" id="repoState"></p>
+      <p class="muted">Files shops offered, waiting for your review. The checklist: a manual, readable and whole; brand, models, document type and year right (correct them below); nothing private in it; the automatic checks passed; not a duplicate of a better file; not a work an earlier notice named; <strong>not marked confidential, dealer-only or not for distribution</strong> (the markings flag below: a hit shows the page and the words around it, and is for you to judge; "not checked" means a scan or unreadable text, so look at the cover yourself). Preview opens the file for five minutes.</p>
+      <div id="repoQueue"></div>
+    </section>
+
+    <section>
       <h2>Figure snapshots</h2>
       <p class="muted">A wrong or unwanted figure can be taken down: installs drop their copy, and any shop can share that figure again. Its id is the end of the picture's address in StitchBench (right-click the figure, Copy image address). To take down every figure one shop shared, use Remove figures under Members.</p>
       <form class="row" id="figForm"><label for="figId" class="muted">Figure id</label><input id="figId" required pattern="[0-9a-f]{24}" placeholder="24 letters and digits"><button>Remove figure</button></form>
@@ -155,6 +162,39 @@
     window.hubInstalls = s.installs;
     await loadAccounts();
     await loadMoves();
+    await loadRepository();
+  }
+
+  async function loadRepository() {
+    const r = await (await api("/repository")).json();
+    $("repoState").textContent = `Uploads are ${r.uploadsOn ? "ON" : "OFF (REPO_UPLOADS is not on: the program says the repository opens soon)"}. Storage ${r.storage ? "is set up" : "is NOT set up (R2_* variables)"}. ${r.waiting.length} waiting, ${r.published} published, ${r.removed} removed, ${r.blocked} blocked hashes. Limit ${r.maxMb} MB a file.`;
+    const field = (label, value, width) => { const l = document.createElement("label"); l.className = "muted"; l.textContent = label + " "; const i = document.createElement("input"); i.value = value ?? ""; i.style.width = width || "140px"; l.append(i); return [l, i]; };
+    $("repoQueue").replaceChildren(...r.waiting.map((f) => {
+      const box = document.createElement("div"); box.style.cssText = "border-top:1px solid var(--line);padding:10px 0";
+      const o = f.offered || {};
+      const mk = f.markings || {};
+      const head = document.createElement("div");
+      head.textContent = `${o.brand || "?"} ${(o.models || []).join(", ")} · ${o.docType || "?"}${o.year ? " " + o.year : ""} · ${(f.sizeBytes / 1048576).toFixed(1)} MB · ${f.pages ?? "?"} pages · offered as ${f.originalName || "(no name)"} · would be filed as ${f.composedName}`;
+      const mark = document.createElement("div");
+      mark.className = mk.status === "flagged" ? "bad" : mk.status === "clean" ? "ok" : "muted";
+      mark.textContent = mk.status === "flagged" ? "MARKINGS FLAGGED: " + mk.hits.map((h) => `${h.level} "${h.label}" on page ${h.page}: ...${h.context}...`).join(" | ") : mk.status === "clean" ? `Markings: none found on page${mk.pagesRead.length === 1 ? "" : "s"} ${mk.pagesRead.join(", ")}.` : (mk.reason || "Markings: not checked");
+      const flags = document.createElement("div"); flags.className = "muted";
+      flags.textContent = (f.checks?.structure?.flags || []).map((x) => x.text).join(" ") || "Structure check: passed.";
+      const who = document.createElement("div"); who.className = "muted";
+      who.textContent = f.offers.map((u) => `${u.state}: ${u.byName || "?"} at ${u.shop || "?"} (${u.account || "no account"}), statement ${u.statementVersion}, ${when(u.createdAt)}`).join(" · ");
+      const same = document.createElement("div"); same.className = "muted";
+      same.textContent = f.otherFiles.length ? "Already published for the same brand, model and type: " + f.otherFiles.map((x) => `${x.models}${x.year ? " " + x.year : ""}`).join(", ") : "";
+      const row = document.createElement("div"); row.className = "row";
+      const [l1, brand] = field("Brand", o.brand); const [l2, models] = field("Models", (o.models || []).join(", "), "200px"); const [l3, docType] = field("Type", o.docType); const [l4, year] = field("Year", o.year, "70px"); const [l5, category] = field("Category", o.category);
+      const btn = (text, fn, plain = true) => { const b = document.createElement("button"); if (plain) b.className = "plain"; b.textContent = text; b.onclick = async () => { b.disabled = true; try { await fn(); } catch (err) { say(err.message, true); } b.disabled = false; }; return b; };
+      row.append(l1, l2, l3, l4, l5,
+        btn("Preview", async () => { const p = await (await api(`/repository/files/${f.fileId}/preview`)).json(); window.open(p.url, "_blank", "noopener"); }),
+        btn("Approve", async () => { await post(`/repository/files/${f.fileId}/approve`, { offered: { brand: brand.value, models: models.value, docType: docType.value, year: year.value || null, category: category.value } }); say("Approved: it is in the feed and on the Manuals page."); loadRepository(); }, false),
+        btn("Reject", async () => { const reason = prompt("Why? The person who offered the file sees this."); if (!reason) return; const block = confirm("Also block this file's hash, so it can't be offered again? (OK = block)"); await post(`/repository/files/${f.fileId}/reject`, { reason, blockHash: block }); say("Rejected; the file is deleted."); loadRepository(); }));
+      box.append(head, mark, flags, who, same, row);
+      return box;
+    }));
+    if (!r.waiting.length) $("repoQueue").textContent = "Nothing waiting.";
   }
 
   async function loadMoves() {

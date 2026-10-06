@@ -12,10 +12,10 @@ import { pool, holdFeeds } from "./db.mjs";
 // In import order (parents before children). `key` pages the export; `conflict` is the primary key.
 export const TABLES = [
   { t: "setting", table: "settings", cols: ["key", "value"], key: "key" },
-  { t: "install", table: "installs", cols: ["id", "name", "contact", "key_hash", "scope", "blocked", "invited_by", "created_at", "last_seen_at"] },
+  { t: "install", table: "installs", cols: ["id", "name", "contact", "key_hash", "scope", "blocked", "invited_by", "created_at", "last_seen_at", "repo_uploads_off"] },
   // Shop owners' accounts (hashed passwords), their shops with standing, the links and codes out (hashed), and signed-in
   // browsers: a move keeps everyone signed in and every link they were sent working.
-  { t: "account", table: "accounts", cols: ["id", "email", "password_hash", "verified_at", "terms_version", "terms_at", "stripe_customer_id", "disabled", "created_at", "last_sign_in_at", "founding_at", "founding_gap_since", "founding_lost_at"] },
+  { t: "account", table: "accounts", cols: ["id", "email", "password_hash", "verified_at", "terms_version", "terms_at", "stripe_customer_id", "disabled", "created_at", "last_sign_in_at", "founding_at", "founding_gap_since", "founding_lost_at", "repo_uploads_off"] },
   {
     t: "shop",
     table: "shops",
@@ -52,6 +52,29 @@ export const TABLES = [
   },
   { t: "stripe_event", table: "stripe_events", cols: ["id", "type", "received_at"] },
   { t: "license_issue", table: "license_issues", cols: ["key_id", "shop_id", "kid", "plan", "modules", "first_day", "last_day", "grace_days", "key", "issued_at", "revoked_at", "tier", "founding"], key: "key_id" },
+  // The manual repository (src/repository.mjs): the manuals shops see (numbered in the change sequence, which the
+  // repository feed pages by), the files in R2 by hash (the bytes stay in the bucket; a moved hub keeps the bucket), the
+  // offers, the hashes that may not come back, and the download counts.
+  {
+    t: "manual",
+    table: "manuals",
+    cols: ["id", "category", "brand", "models", "model_keys", "doc_type", "year", "language", "title", "file_id", "origin", "source_url", "status", "why", "created_at", "updated_at"],
+  },
+  { t: "manual_file", table: "manual_files", cols: ["id", "sha256", "sha1", "size_bytes", "pages", "object_key", "status", "manual_id", "checks", "created_at", "updated_at"], json: ["checks"] },
+  {
+    t: "upload",
+    table: "uploads",
+    cols: ["id", "shop_id", "account_id", "install_id", "shop_ref", "by_name", "sha256", "size_bytes", "offered", "original_name", "statement_version", "statement_at", "state", "reason", "file_id", "manual_id", "created_at", "updated_at"],
+    json: ["offered"],
+  },
+  { t: "blocked_hash", table: "blocked_hashes", cols: ["sha256", "why", "notice_id", "file_id", "created_at", "lifted_at"], key: "sha256" },
+  {
+    t: "repo_download",
+    table: "repo_downloads",
+    cols: ["file_id", "day", "who", "n"],
+    key: "file_id || '|' || day || '|' || who",
+    conflict: ["file_id", "day", "who"],
+  },
   {
     t: "link",
     table: "links",
@@ -134,7 +157,7 @@ export const TABLES = [
 const BINARY = new Set(["data"]);
 const JSONB = new Set(["snapshot", "item", "buyer_contact", "seller_contact", "terms"]);
 // Tables whose rows carry a number from change_seq (the change feed); partner_messages has its own sequence.
-const WITH_SEQ = new Set(["links", "posts", "figures", "xparts", "listings", "orders"]);
+const WITH_SEQ = new Set(["links", "posts", "figures", "xparts", "listings", "orders", "manuals"]);
 const hasSeq = (spec) => WITH_SEQ.has(spec.table) || spec.seq === "own";
 
 // An import reads the file line by line, and no more of it than these: a gzip a few hundred KB long can hold a single
@@ -241,6 +264,13 @@ const SETTINGS = {
   join_key: (v) => /^\S{8,}$/.test(v),
   discord_webhook: (v) => /^https:\/\/(discord\.com|discordapp\.com)\/api\/webhooks\//.test(v),
   discord_invite: (v) => /^https:\/\/(discord\.gg|discord\.com\/invite)\/[\w-]+$/.test(v),
+  repo_refused_brands: (v) => {
+    try {
+      return Array.isArray(JSON.parse(v));
+    } catch {
+      return false;
+    }
+  },
   feed_gaps: (v) => {
     try {
       const g = JSON.parse(v);
@@ -269,6 +299,13 @@ function checkRow(table, row) {
     if (row.token_hash != null && !/^[0-9a-f]{64}$/.test(row.token_hash)) refuse("a move token must be a SHA-256 hash");
   } else if (table === "account_tokens" || table === "sessions") {
     if (!/^[0-9a-f]{64}$/.test((table === "sessions" ? row.id_hash : row.token_hash) ?? "")) refuse("a token or session must be a SHA-256 hash");
+  } else if (table === "manual_files") {
+    if (!/^[0-9a-f]{64}$/.test(row.sha256 ?? "")) refuse("a manual file needs its sha-256");
+    if (!/^(files|held|retired)\/[0-9a-f]{64}\.pdf$/.test(row.object_key ?? "")) refuse("a manual file's object key must be files/, held/ or retired/ and its hash");
+  } else if (table === "blocked_hashes" || table === "uploads") {
+    if (!/^[0-9a-f]{64}$/.test(row.sha256 ?? "")) refuse("a hash must be a SHA-256");
+  } else if (table === "manuals") {
+    if (row.source_url && !webAddress(row.source_url)) refuse("a maker mirror's source must start with http:// or https://");
   } else if (table === "links" || table === "link_revisions") {
     if (!webAddress(row.url)) refuse("a link must start with http:// or https://");
   } else if (table === "xpart_sources") {
