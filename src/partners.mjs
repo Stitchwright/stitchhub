@@ -158,7 +158,7 @@ export function registerPartners({ app, member, fail, newId, allow, clientIp, sh
     // The redeemer's key comes with a proof made for this code (so it can't be a key the hub saw somewhere else).
     let mine = { publicKey: null, proof: null };
     if (given.publicKey != null) {
-      if (!isPublicKey(given.publicKey) || !verifyRedeem(given.publicKey, { codeHash: inv.code_hash, side: mySide, shopRef }, given.proof)) {
+      if (!isPublicKey(given.publicKey) || !verifyRedeem(given.publicKey, { codeHash: inv.code_hash, shopRef }, given.proof)) {
         throw fail(400, "The signature with the public key doesn't check out.");
       }
       mine = given;

@@ -31,29 +31,13 @@ Each company's program makes an Ed25519 key pair (the private key never leaves i
 SPKI DER; `fingerprint(key)` is the first 10 bytes of the key's sha256 as five groups of four hex digits.
 
 - Invite: `POST /v1/partners/invites` also takes `publicKey` and `proof: { issuedAt, sig }`, where `sig` signs
-  `SBINV1 
- fingerprint 
- side 
- shopRef 
- sha256(canonical terms) 
- issuedAt`. The answer carries `fingerprint`.
-- Redeem and join also take `publicKey` and `proof`, signing `SBRDM1 
- sha256(code without dashes) 
- side 
- shopRef 
- issuedAt`.
+  `SBINV1 \n fingerprint \n side \n shopRef \n sha256(canonical terms) \n issuedAt`. The answer carries `fingerprint`.
+- Redeem and join also take `publicKey` and `proof`, signing `SBRDM1 \n sha256(code without dashes) \n shopRef \n issuedAt`.
   The link the hub sends (`link.created`, the redeem answer) has `repair` and `retail` each with `publicKey` and `proof`
   (null for a side whose program sends none). A new code for the same pair replaces both keys: that is how a company
   that lost its key is trusted again.
 - Messages: `POST .../messages` also takes `sig: { v: 1, pub, seq, ts, sig }`, `sig` signing
-  `SBPM1 
- link id 
- sender's side 
- type 
- message id 
- seq 
- ts 
- sha256(canonical data)` (canonical JSON:
+  `SBPM1 \n link id \n sender's side \n type \n message id \n seq \n ts \n sha256(canonical data)` (canonical JSON:
   keys sorted). `seq` is a millisecond clock that only goes up per link and sender. The hub checks the signature
   against the key on file for that side (a side with none takes the key of its first valid signature), stores `sig`
   and marks the message `verified`. A bad signature or a key other than the one on file is a 400; an unsigned message

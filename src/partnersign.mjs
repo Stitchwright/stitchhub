@@ -64,7 +64,7 @@ export function verifyMessage(env, m) {
 }
 
 export const inviteText = (o) => ["SBINV1", fingerprint(o.pub), o.side, o.shopRef, sha256hex(canonical(o.terms ?? {})), o.issuedAt].join("\n");
-export const redeemText = (o) => ["SBRDM1", o.codeHash, o.side, o.shopRef, o.issuedAt].join("\n");
+export const redeemText = (o) => ["SBRDM1", o.codeHash, o.shopRef, o.issuedAt].join("\n");
 
 export const verifyInvite = (pub, o, proof) => !!proof && typeof proof.issuedAt === "string" && verifyText(pub, inviteText({ ...o, pub, issuedAt: proof.issuedAt }), proof.sig);
 export const verifyRedeem = (pub, o, proof) => !!proof && typeof proof.issuedAt === "string" && verifyText(pub, redeemText({ ...o, issuedAt: proof.issuedAt }), proof.sig);
