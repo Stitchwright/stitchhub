@@ -182,6 +182,44 @@ try {
   assert.equal(exp.status, 200);
   const text = zlib.gunzipSync(Buffer.from(await exp.arrayBuffer())).toString("utf8");
   assert.ok(text.includes('"verified":true') && text.includes(R.pub), "export has signatures, verified and keys");
+  // A hub moved whole: import the export into a second, empty hub (a database of its own beside this one) and the keys,
+  // proofs, signatures and verified marks arrive as they were.
+  const base = new URL(DB);
+  const other = `${base.pathname.slice(1)}_import`;
+  const adminDb = new pg.Client({ connectionString: Object.assign(new URL(DB), { pathname: "/postgres" }).toString() });
+  await adminDb.connect();
+  await adminDb.query(`DROP DATABASE IF EXISTS "${other}" WITH (FORCE)`);
+  await adminDb.query(`CREATE DATABASE "${other}"`);
+  const port2 = await freePort();
+  const hub2 = spawn(process.execPath, ["src/server.mjs"], {
+    cwd: ROOT,
+    env: { ...process.env, DATABASE_URL: Object.assign(new URL(DB), { pathname: `/${other}` }).toString(), ADMIN_TOKEN: ADMIN, JOIN_KEY: JOIN, PORT: String(port2), LINK_CHECKER: "off", TRUST_PROXY: "", RAILWAY_ENVIRONMENT_ID: "" },
+    stdio: "ignore",
+  });
+  try {
+    for (let i = 0; ; i++) {
+      if (await fetch(`http://127.0.0.1:${port2}/health`).then((r) => r.ok, () => false)) break;
+      if (i > 300) throw new Error("the second hub didn't start");
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    const exp2 = await call("/v1/admin/export", { key: ADMIN });
+    const into = await fetch(`http://127.0.0.1:${port2}/v1/admin/import`, { method: "POST", headers: { Authorization: `Bearer ${ADMIN}`, Connection: "close" }, body: Buffer.from(await exp2.arrayBuffer()) });
+    assert.equal(into.status, 200, await into.text());
+    const db2 = new pg.Pool({ connectionString: Object.assign(new URL(DB), { pathname: `/${other}` }).toString(), max: 1 });
+    const shape = async (pool) => ({
+      links: (await pool.query(`SELECT id, repair_key, retail_key, repair_proof, retail_proof FROM partner_links ORDER BY id`)).rows,
+      messages: (await pool.query(`SELECT link_id, from_side, id, verified, sig FROM partner_messages ORDER BY link_id, from_side, id`)).rows,
+      invites: (await pool.query(`SELECT code_hash, pub_key, invite_sig FROM partner_invites ORDER BY code_hash`)).rows,
+    });
+    assert.deepEqual(await shape(db2), await shape(db), "keys, proofs, signatures and verified marks survive moving the hub");
+    await db2.end();
+  } finally {
+    hub2.kill();
+    await new Promise((r) => setTimeout(r, 500));
+    await adminDb.query(`DROP DATABASE IF EXISTS "${other}" WITH (FORCE)`).catch(() => {});
+    await adminDb.end();
+  }
+  console.log("export and import: ok");
   console.log("partner signing: all ok");
 } catch (e) {
   console.error(e);
