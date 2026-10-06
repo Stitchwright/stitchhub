@@ -87,6 +87,16 @@
       <div class="scroll"><table><thead><tr><th>Shop</th><th>From</th><th>To</th><th>State</th><th>Token made</th><th>Moved</th><th>Rows moved</th></tr></thead><tbody id="moves"></tbody></table></div>
     </section>
 
+    <section id="assistantSection">
+      <h2>Assistant</h2>
+      <p class="muted">Each company's Assistant calls for the month (every call goes through this hub; the Anthropic key is only here). A company gets 300 a month; "Top up" adds 300 more to the month it is in now. "Comp" lets a company use the Assistant without a key, until a day you choose. The hub keeps counts and cost only, never any question or answer.</p>
+      <form class="row" id="aForm"><label for="aMonth" class="muted">Month</label><input id="aMonth" type="month" style="min-width:0" required><button class="plain">Show</button><span id="aTotals" class="muted"></span></form>
+      <div class="scroll"><table><thead><tr><th>Company</th><th>Calls</th><th>Free plate reads</th><th>Cost</th><th>Comp</th><th></th></tr></thead><tbody id="aShops"></tbody></table></div>
+      <h2 style="margin-top:16px">Recent errors</h2>
+      <p class="muted">Calls that failed (the model was down, a timeout, a refusal): not counted against the month.</p>
+      <div class="scroll"><table><thead><tr><th>When</th><th>Company</th><th>What</th><th>Error</th></tr></thead><tbody id="aErrors"></tbody></table></div>
+    </section>
+
     <section>
       <h2>Manual repository</h2>
       <p class="muted" id="repoState"></p>
@@ -191,6 +201,7 @@
     await loadMoves();
     await loadRepository();
     await loadTakedown();
+    await loadAssistant();
   }
 
   async function loadRepository() {
@@ -278,6 +289,48 @@
   $("ntCsv").onclick = async (e) => { e.preventDefault(); try { const blob = await (await api("/repository/notices.csv")).blob(); const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "copyright-notices.csv"; a.click(); } catch (err) { say(err.message, true); } };
   $("lgGo").onclick = async () => { try { const out = await (await post("/repository/notices", { via: $("lgVia").value, name: $("lgName").value, organization: $("lgOrg").value, email: $("lgEmail").value, work: $("lgWork").value, locations: $("lgLoc").value, raw: $("lgRaw").value })).json(); say(`Logged (${out.status}).`); loadTakedown(); } catch (err) { say(err.message, true); } };
   $("rbAdd").onclick = async () => { try { await post("/repository/refused-brands", { brand: $("rbBrand").value, refuse: true }); $("rbBrand").value = ""; loadTakedown(); } catch (err) { say(err.message, true); } };
+
+  // ----- Assistant: usage this month, top-up, comp, recent errors (GET /assistant/usage, POST /assistant/topup, POST /assistant/comp, GET /assistant/errors) -----
+  const dollars = (millicents) => "$" + (millicents / 100000).toFixed(2); // a thousandth of a cent
+  const foreverDay = "2099-12-31";
+  async function loadAssistant() {
+    if (!$("aMonth").value) $("aMonth").value = new Date().toISOString().slice(0, 7);
+    const u = await (await api("/assistant/usage?month=" + encodeURIComponent($("aMonth").value))).json();
+    const totalCalls = u.rows.reduce((n, r) => n + r.calls, 0), totalCost = u.rows.reduce((n, r) => n + r.cost_millicents, 0);
+    $("aTotals").textContent = `${u.rows.length} compan${u.rows.length === 1 ? "y" : "ies"}, ${totalCalls} calls, ${dollars(totalCost)}`;
+    $("aShops").replaceChildren(...u.rows.map((r) => {
+      const tr = document.createElement("tr");
+      const name = td(r.shop_name || r.shop_ref); name.append(document.createElement("br"));
+      const small = document.createElement("small"); small.className = "muted"; small.textContent = r.install_name; name.append(small);
+      const calls = td(`${r.calls} of ${r.limit}${r.bonus ? ` (${r.bonus / u.topUpCalls} top-up${r.bonus / u.topUpCalls === 1 ? "" : "s"})` : ""}`);
+      if (r.calls >= r.limit) calls.className = "bad";
+      const comp = document.createElement("td");
+      const label = document.createElement("label"); const sw = document.createElement("input");
+      sw.type = "checkbox"; sw.checked = r.comped; sw.style.minWidth = "0"; sw.setAttribute("aria-label", `Comp ${r.shop_name || r.shop_ref}`);
+      sw.onchange = async () => {
+        let until = "";
+        if (sw.checked) {
+          const said = prompt(`Assistant free for ${r.shop_name || r.shop_ref} until (YYYY-MM-DD), or "forever":`, "forever");
+          if (said === null || !said.trim()) { sw.checked = false; return; }
+          until = said.trim().toLowerCase() === "forever" ? foreverDay : said.trim();
+        }
+        const note = until ? prompt("A note for yourself (why):", r.comp_note || "") : null;
+        try { await post("/assistant/comp", { installId: r.install_id, shopRef: r.shop_ref, until, note }); say(until ? "Comp saved." : "Comp taken away."); loadAssistant(); } catch (err) { sw.checked = !sw.checked; say(err.message, true); }
+      };
+      label.append(sw, " ", r.comp_until ? (r.comp_until.startsWith("2099") ? "for good" : `until ${r.comp_until}`) : "off");
+      comp.append(label);
+      const top = document.createElement("button"); top.className = "plain"; top.textContent = `Top up (+${u.topUpCalls})`;
+      top.onclick = async () => {
+        if (!confirm(`Add ${u.topUpCalls} Assistant calls to ${r.shop_name || r.shop_ref} for this month?`)) return;
+        try { const t = await (await post("/assistant/topup", { installId: r.install_id, shopRef: r.shop_ref })).json(); say(`Topped up: ${t.calls} of ${t.limit} calls in ${t.month}.`); loadAssistant(); } catch (err) { say(err.message, true); }
+      };
+      const c = document.createElement("td"); c.append(top);
+      tr.append(name, calls, td(r.free_reads), td(dollars(r.cost_millicents)), comp, c); return tr;
+    }));
+    const e = await (await api("/assistant/errors?limit=30")).json();
+    $("aErrors").replaceChildren(...(e.rows.length ? e.rows.map((x) => { const tr = document.createElement("tr"); tr.append(td(when(x.created_at)), td(x.shop_name || x.shop_ref), td(`${x.feature} (${x.class}${x.model ? ", " + x.model : ""})`), td(x.error)); return tr; }) : [(() => { const tr = document.createElement("tr"); const c = td("No failed calls."); c.colSpan = 4; c.className = "muted"; tr.append(c); return tr; })()]));
+  }
+  $("aForm").onsubmit = async (e) => { e.preventDefault(); try { await loadAssistant(); } catch (err) { say(err.message, true); } };
 
   async function loadMoves() {
     const m = await (await api("/moves")).json();

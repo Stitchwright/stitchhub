@@ -50,6 +50,14 @@ export const TABLES = [
     key: "shop_id",
     json: ["mailed"],
   },
+  // The Assistant's own subscription per shop and its paid top-ups (src/assistant-billing.mjs).
+  {
+    t: "assistant_subscription",
+    table: "assistant_subscriptions",
+    cols: ["shop_id", "stripe_subscription_id", "stripe_customer_id", "stripe_created", "plan", "status", "current_period_end", "cancel_at_period_end", "price_id", "created_at", "updated_at"],
+    key: "shop_id",
+  },
+  { t: "assistant_topup", table: "assistant_topups", cols: ["stripe_session_id", "shop_id", "calls", "month", "created_at"], key: "stripe_session_id" },
   { t: "stripe_event", table: "stripe_events", cols: ["id", "type", "received_at"] },
   { t: "license_issue", table: "license_issues", cols: ["key_id", "shop_id", "kid", "plan", "modules", "first_day", "last_day", "grace_days", "key", "issued_at", "revoked_at", "tier", "founding"], key: "key_id" },
   // The manual repository (src/repository.mjs): the manuals shops see (numbered in the change sequence, which the
@@ -145,6 +153,16 @@ export const TABLES = [
     table: "partner_links",
     cols: ["id", "repair_install_id", "repair_shop_ref", "repair_name", "retail_install_id", "retail_shop_ref", "retail_name", "terms", "status", "created_at", "ended_at", "repair_key", "repair_proof", "retail_key", "retail_proof"],
   },
+  // The Assistant proxy's counts (src/assistant.mjs): tokens and cost per company and month, never any text.
+  { t: "assistant_shop", table: "assistant_shops", cols: ["install_id", "shop_ref", "tz", "comp_until", "comp_note", "updated_at"], key: "install_id || '|' || shop_ref", conflict: ["install_id", "shop_ref"] },
+  {
+    t: "assistant_usage",
+    table: "assistant_usage",
+    cols: ["install_id", "shop_ref", "month", "calls", "bonus", "free_reads", "input_tokens", "output_tokens", "cost_millicents", "updated_at"],
+    key: "install_id || '|' || shop_ref || '|' || month",
+    conflict: ["install_id", "shop_ref", "month"],
+  },
+  { t: "assistant_call", table: "assistant_calls", cols: ["id", "install_id", "shop_ref", "feature", "class", "model", "free", "input_tokens", "cache_tokens", "output_tokens", "cost_millicents", "ms", "error", "created_at"] },
   // The 30-day grace of the real-partnership rule (billing.mjs): after the links it hangs on.
   { t: "waiver_grace", table: "waiver_grace", cols: ["link_id", "since", "reason", "created_at"], key: "link_id" },
   {
