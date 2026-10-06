@@ -25,6 +25,7 @@ import { one, q, tx, feedLimit } from "./db.mjs";
 import { standingOf } from "./billing.mjs";
 import { r2FromEnv } from "./r2.mjs";
 import { inspectPdf } from "./pdfcheck.mjs";
+import { ocrOn, ocrMarkings, ocrQueue } from "./ocr.mjs";
 
 const MB = 1024 * 1024;
 export const DOC_TYPES = ["ServiceManual", "TechnicalManual", "MaintenanceManual", "PartsList", "OperatorManual", "ErrorCodes", "WiringDiagram", "Schematic", "Firmware", "Training", "Bulletin"];
@@ -213,7 +214,7 @@ export function registerRepository({ app, member, admin, acct, fail, newId, allo
         if (bytes.length !== Number(up.size_bytes)) return { refused: "The file in storage isn't the size that was offered." };
         const sha = sha256of(bytes);
         if (sha !== up.sha256) return { refused: "The file's contents don't match its sha256: it changed or broke on the way. Offer it again." };
-        const look = inspectPdf(bytes);
+        const look = inspectPdf(bytes, { ocr: ocrOn() });
         if (look.refused) return { refused: look.refused };
         return { sha, sha1: sha1of(bytes), look };
       });
@@ -240,6 +241,7 @@ export function registerRepository({ app, member, admin, acct, fail, newId, allo
         return { state: "pending", dropIncoming: true };
       });
       if (state.dropIncoming) await r2.remove(key).catch(() => {});
+      if (state.state === "pending" && look.markings.status === "checking") queueOcr(up.sha256);
       const row = await one(`SELECT state, reason FROM uploads WHERE id = $1`, [up.id]);
       return c.json({ state: row.state, reason: row.reason });
     } catch (e) {
@@ -248,6 +250,40 @@ export function registerRepository({ app, member, admin, acct, fail, newId, allo
       throw e;
     }
   });
+
+  // ----- OCR of scanned pages, after the upload is filed (design 0.2; src/ocr.mjs): one at a time, off the request path -----
+
+  const saveMarkings = (fileId, m) =>
+    q(`UPDATE manual_files SET checks = jsonb_set(checks, '{markings}', $2::jsonb), updated_at = now() WHERE id = $1 AND status = 'pending' AND checks->'markings'->>'status' = 'checking'`, [fileId, JSON.stringify(m)]);
+  function queueOcr(sha) {
+    ocrQueue(async () => {
+      const f = await one(`SELECT id, object_key, checks FROM manual_files WHERE sha256 = $1 AND status = 'pending'`, [sha]);
+      const prior = f?.checks?.markings;
+      if (!f || prior?.status !== "checking") return;
+      let m;
+      try {
+        if (!ocrOn()) throw new Error("OCR is switched off (REPO_OCR=off)");
+        const bytes = await r2.get(f.object_key);
+        if (!bytes) throw new Error("the file is gone from storage");
+        m = await ocrMarkings(bytes, prior.ocrPages ?? [], prior);
+      } catch (e) {
+        m = { status: "not-checked", reason: `not checked for markings: OCR failed (${e.message}); look at the cover yourself`, hits: prior.hits ?? [], pagesRead: prior.pagesRead ?? [] };
+      }
+      delete m.ocrPages;
+      await saveMarkings(f.id, m);
+    });
+  }
+  // After a restart the queue is empty: files still "checking" are put back in it.
+  if (r2) {
+    const t = setTimeout(async () => {
+      try {
+        for (const f of (await q(`SELECT sha256 FROM manual_files WHERE status = 'pending' AND checks->'markings'->>'status' = 'checking' ORDER BY created_at`)).rows) queueOcr(f.sha256);
+      } catch (e) {
+        console.error("ocr resume:", e.message);
+      }
+    }, 5000);
+    t.unref?.();
+  }
 
   // ----- this company's offers -----
 

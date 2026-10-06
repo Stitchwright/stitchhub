@@ -353,7 +353,7 @@ try {
   console.log("duplicates: ok");
 
   // ----- review: the queue, approve with corrections -----
-  const marked = makePdf({ pages: ["Brother PR1000 owners guide front cover text", "DEALER USE ONLY please do not copy this page around", "third"] });
+  const marked = makePdf({ pages: ["Brother PR1000 owners guide front cover text", "DEALER USE ONLY please do not copy this page around", "third page with ordinary words"] });
   const wm = await walk(key1, "main", marked, { brand: "brother", models: ["PR1000e"], docType: "OperatorManual", year: null });
   assert.equal(wm.done.state, "pending");
   let q1 = await ok(await admin("/repository"));

@@ -90,7 +90,7 @@
     <section>
       <h2>Manual repository</h2>
       <p class="muted" id="repoState"></p>
-      <p class="muted">Files shops offered, waiting for your review. The checklist: a manual, readable and whole; brand, models, document type and year right (correct them below); nothing private in it; the automatic checks passed; not a duplicate of a better file; not a work an earlier notice named; <strong>not marked confidential, dealer-only or not for distribution</strong> (the markings flag below: a hit shows the page and the words around it, and is for you to judge; "not checked" means a scan or unreadable text, so look at the cover yourself). Preview opens the file for five minutes.</p>
+      <p class="muted">Files shops offered, waiting for your review. The checklist: a manual, readable and whole; brand, models, document type and year right (correct them below); nothing private in it; the automatic checks passed; not a duplicate of a better file; not a work an earlier notice named; <strong>not marked confidential, dealer-only or not for distribution</strong> (the markings flag below: a hit shows the page and the words around it, and is for you to judge; "checking" means a scan is being read by OCR (reload in a minute); "not checked" means OCR failed, timed out or is off, or the text was unreadable, so look at the cover yourself). Preview opens the file for five minutes.</p>
       <div id="repoQueue"></div>
     </section>
 
@@ -205,7 +205,7 @@
       head.textContent = `${o.brand || "?"} ${(o.models || []).join(", ")} · ${o.docType || "?"}${o.year ? " " + o.year : ""} · ${(f.sizeBytes / 1048576).toFixed(1)} MB · ${f.pages ?? "?"} pages · offered as ${f.originalName || "(no name)"} · would be filed as ${f.composedName}`;
       const mark = document.createElement("div");
       mark.className = mk.status === "flagged" ? "bad" : mk.status === "clean" ? "ok" : "muted";
-      mark.textContent = mk.status === "flagged" ? "MARKINGS FLAGGED: " + mk.hits.map((h) => `${h.level} "${h.label}" on page ${h.page}: ...${h.context}...`).join(" | ") : mk.status === "clean" ? `Markings: none found on page${mk.pagesRead.length === 1 ? "" : "s"} ${mk.pagesRead.join(", ")}.` : (mk.reason || "Markings: not checked");
+      mark.textContent = mk.status === "flagged" ? "MARKINGS FLAGGED: " + mk.hits.map((h) => `${h.level} "${h.label}" on page ${h.page}${h.ocr ? " (read by OCR)" : ""}: ...${h.context}...`).join(" | ") + (mk.reason ? ` (${mk.reason})` : "") : mk.status === "clean" ? `Markings: none found on page${mk.pagesRead.length === 1 ? "" : "s"} ${mk.pagesRead.join(", ")}.` : (mk.reason || "Markings: not checked");
       const flags = document.createElement("div"); flags.className = "muted";
       flags.textContent = (f.checks?.structure?.flags || []).map((x) => x.text).join(" ") || "Structure check: passed.";
       const who = document.createElement("div"); who.className = "muted";
