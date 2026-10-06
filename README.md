@@ -364,9 +364,10 @@ placeholders and open questions are listed). Never edit a published version: add
 
 ## Manual repository
 Design: `docs/plans/manual-repository-design.md` in the StitchBench repo (read its sections 1 and 4 and the lawyer
-questions before you open it: **a plan, not legal advice**). Packages `repo-storage` and `repo-hub` are built here;
-the takedown package (`/copyright`, notices, strikes, counter-notices) is not, so **leave `REPO_UPLOADS` unset until it
-and the launch gate in section 7 of the design are done**. With it unset, `POST /v1/repository/uploads` answers
+questions before you open it: **a plan, not legal advice**). Packages `repo-storage`, `repo-hub` and `repo-takedown`
+(`/copyright`, notices, strikes, counter-notices) are built here, so **leave `REPO_UPLOADS` unset until the launch gate in
+section 7 of the design is done** (the designated agent registered and named below, the copyright address working, the
+lawyer's review, a takedown and a restore run on a test hub). With it unset, `POST /v1/repository/uploads` answers
 403 "The manual repository opens soon." and nothing else changes; reading what is published needs no switch.
 
 - **Storage**: one private Cloudflare R2 bucket, `src/r2.mjs` (AWS Signature V4 by hand, no SDK: presigned PUT and GET,
@@ -398,8 +399,8 @@ and the launch gate in section 7 of the design are done**. With it unset, `POST 
   who offered the same bytes, published files for the same brand, model and type); preview opens the file for five
   minutes; **Approve** (with corrected metadata) puts it in the feed and on the Manuals page; **Reject** takes a reason
   the uploader sees, deletes the object and can block the hash. `POST /v1/admin/repository/manuals/:id/remove` takes
-  a published manual down (`withdrawn` or `replaced`; bytes to `retired/`). Merge, and removal for copyright, are not
-  built yet.
+  a published manual down (`withdrawn` or `replaced`; bytes to `retired/`). Merge is not built yet; removal for
+  copyright is the takedown process below. A review item also lists earlier notices that named its brand.
 - **The feed and downloads**: `GET /v1/repository/changes?since=N` (its own cursor on the same change numbers; an old
   program never calls it), `POST /v1/repository/files/:id/url` (the feed's id; published manuals only; 300 an hour and
   3,000 a day per install; the URL lasts 5 minutes with the library's file name forced). `GET /v1/repository/uploads`
@@ -407,10 +408,49 @@ and the launch gate in section 7 of the design are done**. With it unset, `POST 
 - **The free side**: signed in to `/account`, the **Manuals** page searches published manuals (brand, model, words,
   type) and gives a short-lived download link: 25 a day per account and per address (an address is kept only as a hash).
   The programs add convenience, not access.
+- **Takedowns** (`src/takedown.mjs`; design 4.2; the process of 17 U.S.C. 512(c) and (g) as the design states it, for a
+  lawyer to review). Variables: `COPYRIGHT_AGENT_NAME`, `COPYRIGHT_AGENT_ADDRESS`, `COPYRIGHT_EMAIL` (the designated
+  agent as registered with the Copyright Office; `COPYRIGHT_AGENT_PHONE` is shown when set) and `REPO_NOTICE_EMAIL` (where
+  new notices, counter-notices and the day-10 reminder are mailed; defaults to `COPYRIGHT_EMAIL`). **Until the three
+  agent variables are all set, `/copyright` says "Not yet open" and its form refuses.** Mail goes through `src/mail.mjs`
+  (`MAIL_DEV_LOG=true` prints it on a test hub).
+  - `GET /copyright` (public; linked from the home page): the agent, how to send a notice, the counter-notice and
+    repeat-infringer policy, what review checks, and the form. `POST /copyright/notice`: a field per 512(c)(3) element
+    (signature; the work; the material and where it is; name, address, telephone, email; the good-faith and the accuracy
+    statements); an incomplete one is refused with what is missing (nothing stored); 5 an hour per address, a honeypot
+    field (`website`), 16 KB. A complete notice that names a manual's reference (its id, shown on the Manuals page) or a
+    file's sha256 is acted on at once; any other waits for the owner (**Action** with the manual's reference, within one
+    business day; the list shows each notice's age in business days).
+  - **Acting on a notice**: the manual is `removed` (why: copyright) in the feed and gone from the free page; the object
+    moves to `held/<sha256>.pdf`; the hash goes into `blocked_hashes` (the notice's id on it); the account whose upload was
+    published gets a strike and an email (what, who complained: name or organisation only, how to counter-notify); anyone
+    else who offered the same bytes is told, with no strike; the owner is mailed. Three strikes in 12 months set
+    `accounts.repo_uploads_off` and reject that account's waiting offers. A notice logged from an email or letter
+    (`POST /v1/admin/repository/notices`, "Log a notice" on the admin page) is checked the same way; an incomplete one is
+    only acted on when the owner says it substantially complies.
+  - **Counter-notice**: signed in, `/account/repository` lists what was removed for the account with a form (signature,
+    name, address, telephone, the good-faith statement under penalty of perjury, consent to jurisdiction, acceptance of
+    service); the form says the whole counter-notice goes to the complainant. An incomplete one is refused with what is
+    missing. The complainant is mailed the whole of it and the window: **business days 10 to 14** after receipt, skipping
+    weekends and US federal holidays as observed (across Thanksgiving 26 Nov 2026 a counter-notice received Monday 16 Nov
+    gives 1 Dec to 7 Dec). The owner is reminded on day 10 (hourly sweep; `POST /v1/admin/repository/notices/reminders`
+    runs it now) and presses **Restore** (refused before day 10, and after "Complainant has sued", which keeps the file
+    down): the object returns to `files/`, the hash is unblocked, the strike withdrawn, the manual republished with a new
+    change number, and both sides are mailed.
+  - **The owner's admin page** has Copyright notices (each with its timeline, notes only ever appended; CSV export for the
+    lawyer at `/v1/admin/repository/notices.csv`), Strikes (withdraw one, end or allow an account's uploading) and Blocked
+    (hashes, with the notice that blocked them; refused brands). **Refused brands** (`/repository/refused-brands`, or
+    "Refuse offers for this brand" when pressing Action): a maker who sent a takedown; every later offer of that brand is
+    refused in words.
+  - `TAKEDOWN_TEST_TODAY` (YYYY-MM-DD) pins "today" for the window arithmetic; used by `test/takedown.mjs` only, never set
+    it on a real hub.
 - Moving a hub: the export carries the tables (`manuals`, `manual_files`, `uploads`, `blocked_hashes`,
-  `repo_downloads`), not the bytes, which stay in the bucket.
-- **Migration numbering**: this branch's migration is `030_repository.sql` so it can't clash with the migrations of other
-  branches (023 on `hub-accounts`); renumber it at merge (files apply in name order, once each).
+  `repo_downloads`, `takedown_notices`, `strikes`), not the bytes, which stay in the bucket.
+- **Migration numbering**: this branch's migrations are `030_repository.sql` and `031_takedown.sql` so they can't clash with
+  the migrations of other branches (023 on `hub-accounts`); renumber them at merge (files apply in name order, once each).
+- **Before opening**: register the designated agent with the Copyright Office and set the three `COPYRIGHT_*` variables;
+  make `COPYRIGHT_EMAIL` a working mailbox and send a test notice through the form; set `REPO_NOTICE_EMAIL`; have the
+  lawyer review the process; run a takedown and a restore on a test hub; then `REPO_UPLOADS=on`.
 
 ## Checking a hub
 ```
@@ -451,6 +491,13 @@ sent -> pending, wrong hash, wrong size, not a PDF, encrypted and JavaScript ref
 duplicates, blocked hashes, the 26th offer of a day and the 51st waiting (429), approve and reject, the feed, download
 URLs for published files only, one company never seeing another's offers, the free Manuals page and its 25 a day, and
 export and import into a second hub.
+
+`DATABASE_URL=<a database on a server where the role may create databases> npm run test:takedown` makes two fresh databases
+(dropped at the end) and walks the takedown process with the R2 mock and `MAIL_DEV_LOG`: business days and federal holidays
+(Thanksgiving 2026), `/copyright` unset and set, an incomplete notice refused with what is missing, a complete one removed
+(feed, free page, `held/`, blocked hash, strike, mails), the same bytes refused, a notice waiting for the owner, refused
+brands, a counter-notice and its window, restore after the window (unblocked, strike withdrawn, republished) with the
+day-10 reminder, a lawsuit, the third strike, the form's limit, honeypot and size, the CSV log, and export and import.
 
 `DATABASE_URL=<a fresh scratch database> npm run test:move` walks a company moving from one install to another: the move
 token (answered once, replaced, cancelled, expired, wrong, used), every table rewritten for that company only (legacy

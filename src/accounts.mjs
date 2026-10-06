@@ -356,7 +356,7 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
 
   // ---------- the hub's own pages and their API (session cookie) ----------
 
-  const PAGES = ["/account", "/account/verify", "/account/forgot", "/account/set-password", "/account/shops", "/account/settings", "/account/manuals"];
+  const PAGES = ["/account", "/account/verify", "/account/forgot", "/account/set-password", "/account/shops", "/account/settings", "/account/manuals", "/account/repository"];
   for (const p of PAGES) app.get(p, (c) => c.html(fs.readFileSync(path.join(root, "public", "account.html"), "utf8")));
 
   const acct = new Hono();

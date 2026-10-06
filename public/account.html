@@ -79,7 +79,7 @@
   </section>
 
   <div id="app" hidden>
-    <nav><a href="/account/shops">Your shops</a><a href="/account/manuals">Manuals</a><a href="/account/settings">Settings</a><a href="#" id="signout">Sign out</a></nav>
+    <nav><a href="/account/shops">Your shops</a><a href="/account/manuals">Manuals</a><a href="/account/repository">Repository</a><a href="/account/settings">Settings</a><a href="#" id="signout">Sign out</a></nav>
 
     <section id="termsPrompt" hidden>
       <h2 id="tpTitle">We updated our terms</h2>
@@ -128,6 +128,25 @@
       <div class="row"><button class="plain" id="mnMore" hidden>More</button></div>
     </section>
 
+    <section id="repository" hidden>
+      <h2>Your files in the repository</h2>
+      <p class="muted" id="rpState"></p>
+      <p class="muted">A file you offered is removed when a copyright notice names it. Each removal is a strike; three strikes within 12 months end uploading from your account. If you believe a file was removed by mistake or misidentification you can send a counter-notice. Knowingly false notices and counter-notices make the sender liable for damages (17 U.S.C. 512(f)). See <a href="/copyright">Copyright</a>.</p>
+      <div class="scroll"><table id="rpTable" hidden><thead><tr><th>File</th><th>Notice from</th><th>Removed</th><th>State</th><th></th></tr></thead><tbody id="rpRows"></tbody></table></div>
+      <form id="rpForm" hidden>
+        <h2 style="margin-top:18px">Counter-notice for <span id="rpWhat"></span></h2>
+        <p><strong>The whole counter-notice, with your name, address and telephone number, is sent to the person who sent the notice.</strong> Unless they tell us within 10 to 14 business days that they have gone to court, the file is restored.</p>
+        <label for="rpName">Your name</label><input id="rpName" maxlength="200" required>
+        <label for="rpAddress">Your postal address</label><input id="rpAddress" maxlength="600" required>
+        <label for="rpPhone">Your telephone number</label><input id="rpPhone" maxlength="60" required>
+        <div class="check"><input type="checkbox" id="rpGood"><label for="rpGood">Under penalty of perjury, I have a good-faith belief that the file was removed or disabled as a result of mistake or misidentification.</label></div>
+        <div class="check"><input type="checkbox" id="rpJur"><label for="rpJur">I consent to the jurisdiction of the federal district court for the judicial district of my address (or, if it is outside the United States, any judicial district where this hub can be found).</label></div>
+        <div class="check"><input type="checkbox" id="rpSvc"><label for="rpSvc">I will accept service of process from the person who sent the notice.</label></div>
+        <label for="rpSig">Signature (type your full name)</label><input id="rpSig" maxlength="200" required>
+        <div class="row"><button>Send the counter-notice</button><button type="button" class="plain" id="rpCancel">Cancel</button></div>
+      </form>
+    </section>
+
     <section id="settings" hidden>
       <h2>Settings</h2>
       <p>Signed in as <strong id="meEmail"></strong>.</p>
@@ -150,12 +169,12 @@
   const say = (t, bad) => { $("msg").textContent = t; $("msg").className = bad ? "bad" : "ok"; };
   const page = location.pathname.replace(/\/+$/, "").split("/")[2] || "";
   const token = new URLSearchParams(location.search).get("t") || "";
-  const SECTIONS = ["signin", "signup", "forgot", "setpw", "verify", "app", "shops", "manuals", "settings"];
+  const SECTIONS = ["signin", "signup", "forgot", "setpw", "verify", "app", "shops", "manuals", "repository", "settings"];
   function show(...ids) { for (const id of SECTIONS) $(id).hidden = !ids.includes(id); }
   async function api(path, body) {
     const r = await fetch("/account/api" + path, body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const j = await r.json().catch(() => ({}));
-    if (!r.ok) { const e = new Error(j.error || r.statusText); e.status = r.status; throw e; }
+    if (!r.ok) { const e = new Error(j.error || r.statusText); e.status = r.status; e.missing = j.missing; throw e; }
     return j;
   }
   const when = (d) => (d ? new Date(d).toLocaleString() : "never");
@@ -175,8 +194,9 @@
     $("hosted").hidden = !me.account.verified || !offered.length;
     $("hsProgram").replaceChildren(...offered.map((name) => Object.assign(document.createElement("option"), { value: name, textContent: name === "StitchShop" ? "StitchShop (a sewing or quilt shop counter)" : "StitchBench (a repair bench)" })));
     $("billingNote").textContent = me.billing.open ? billingWords(me.billing) : "Subscriptions aren't open yet. Every shop is free while the hub is in its community period.";
-    show("app", where === "settings" ? "settings" : where === "manuals" ? "manuals" : "shops");
+    show("app", where === "settings" ? "settings" : where === "manuals" ? "manuals" : where === "repository" ? "repository" : "shops");
     if (where === "manuals") searchManuals(0);
+    if (where === "repository") loadRepo();
   }
 
   // "We updated our terms" (or, for an account that never ticked, "Please accept our terms"): shown while the version in
@@ -299,6 +319,33 @@
   $("mnDocType").append(...DOC_TYPES.map((d) => Object.assign(document.createElement("option"), { value: d, textContent: d.replace(/([a-z])([A-Z])/g, "$1 $2") })));
   let mnOffset = 0;
   const size = (b) => (b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
+  const docCell = (m) => { const c = td(m.docType.replace(/([a-z])([A-Z])/g, "$1 $2")); const r = document.createElement("div"); r.className = "muted"; r.style.fontSize = "12px"; r.textContent = "Ref " + m.id; c.append(r); return c; };
+  // What was removed on a copyright notice, and the counter-notice.
+  let rpNotice = null;
+  async function loadRepo() {
+    try {
+      const r = await api("/repository");
+      $("rpState").textContent = r.uploadsOff ? "Uploading has ended for your account." : `Strikes in the last 12 months: ${r.strikes} of 3.`;
+      $("rpTable").hidden = !r.removals.length;
+      if (!r.removals.length) $("rpState").textContent += " Nothing of yours has been removed on a notice.";
+      $("rpRows").replaceChildren(...r.removals.map((x) => {
+        const tr = document.createElement("tr");
+        const state = x.status === "restored" ? `Restored ${when(x.restoredAt)}; strike withdrawn` : x.status === "countered" ? `Counter-notice sent. Restored between ${x.restoreEarliest} and ${x.restoreLatest} unless they go to court` : x.status === "lawsuit" ? "The sender says it has gone to court; the file stays down" : x.status === "actioned" ? "Removed" : x.status;
+        const last = document.createElement("td");
+        if (x.canCounter) { const b = Object.assign(document.createElement("button"), { className: "plain", textContent: "Counter-notice" }); b.style.marginTop = "0"; b.onclick = () => { rpNotice = x.noticeId; $("rpWhat").textContent = x.what; $("rpForm").hidden = false; $("rpName").focus(); }; last.append(b); }
+        tr.append(td(x.what), td(x.from), td(when(x.removedAt)), td(state), last);
+        return tr;
+      }));
+    } catch (err) { say(err.message, true); }
+  }
+  $("rpCancel").onclick = () => { $("rpForm").hidden = true; rpNotice = null; };
+  $("rpForm").onsubmit = async (e) => {
+    e.preventDefault();
+    try {
+      const r = await api("/repository/counter-notice", { noticeId: rpNotice, name: $("rpName").value, address: $("rpAddress").value, phone: $("rpPhone").value, signature: $("rpSig").value, goodFaith: $("rpGood").checked, jurisdiction: $("rpJur").checked, service: $("rpSvc").checked });
+      say(`Your counter-notice was sent. The file is restored between ${r.restoreEarliest} and ${r.restoreLatest} unless the sender goes to court.`); $("rpForm").hidden = true; e.target.reset(); await loadRepo();
+    } catch (err) { say(err.message, true); }
+  };
   async function searchManuals(offset) {
     try {
       const qs = new URLSearchParams({ q: $("mnQuery").value, docType: $("mnDocType").value, offset: String(offset) });
@@ -312,7 +359,7 @@
         const b = Object.assign(document.createElement("button"), { className: "plain", textContent: "Download" }); b.style.marginTop = "0";
         b.onclick = async () => { b.disabled = true; try { const d = await api(`/manuals/${m.id}/url`, {}); say(`${m.fileName}: ${d.remaining} download${d.remaining === 1 ? "" : "s"} left today.`); location.href = d.url; } catch (err) { say(err.message, true); } b.disabled = false; };
         const last = document.createElement("td"); last.append(b);
-        tr.append(td(m.brand), td(m.models), td(m.docType.replace(/([a-z])([A-Z])/g, "$1 $2")), td(m.year ?? ""), td(m.pages ?? ""), td(size(m.sizeBytes)), last);
+        tr.append(td(m.brand), td(m.models), docCell(m), td(m.year ?? ""), td(m.pages ?? ""), td(size(m.sizeBytes)), last);
         return tr;
       });
       $("mnRows").replaceChildren(...rows);
