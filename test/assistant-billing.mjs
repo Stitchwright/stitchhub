@@ -236,7 +236,7 @@ try {
   assert.deepEqual([row.stripe_subscription_id, row.plan, row.status, row.price_id], [sub.id, "m", "active", P.aMonthly]);
   let st = await standing(installKey, "shopA");
   assert.equal(st.standing, "trial", "the base standing is still the trial");
-  assert.equal(keyPayload(st.key, shopA, "base key").m.join(), "base", "the base key is the base key (it names the hub's shop id; the Assistant key names the company's own id)");
+  assert.equal(keyPayload(st.key, "shopA", "base key").m.join(), "base", "the base key is the base key (both keys name the company's own id, shop_ref, since hub-accounts)");
   assert.equal(st.moduleKeys.length, 1);
   const firstKey = st.moduleKeys[0];
   const ak = keyPayload(firstKey, "shopA", "Assistant key");
@@ -295,7 +295,7 @@ try {
   assert.notEqual(assistantSub.status, "canceled", "the Assistant subscription survives a base Checkout");
   st = await standing(installKey, "shopA");
   assert.equal(st.standing, "active");
-  assert.equal(keyPayload(st.key, shopA, "base key after paying").m.join(), "base");
+  assert.equal(keyPayload(st.key, "shopA", "base key after paying").m.join(), "base");
   assert.deepEqual(st.moduleKeys, [firstKey], "the Assistant key is unchanged");
   assert.equal((await db.query(`SELECT count(*)::int AS n FROM subscriptions WHERE shop_id = $1`, [shopA])).rows[0].n, 1);
   assert.equal((await db.query(`SELECT status FROM assistant_subscriptions WHERE shop_id = $1`, [shopA])).rows[0].status, "active");
