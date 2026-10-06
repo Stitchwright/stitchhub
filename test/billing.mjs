@@ -1030,6 +1030,27 @@ try {
   // (f) Add-ons are never waived: every key the hub signs for a waived shop is for "base" alone.
   const mods = (await db.query(`SELECT DISTINCT modules FROM license_issues WHERE shop_id = ANY($1)`, [[pa.shopS, pb.shopS, pc.shopS, pd.shopS, pn.shopS, shopS]])).rows.map((r) => r.modules.join(","));
   assert.deepEqual(mods, ["base"], "the waiver covers the base plan only; add-ons stay paid");
+  // (g) Both shops on signed messages (each has a key on the link): the quilt shop's own messages prove nothing, so only
+  // what the repair shop signed and the hub verified counts. A pair with a side still on an older program counts as before.
+  const ky = await pair("PG");
+  await subscribeRow(ky.shopR);
+  await db.query(`UPDATE partner_links SET repair_key = 'k-repair', retail_key = 'k-retail' WHERE id = $1`, [ky.link]);
+  await repairPassed(ky.link); // a retail job.new, unverified
+  await db.query(`INSERT INTO partner_messages (id, link_id, from_side, type, data, bytes, sig, verified) VALUES ($1, $2, 'retail', 'pickup.done', '{"side":"retail"}', 10, '{}', true)`, [`g${RUN}1`, ky.link]);
+  await db.query(`INSERT INTO partner_messages (id, link_id, from_side, type, data, bytes, sig, verified) VALUES ($1, $2, 'retail', 'job.new', '{"id":"x"}', 10, '{}', true)`, [`g${RUN}2`, ky.link]);
+  await db.query(`INSERT INTO partner_messages (id, link_id, from_side, type, data, bytes, verified) VALUES ($1, $2, 'repair', 'job.update', '{"id":"y"}', 10, false)`, [`g${RUN}3`, ky.link]);
+  st = await standing(ks, ky.ref);
+  assert.deepEqual([st.standing, st.lastDay], ["waived", plusDays(30)], "keyed pair: the quilt shop's messages and an unverified one don't count: grace");
+  assert.equal((await graceRow(ky.link)).reason, "activity");
+  await db.query(`INSERT INTO partner_messages (id, link_id, from_side, type, data, bytes, sig, verified) VALUES ($1, $2, 'repair', 'job.update', '{"id":"y"}', 10, '{}', true)`, [`g${RUN}4`, ky.link]);
+  st = await standing(ks, ky.ref);
+  assert.deepEqual([st.standing, st.lastDay], ["waived", null], "a verified job.update from the repair shop counts");
+  assert.equal(await graceRow(ky.link), undefined);
+  const kz = await pair("PZ"); // one side without a key: the plain job.new still counts
+  await subscribeRow(kz.shopR);
+  await db.query(`UPDATE partner_links SET repair_key = 'k-repair' WHERE id = $1`, [kz.link]);
+  await repairPassed(kz.link);
+  assert.deepEqual([(await standing(ks, kz.ref)).standing, (await standing(ks, kz.ref)).lastDay], ["waived", null], "a side on an older program: counted as before");
   console.log("partnership rule: ok");
 
   // ----- 11. Comped: for good, then to a day, then taken away. -----

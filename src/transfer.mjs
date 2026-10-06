@@ -112,27 +112,27 @@ export const TABLES = [
   {
     t: "partner_link",
     table: "partner_links",
-    cols: ["id", "repair_install_id", "repair_shop_ref", "repair_name", "retail_install_id", "retail_shop_ref", "retail_name", "terms", "status", "created_at", "ended_at"],
+    cols: ["id", "repair_install_id", "repair_shop_ref", "repair_name", "retail_install_id", "retail_shop_ref", "retail_name", "terms", "status", "created_at", "ended_at", "repair_key", "repair_proof", "retail_key", "retail_proof"],
   },
   {
     t: "partner_invite",
     table: "partner_invites",
-    cols: ["code_hash", "install_id", "shop_ref", "shop_name", "side", "terms", "expires_at", "used_at", "link_id", "created_at"],
+    cols: ["code_hash", "install_id", "shop_ref", "shop_name", "side", "terms", "expires_at", "used_at", "link_id", "created_at", "pub_key", "invite_sig"],
     key: "code_hash",
   },
   {
     // In the order they were sent, with their numbers (an export from before version 3 has none: numbered again).
     t: "partner_message",
     table: "partner_messages",
-    cols: ["id", "link_id", "from_side", "type", "data", "bytes", "created_at"],
+    cols: ["id", "link_id", "from_side", "type", "data", "bytes", "created_at", "sig", "verified"],
     key: "lpad(seq::text, 20, '0')",
     conflict: ["link_id", "from_side", "id"],
-    json: ["data"],
+    json: ["data", "sig"],
     seq: "own",
   },
 ];
 const BINARY = new Set(["data"]);
-const JSONB = new Set(["snapshot", "item", "buyer_contact", "seller_contact", "terms"]);
+const JSONB = new Set(["snapshot", "item", "buyer_contact", "seller_contact", "terms", "repair_proof", "retail_proof", "invite_sig"]);
 // Tables whose rows carry a number from change_seq (the change feed); partner_messages has its own sequence.
 const WITH_SEQ = new Set(["links", "posts", "figures", "xparts", "listings", "orders"]);
 const hasSeq = (spec) => WITH_SEQ.has(spec.table) || spec.seq === "own";

@@ -327,6 +327,15 @@ function fromSubscription(shop, sub, t) {
 export const WAIVER_GRACE_DAYS = 30;
 export const NEW_LINK_DAYS = 90;
 const ACTIVITY_SQL = `((m.type = 'job.new' AND m.from_side = 'retail') OR m.type = 'pickup.done')`;
+// A partnership whose two shops both signed up to signed messages (each has a key on file) counts only what the repair
+// shop itself signed and the hub verified: a job.update (the repair shop has the machine) or a pickup.done it made. The
+// quilt shop's own messages (a job.new, a pickup.done naming its side) prove nothing, since it could send them with no
+// repair behind them. A partnership with a side still on an older program counts the plain messages, as before.
+const STRICT_ACTIVITY_SQL = `(m.verified AND m.from_side = 'repair' AND m.type IN ('job.update', 'pickup.done'))`;
+const activitySql = async (linkId) => {
+  const l = await one(`SELECT repair_key IS NOT NULL AND retail_key IS NOT NULL AS strict FROM partner_links WHERE id = $1`, [linkId]);
+  return l?.strict ? STRICT_ACTIVITY_SQL : ACTIVITY_SQL;
+};
 
 /** The first day of the calendar quarter `back` quarters before the one holding `ymd` (UTC). */
 export function quarterStart(ymd, back = 0) {
@@ -338,8 +347,9 @@ export function quarterStart(ymd, back = 0) {
 
 /** Repairs between the two shops of a link in the last calendar quarter and this one: how many, and the latest ever. */
 export async function partnerActivity(linkId, t = today()) {
-  const r = await one(`SELECT count(DISTINCT coalesce(m.data->>'id', m.id))::int AS n FROM partner_messages m WHERE m.link_id = $1 AND m.created_at >= $2::date AND ${ACTIVITY_SQL}`, [linkId, quarterStart(t, 1)]);
-  const ever = await one(`SELECT max(m.created_at) AS last FROM partner_messages m WHERE m.link_id = $1 AND ${ACTIVITY_SQL}`, [linkId]);
+  const which = await activitySql(linkId);
+  const r = await one(`SELECT count(DISTINCT coalesce(m.data->>'id', m.id))::int AS n FROM partner_messages m WHERE m.link_id = $1 AND m.created_at >= $2::date AND ${which}`, [linkId, quarterStart(t, 1)]);
+  const ever = await one(`SELECT max(m.created_at) AS last FROM partner_messages m WHERE m.link_id = $1 AND ${which}`, [linkId]);
   return { count: r.n, last: ever?.last ? day(ever.last) : null };
 }
 
