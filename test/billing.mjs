@@ -232,7 +232,13 @@ const lateEvent = (type, id) => ({ id: `evt_late_${RUN}_${++lateEvents}`, type, 
 const day = (d) => new Date(d).toISOString().slice(0, 10);
 const today = () => day(Date.now());
 const plusDays = (n, from = Date.now()) => day(from + n * 86400_000);
-const claim = (key, body) => ok(call("/v1/shops/claim", { key, json: body }));
+/** Hub shop id -> the program's company id (shop_ref): keys name the program's id, which is what the program checks. */
+const REF_OF = new Map();
+const claim = async (key, body) => {
+  const r = await ok(call("/v1/shops/claim", { key, json: body }));
+  if (r?.shop?.id && body?.shopRef) REF_OF.set(r.shop.id, body.shopRef);
+  return r;
+};
 const standing = (key, ref) => ok(call(`/v1/shops/${ref}/standing`, { key }));
 /** The newest link of a kind in the hub's log (MAIL_DEV_LOG prints every email). */
 const linkToken = (kind) => [...hubLog.matchAll(new RegExp(`/account/${kind}\\?t=([A-Za-z0-9_-]+)`, "g"))].at(-1)?.[1];
@@ -246,7 +252,7 @@ function checkKey(text, shopId, what) {
   assert.ok(v.ok, `${what}: the key doesn't verify (${v.reason})`);
   assert.equal(v.kid, "hub1");
   assert.equal(v.scope, "hub");
-  assert.equal(v.payload.s, shopId, `${what}: the key is for another shop`);
+  assert.equal(v.payload.s, REF_OF.get(shopId) ?? shopId, `${what}: the key must name the program's company id (shop_ref)`);
   assert.deepEqual(v.payload.m, ["base"]);
   assert.match(v.payload.id, /^[0-9A-Z]{8}$/);
   return v.payload;

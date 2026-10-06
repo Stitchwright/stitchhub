@@ -525,7 +525,7 @@ export async function keyFor(shop, st) {
     }
   } else keep = same();
   if (keep) return { key: stored.key, revokeKeyIds };
-  const made = signKey(signer, { shopId: shop.id, shopName: shop.name, plan: want.plan, firstDay: want.f, lastDay: want.u, graceDays: want.g, tier: want.tier ?? null, founding: Boolean(want.founding) });
+  const made = signKey(signer, { shopId: shop.shop_ref, shopName: shop.name, plan: want.plan, firstDay: want.f, lastDay: want.u, graceDays: want.g, tier: want.tier ?? null, founding: Boolean(want.founding) });
   await q(`INSERT INTO license_issues (key_id, shop_id, kid, plan, modules, first_day, last_day, grace_days, key, tier, founding) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`, [
     made.id,
     shop.id,
