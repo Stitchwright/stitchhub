@@ -79,7 +79,7 @@
   </section>
 
   <div id="app" hidden>
-    <nav><a href="/account/shops">Your shops</a><a href="/account/settings">Settings</a><a href="#" id="signout">Sign out</a></nav>
+    <nav><a href="/account/shops">Your shops</a><a href="/account/manuals">Manuals</a><a href="/account/settings">Settings</a><a href="#" id="signout">Sign out</a></nav>
 
     <section id="termsPrompt" hidden>
       <h2 id="tpTitle">We updated our terms</h2>
@@ -115,6 +115,19 @@
       </div>
     </section>
 
+    <section id="manuals" hidden>
+      <h2>Manuals</h2>
+      <p class="muted">A community manual library, free with your StitchHub account. Search by brand, model or document type; a download link works for five minutes. Up to <span id="mnLimit">25</span> downloads a day from the website.</p>
+      <form id="manualsForm" class="row">
+        <input id="mnQuery" placeholder="Brand, model or words, like: brother 1034d" style="max-width:320px">
+        <select id="mnDocType"><option value="">Any document type</option></select>
+        <button style="margin-top:0">Search</button>
+      </form>
+      <p class="muted" id="mnCount"></p>
+      <div class="scroll"><table id="mnTable" hidden><thead><tr><th>Brand</th><th>Models</th><th>Document</th><th>Year</th><th>Pages</th><th>Size</th><th></th></tr></thead><tbody id="mnRows"></tbody></table></div>
+      <div class="row"><button class="plain" id="mnMore" hidden>More</button></div>
+    </section>
+
     <section id="settings" hidden>
       <h2>Settings</h2>
       <p>Signed in as <strong id="meEmail"></strong>.</p>
@@ -137,7 +150,7 @@
   const say = (t, bad) => { $("msg").textContent = t; $("msg").className = bad ? "bad" : "ok"; };
   const page = location.pathname.replace(/\/+$/, "").split("/")[2] || "";
   const token = new URLSearchParams(location.search).get("t") || "";
-  const SECTIONS = ["signin", "signup", "forgot", "setpw", "verify", "app", "shops", "settings"];
+  const SECTIONS = ["signin", "signup", "forgot", "setpw", "verify", "app", "shops", "manuals", "settings"];
   function show(...ids) { for (const id of SECTIONS) $(id).hidden = !ids.includes(id); }
   async function api(path, body) {
     const r = await fetch("/account/api" + path, body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -162,7 +175,8 @@
     $("hosted").hidden = !me.account.verified || !offered.length;
     $("hsProgram").replaceChildren(...offered.map((name) => Object.assign(document.createElement("option"), { value: name, textContent: name === "StitchShop" ? "StitchShop (a sewing or quilt shop counter)" : "StitchBench (a repair bench)" })));
     $("billingNote").textContent = me.billing.open ? billingWords(me.billing) : "Subscriptions aren't open yet. Every shop is free while the hub is in its community period.";
-    show("app", where === "settings" ? "settings" : "shops");
+    show("app", where === "settings" ? "settings" : where === "manuals" ? "manuals" : "shops");
+    if (where === "manuals") searchManuals(0);
   }
 
   // "We updated our terms" (or, for an account that never ticked, "Please accept our terms"): shown while the version in
@@ -279,6 +293,34 @@
     c.append(b, note);
     return c;
   }
+
+  // The free side of the manual repository: published manuals, searched here, downloaded from a short-lived link.
+  const DOC_TYPES = ["ServiceManual", "TechnicalManual", "MaintenanceManual", "PartsList", "OperatorManual", "ErrorCodes", "WiringDiagram", "Schematic", "Firmware", "Training", "Bulletin"];
+  $("mnDocType").append(...DOC_TYPES.map((d) => Object.assign(document.createElement("option"), { value: d, textContent: d.replace(/([a-z])([A-Z])/g, "$1 $2") })));
+  let mnOffset = 0;
+  const size = (b) => (b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
+  async function searchManuals(offset) {
+    try {
+      const qs = new URLSearchParams({ q: $("mnQuery").value, docType: $("mnDocType").value, offset: String(offset) });
+      const r = await api(`/manuals?${qs}`);
+      mnOffset = offset;
+      $("mnLimit").textContent = r.downloadLimit;
+      $("mnCount").textContent = r.total ? `${r.total} manual${r.total === 1 ? "" : "s"}. You've used ${r.downloadsToday} of ${r.downloadLimit} downloads today.` : "No manuals match yet.";
+      $("mnTable").hidden = !r.manuals.length;
+      const rows = r.manuals.map((m) => {
+        const tr = document.createElement("tr");
+        const b = Object.assign(document.createElement("button"), { className: "plain", textContent: "Download" }); b.style.marginTop = "0";
+        b.onclick = async () => { b.disabled = true; try { const d = await api(`/manuals/${m.id}/url`, {}); say(`${m.fileName}: ${d.remaining} download${d.remaining === 1 ? "" : "s"} left today.`); location.href = d.url; } catch (err) { say(err.message, true); } b.disabled = false; };
+        const last = document.createElement("td"); last.append(b);
+        tr.append(td(m.brand), td(m.models), td(m.docType.replace(/([a-z])([A-Z])/g, "$1 $2")), td(m.year ?? ""), td(m.pages ?? ""), td(size(m.sizeBytes)), last);
+        return tr;
+      });
+      $("mnRows").replaceChildren(...rows);
+      $("mnMore").hidden = offset + r.manuals.length >= r.total;
+    } catch (err) { say(err.message, true); }
+  }
+  $("manualsForm").onsubmit = (e) => { e.preventDefault(); searchManuals(0); };
+  $("mnMore").onclick = () => searchManuals(mnOffset + 50);
 
   async function start() {
     try {

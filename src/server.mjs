@@ -1,6 +1,8 @@
 // StitchHub: the community server for StitchBench.
 // Installs join with the community's join key and get their own key. They pull changes (manual links, tech notes,
-// figure snapshots, data sets) and push what their techs share. Manual PDFs are never stored, only links to them.
+// figure snapshots, data sets) and push what their techs share. Manual PDFs are stored only in the manual repository
+// (src/repository.mjs: private R2 storage, a tech's offer, the owner's review, off until REPO_UPLOADS=on); everywhere else
+// the hub holds links to them.
 import "./env.mjs"; // first: reads .env before the modules below read their variables
 import fs from "node:fs";
 import path from "node:path";
@@ -21,6 +23,7 @@ import { registerBilling } from "./billing.mjs";
 import { registerMoves } from "./moves.mjs";
 import { registerProvisioning } from "./provisioning.mjs";
 import { registerTerms } from "./terms.mjs";
+import { registerRepository } from "./repository.mjs";
 import { discordBody } from "./discord.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
@@ -226,11 +229,11 @@ app.get("/health", (c) => c.json({ ok: true }));
 
 app.get("/", async (c) => {
   const s = await one(`SELECT (SELECT count(*) FROM links WHERE NOT deleted) links, (SELECT count(*) FROM posts WHERE NOT deleted) posts,
-    (SELECT count(*) FROM installs WHERE NOT blocked) installs`);
+    (SELECT count(*) FROM installs WHERE NOT blocked) installs, (SELECT count(*) FROM manuals WHERE status = 'published') manuals`);
   return c.html(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${HUB_NAME}</title>
 <body style="font:16px/1.5 system-ui;max-width:640px;margin:40px auto;padding:0 16px">
 <h1>${HUB_NAME}</h1><p>The community server for StitchBench repair shops: manual links, tech notes, photos and figure snapshots.
-Manuals are never stored here, only links to where they are published.</p>
+Manual links point to where makers publish them.${s.manuals > 0 ? " A community manual library is free with a StitchHub account (<a href=\"/account/manuals\">Manuals</a>)." : ""}</p>
 <p>${s.links} manual links · ${s.posts} shared notes · ${s.installs} shops</p>
 <p>To join, open StitchBench → Settings → Community hub and enter this address and the join key you were given.</p>
 <p><a href="/account">Your account</a> · <a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · <a href="/admin">Hub admin</a></p></body>`);
@@ -305,7 +308,7 @@ function usageLimit(c) {
 
 // A hub restored from an older export: an install that had synced past it starts that feed over (staleCursor in
 // db.mjs). It receives everything again, and X-Feed-Reset: 1 says so.
-const FEEDS = { "/v1/changes": "change", "/v1/orders": "change", "/v1/partners/messages": "partner" };
+const FEEDS = { "/v1/changes": "change", "/v1/orders": "change", "/v1/repository/changes": "change", "/v1/partners/messages": "partner" };
 member.use("*", async (c, next) => {
   const feed = c.req.method === "GET" && FEEDS[c.req.path];
   const since = feed && c.req.query("since");
@@ -888,6 +891,9 @@ registerBilling({ app, acct: accounts.acct, admin, fail, allow, clientIp, hubNam
 // "Start a hosted StitchShop / StitchBench" from the account page, and a password reset from the account to a Windows
 // install that allows it: the grant the hub signs, fetched and answered by the program (src/provisioning.mjs).
 registerProvisioning({ member, acct: accounts.acct, fail, newId, allow, clientIp, requireAccount: accounts.requireAccount });
+// The manual repository (src/repository.mjs, docs/plans/manual-repository-design.md): upload slots, the owner's review,
+// the repository feed and download URLs, and the free "Manuals" page on /account. Uploads stay off until REPO_UPLOADS=on.
+registerRepository({ app, member, admin, acct: accounts.acct, fail, newId, allow, clientIp, requireAccount: accounts.requireAccount });
 app.route("/account/api", accounts.acct);
 // A company moving from one install to another: the move token, its redemption (with or without an install key), the
 // admin's list and move by hand (src/moves.mjs). Before the member routes, so a program on no hub yet can redeem.
