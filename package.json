@@ -8,7 +8,7 @@
   "main": "src/server.mjs",
   "scripts": {
     "start": "node src/server.mjs",
-    "check": "node --check src/server.mjs && node --check src/env.mjs && node --check src/discord.mjs && node --check src/db.mjs && node --check src/checker.mjs && node --check src/transfer.mjs && node --check src/parts.mjs && node --check src/market.mjs && node --check src/usage.mjs && node --check src/partners.mjs && node --check src/accounts.mjs && node --check src/mail.mjs && node --check src/billing.mjs && node --check src/stripe.mjs && node --check src/license.mjs && node --check src/moves.mjs && node --check src/provisioning.mjs && node --check src/terms.mjs && node --check test/stripe-mock.mjs && node --check test/move.mjs && node --check test/provisioning.mjs && node --check test/terms.mjs && node --check test/limits.mjs && node --check src/partnersign.mjs && node --check test/partner-signing.mjs",
+    "check": "node --check src/server.mjs && node --check src/env.mjs && node --check src/discord.mjs && node --check src/db.mjs && node --check src/checker.mjs && node --check src/transfer.mjs && node --check src/parts.mjs && node --check src/market.mjs && node --check src/usage.mjs && node --check src/partners.mjs && node --check src/accounts.mjs && node --check src/mail.mjs && node --check src/billing.mjs && node --check src/stripe.mjs && node --check src/license.mjs && node --check src/moves.mjs && node --check src/provisioning.mjs && node --check src/terms.mjs && node --check test/stripe-mock.mjs && node --check test/move.mjs && node --check test/provisioning.mjs && node --check test/terms.mjs && node --check test/limits.mjs && node --check src/r2.mjs && node --check test/r2-mock.mjs && node --check test/r2.mjs && node --check src/pdfcheck.mjs && node --check src/repository.mjs && node --check src/ocr.mjs && node --check test/ocr.mjs && node --check test/repository.mjs && node --check src/takedown.mjs && node --check test/takedown.mjs && node --check test/ocr-pdf.mjs && node --check src/partnersign.mjs && node --check test/partner-signing.mjs",
     "test": "node test/smoke.mjs",
     "test:db": "node test/db.mjs",
     "test:accounts": "node test/accounts.mjs",
@@ -18,14 +18,22 @@
     "test:move": "node test/move.mjs",
     "test:provisioning": "node test/provisioning.mjs",
     "test:terms": "node test/terms.mjs",
-    "test:limits": "node test/limits.mjs"
+    "test:limits": "node test/limits.mjs",
+    "test:r2": "node test/r2.mjs",
+    "test:repository": "node test/repository.mjs",
+    "test:takedown": "node test/takedown.mjs",
+    "test:ocr": "node test/ocr.mjs"
   },
   "engines": {
     "node": ">=20.12"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.1",
+    "@napi-rs/canvas": "^1.0.10",
+    "@tesseract.js-data/eng": "^1.0.0",
     "hono": "^4.13.9",
-    "pg": "^8.23.0"
+    "pdfjs-dist": "^6.4.299",
+    "pg": "^8.23.0",
+    "tesseract.js": "^7.0.0"
   }
 }

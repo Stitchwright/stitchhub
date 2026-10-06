@@ -88,6 +88,40 @@
     </section>
 
     <section>
+      <h2>Manual repository</h2>
+      <p class="muted" id="repoState"></p>
+      <p class="muted">Files shops offered, waiting for your review. The checklist: a manual, readable and whole; brand, models, document type and year right (correct them below); nothing private in it; the automatic checks passed; not a duplicate of a better file; not a work an earlier notice named; <strong>not marked confidential, dealer-only or not for distribution</strong> (the markings flag below: a hit shows the page and the words around it, and is for you to judge; "checking" means a scan is being read by OCR (reload in a minute); "not checked" means OCR failed, timed out or is off, or the text was unreadable, so look at the cover yourself). Preview opens the file for five minutes.</p>
+      <div id="repoQueue"></div>
+    </section>
+
+    <section>
+      <h2>Copyright notices</h2>
+      <p class="muted" id="ntState"></p>
+      <p class="muted">A notice that is complete (signature, the work, the material and where it is, contact details, the good-faith and accuracy statements) and names a manual's reference or file hash is acted on at once. Others wait here: match the manual and press Action within one business day. Action removes the manual from the feed and the free page, holds the file, blocks its hash, gives the uploader a strike and mails them. When the uploader counter-notices, the complainant is mailed a copy; press Restore from business day 10 unless the complainant has said it filed in court. <a href="#" id="ntCsv">Download the log (CSV)</a>.</p>
+      <details><summary>Log a notice that came by email or post</summary>
+        <div class="row"><select id="lgVia"><option value="email">Email</option><option value="post">Post</option></select><input id="lgName" placeholder="Name" style="width:150px"><input id="lgOrg" placeholder="Organisation" style="width:150px"><input id="lgEmail" placeholder="Email" style="width:180px"></div>
+        <div class="row"><input id="lgWork" placeholder="The work" style="width:260px"><input id="lgLoc" placeholder="Material and where (a reference or hash)" style="width:320px"></div>
+        <textarea id="lgRaw" placeholder="Paste the notice as received" style="width:100%;min-height:80px"></textarea>
+        <div class="row"><button id="lgGo">Log it</button></div>
+      </details>
+      <div id="ntList"></div>
+    </section>
+
+    <section>
+      <h2>Strikes</h2>
+      <p class="muted">One per file removed on a notice, for the account whose upload was published; withdrawn when the file is restored. Three within 12 months end that account's uploading.</p>
+      <div class="scroll"><table><thead><tr><th>Account</th><th>Shop</th><th>Notice</th><th>Struck</th><th>State</th><th></th></tr></thead><tbody id="strikes"></tbody></table></div>
+    </section>
+
+    <section>
+      <h2>Blocked</h2>
+      <p class="muted">File hashes that can't be offered again, and brands the repository refuses offers for (a maker who sent a notice; "Refuse offers" when you press Action does it too).</p>
+      <div class="scroll"><table><thead><tr><th>Hash</th><th>Why</th><th>Notice</th><th>Since</th><th></th></tr></thead><tbody id="blocked"></tbody></table></div>
+      <div class="row"><label class="muted" for="rbBrand">Brand</label><input id="rbBrand" style="width:160px"><button id="rbAdd">Refuse offers</button></div>
+      <div id="rbList" class="muted"></div>
+    </section>
+
+    <section>
       <h2>Figure snapshots</h2>
       <p class="muted">A wrong or unwanted figure can be taken down: installs drop their copy, and any shop can share that figure again. Its id is the end of the picture's address in StitchBench (right-click the figure, Copy image address). To take down every figure one shop shared, use Remove figures under Members.</p>
       <form class="row" id="figForm"><label for="figId" class="muted">Figure id</label><input id="figId" required pattern="[0-9a-f]{24}" placeholder="24 letters and digits"><button>Remove figure</button></form>
@@ -155,7 +189,95 @@
     window.hubInstalls = s.installs;
     await loadAccounts();
     await loadMoves();
+    await loadRepository();
+    await loadTakedown();
   }
+
+  async function loadRepository() {
+    const r = await (await api("/repository")).json();
+    $("repoState").textContent = `Uploads are ${r.uploadsOn ? "ON" : "OFF (REPO_UPLOADS is not on: the program says the repository opens soon)"}. Storage ${r.storage ? "is set up" : "is NOT set up (R2_* variables)"}. ${r.waiting.length} waiting, ${r.published} published, ${r.removed} removed, ${r.blocked} blocked hashes. Limit ${r.maxMb} MB a file.`;
+    const field = (label, value, width) => { const l = document.createElement("label"); l.className = "muted"; l.textContent = label + " "; const i = document.createElement("input"); i.value = value ?? ""; i.style.width = width || "140px"; l.append(i); return [l, i]; };
+    $("repoQueue").replaceChildren(...r.waiting.map((f) => {
+      const box = document.createElement("div"); box.style.cssText = "border-top:1px solid var(--line);padding:10px 0";
+      const o = f.offered || {};
+      const mk = f.markings || {};
+      const head = document.createElement("div");
+      head.textContent = `${o.brand || "?"} ${(o.models || []).join(", ")} · ${o.docType || "?"}${o.year ? " " + o.year : ""} · ${(f.sizeBytes / 1048576).toFixed(1)} MB · ${f.pages ?? "?"} pages · offered as ${f.originalName || "(no name)"} · would be filed as ${f.composedName}`;
+      const mark = document.createElement("div");
+      mark.className = mk.status === "flagged" ? "bad" : mk.status === "clean" ? "ok" : "muted";
+      mark.textContent = mk.status === "flagged" ? "MARKINGS FLAGGED: " + mk.hits.map((h) => `${h.level} "${h.label}" on page ${h.page}${h.ocr ? " (read by OCR)" : ""}: ...${h.context}...`).join(" | ") + (mk.reason ? ` (${mk.reason})` : "") : mk.status === "clean" ? `Markings: none found on page${mk.pagesRead.length === 1 ? "" : "s"} ${mk.pagesRead.join(", ")}.` : (mk.reason || "Markings: not checked");
+      const flags = document.createElement("div"); flags.className = "muted";
+      flags.textContent = (f.checks?.structure?.flags || []).map((x) => x.text).join(" ") || "Structure check: passed.";
+      const who = document.createElement("div"); who.className = "muted";
+      who.textContent = f.offers.map((u) => `${u.state}: ${u.byName || "?"} at ${u.shop || "?"} (${u.account || "no account"}), statement ${u.statementVersion}, ${when(u.createdAt)}`).join(" · ");
+      const same = document.createElement("div"); same.className = "muted";
+      same.textContent = f.otherFiles.length ? "Already published for the same brand, model and type: " + f.otherFiles.map((x) => `${x.models}${x.year ? " " + x.year : ""}`).join(", ") : "";
+      const row = document.createElement("div"); row.className = "row";
+      const [l1, brand] = field("Brand", o.brand); const [l2, models] = field("Models", (o.models || []).join(", "), "200px"); const [l3, docType] = field("Type", o.docType); const [l4, year] = field("Year", o.year, "70px"); const [l5, category] = field("Category", o.category);
+      const btn = (text, fn, plain = true) => { const b = document.createElement("button"); if (plain) b.className = "plain"; b.textContent = text; b.onclick = async () => { b.disabled = true; try { await fn(); } catch (err) { say(err.message, true); } b.disabled = false; }; return b; };
+      row.append(l1, l2, l3, l4, l5,
+        btn("Preview", async () => { const p = await (await api(`/repository/files/${f.fileId}/preview`)).json(); window.open(p.url, "_blank", "noopener"); }),
+        btn("Approve", async () => { await post(`/repository/files/${f.fileId}/approve`, { offered: { brand: brand.value, models: models.value, docType: docType.value, year: year.value || null, category: category.value } }); say("Approved: it is in the feed and on the Manuals page."); loadRepository(); }, false),
+        btn("Reject", async () => { const reason = prompt("Why? The person who offered the file sees this."); if (!reason) return; const block = confirm("Also block this file's hash, so it can't be offered again? (OK = block)"); await post(`/repository/files/${f.fileId}/reject`, { reason, blockHash: block }); say("Rejected; the file is deleted."); loadRepository(); }));
+      box.append(head, mark, flags, who, same, row);
+      return box;
+    }));
+    if (!r.waiting.length) $("repoQueue").textContent = "Nothing waiting.";
+  }
+
+  async function loadTakedown() {
+    const btn = (text, fn, plain = true) => { const b = document.createElement("button"); if (plain) b.className = "plain"; b.textContent = text; b.style.marginTop = "0"; b.onclick = async () => { b.disabled = true; try { await fn(); } catch (err) { say(err.message, true); } b.disabled = false; }; return b; };
+    const r = await (await api("/repository/notices")).json();
+    $("ntState").textContent = r.agent ? `Designated agent shown on /copyright: ${r.agent.name}. ${r.restoreDue} restore${r.restoreDue === 1 ? "" : "s"} due.` : "The designated agent isn't set (COPYRIGHT_AGENT_NAME, COPYRIGHT_AGENT_ADDRESS, COPYRIGHT_EMAIL): /copyright says the process isn't open and the form refuses notices.";
+    $("ntList").replaceChildren(...r.notices.map((n) => {
+      const box = document.createElement("div"); box.style.cssText = "border-top:1px solid var(--line);padding:10px 0";
+      const c = n.complainant || {};
+      const open = ["new", "incomplete"].includes(n.status);
+      const head = document.createElement("div");
+      head.textContent = `${n.status.toUpperCase()}${n.restoreDue ? " (RESTORE DUE)" : ""} · ${n.id} · ${n.via} · ${when(n.receivedAt)}${open ? ` · ${n.ageBusinessDays} business day${n.ageBusinessDays === 1 ? "" : "s"} old` : ""} · from ${c.name || "?"}${c.organization ? " (" + c.organization + ")" : ""} ${c.email || ""} ${c.phone || ""}`;
+      const body = document.createElement("div"); body.className = "muted";
+      body.textContent = `Work: ${n.work || "-"} | Material: ${n.locations || "-"}${n.missing.length ? " | MISSING: " + n.missing.join("; ") : ""}${n.manuals.length ? " | Removed: " + n.manuals.map((m) => `${m.brand} ${m.models} ${m.doc_type} [${m.id}]`).join(", ") : ""}${n.counter ? ` | Counter-notice from ${n.counter.complainant.name}, ${n.counter.complainant.address}, ${n.counter.complainant.phone}` : ""}${n.restoreEarliest ? ` | Restore window ${n.restoreEarliest} to ${n.restoreLatest}` : ""}${n.reason ? " | Rejected: " + n.reason : ""}`;
+      const notes = document.createElement("div"); notes.className = "muted"; notes.style.fontSize = "12px";
+      notes.textContent = n.notes.map((x) => `${when(x.at)} ${x.by}: ${x.text}`).join(" · ");
+      const row = document.createElement("div"); row.className = "row";
+      if (open) {
+        const ids = document.createElement("input"); ids.placeholder = "Manual reference(s), comma separated"; ids.style.width = "280px";
+        const ref = document.createElement("label"); ref.className = "muted"; const cb = document.createElement("input"); cb.type = "checkbox"; cb.style.width = "auto"; ref.append(cb, " Refuse offers for this brand");
+        row.append(ids, ref,
+          btn("Action", async () => { const manualIds = ids.value.split(/[\s,;]+/).filter(Boolean); const substantial = n.status === "incomplete" && confirm("This notice is incomplete. Act on it as substantially complying?"); if (n.status === "incomplete" && !substantial) return; const out = await (await post(`/repository/notices/${n.id}/action`, { manualIds, refuseBrand: cb.checked, substantial })).json(); say(`Removed ${out.manuals.length} manual(s).`); loadRepository(); loadTakedown(); }, false),
+          btn("Reject", async () => { const reason = prompt("Why? (kept in the log)"); if (!reason) return; await post(`/repository/notices/${n.id}/reject`, { reason }); loadTakedown(); }));
+      }
+      if (n.status === "countered") row.append(btn("Restore", async () => { if (!confirm("Restore the manual(s)? Only if the complainant hasn't told you it filed in court.")) return; await post(`/repository/notices/${n.id}/restore`, {}); say("Restored."); loadRepository(); loadTakedown(); }, false));
+      if (["actioned", "countered"].includes(n.status)) row.append(btn("Complainant has sued", async () => { await post(`/repository/notices/${n.id}/lawsuit`, {}); loadTakedown(); }));
+      if (!open && n.status !== "closed") row.append(btn("Close", async () => { await post(`/repository/notices/${n.id}/close`, {}); loadTakedown(); }));
+      row.append(btn("Add a note", async () => { const text = prompt("Note (added to the timeline, never edited)"); if (!text) return; await post(`/repository/notices/${n.id}/note`, { text }); loadTakedown(); }));
+      box.append(head, body, notes, row);
+      return box;
+    }));
+    if (!r.notices.length) $("ntList").textContent = "No notices.";
+    const st = await (await api("/repository/strikes")).json();
+    $("strikes").replaceChildren(...st.strikes.map((x) => {
+      const tr = document.createElement("tr");
+      const last = document.createElement("td");
+      if (!x.withdrawnAt) last.append(btn("Withdraw", async () => { await post(`/repository/strikes/${x.id}/withdraw`, {}); loadTakedown(); }));
+      if (x.accountId) last.append(" ", btn(x.uploadsOff ? "Allow uploading" : "End uploading", async () => { await post(`/repository/accounts/${x.accountId}/uploads`, { off: !x.uploadsOff }); loadTakedown(); }));
+      tr.append(td(x.account || "(account gone)"), td(x.shop), td(x.noticeId), td(when(x.createdAt)), td((x.withdrawnAt ? "withdrawn " + when(x.withdrawnAt) : "active") + (x.uploadsOff ? "; uploading ended" : "")), last);
+      return tr;
+    }));
+    const bl = await (await api("/repository/blocked")).json();
+    $("blocked").replaceChildren(...bl.blocked.map((x) => {
+      const tr = document.createElement("tr");
+      const last = document.createElement("td");
+      if (!x.lifted_at) last.append(btn("Lift", async () => { await api(`/repository/blocked/${x.sha256}`, { method: "DELETE" }); loadTakedown(); }));
+      tr.append(td(x.sha256.slice(0, 16) + "..."), td(x.why), td(x.notice_id), td(when(x.created_at)), x.lifted_at ? td("lifted " + when(x.lifted_at)) : last);
+      return tr;
+    }));
+    const rb = await (await api("/repository/refused-brands")).json();
+    $("rbList").replaceChildren(document.createTextNode(rb.brands.length ? "Refused brands: " : "No brands refused. "), ...rb.brands.flatMap((b) => [document.createTextNode(b + " "), btn("Allow", async () => { await post("/repository/refused-brands", { brand: b, refuse: false }); loadTakedown(); }), document.createTextNode("  ")]));
+  }
+  $("ntCsv").onclick = async (e) => { e.preventDefault(); try { const blob = await (await api("/repository/notices.csv")).blob(); const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "copyright-notices.csv"; a.click(); } catch (err) { say(err.message, true); } };
+  $("lgGo").onclick = async () => { try { const out = await (await post("/repository/notices", { via: $("lgVia").value, name: $("lgName").value, organization: $("lgOrg").value, email: $("lgEmail").value, work: $("lgWork").value, locations: $("lgLoc").value, raw: $("lgRaw").value })).json(); say(`Logged (${out.status}).`); loadTakedown(); } catch (err) { say(err.message, true); } };
+  $("rbAdd").onclick = async () => { try { await post("/repository/refused-brands", { brand: $("rbBrand").value, refuse: true }); $("rbBrand").value = ""; loadTakedown(); } catch (err) { say(err.message, true); } };
 
   async function loadMoves() {
     const m = await (await api("/moves")).json();
