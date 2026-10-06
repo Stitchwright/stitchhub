@@ -32,6 +32,9 @@ function readBody(req) {
   });
 }
 
+/**
+ * @param {{ port?: number, key?: string, respond?: ((req: { model: string, system: string, systemCached: boolean, messages: unknown[], maxTokens: number, hasImage: boolean, userText: string, headers: Record<string, string> }) => string | { text?: string, stopReason?: string, status?: number, body?: unknown, delayMs?: number } | Promise<string | { text?: string, stopReason?: string, status?: number, body?: unknown, delayMs?: number }>) | null, models?: string[] }} [opts]
+ */
 export async function startAnthropicMock({ port = 0, key = process.env.ANTHROPIC_MOCK_KEY ?? "", respond = null, models = MODELS } = {}) {
   const requests = [];
   const queue = [];
