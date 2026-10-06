@@ -127,7 +127,7 @@ function clean(body, fail) {
   const maxTokens = Number.isInteger(body.maxTokens) && body.maxTokens > 0 ? Math.min(body.maxTokens, cap) : Math.min(1000, cap);
   let image = null;
   if (body.image != null) {
-    if (cls !== "read" || feature !== "read_plate") throw fail(400, "Only the plate reader takes a photo.");
+    if (feature !== "read_plate" || (cls !== "read" && cls !== "suggest")) throw fail(400, "Only the plate reader takes a photo.");
     if (!IMAGE_TYPES.has(body.image?.mediaType) || typeof body.image.data !== "string" || !/^[A-Za-z0-9+/=]+$/.test(body.image.data) || body.image.data.length > MAX_IMAGE) throw fail(400, "Send the photo as a JPEG, PNG or WebP of at most about 150 KB.");
     image = { mediaType: body.image.mediaType, data: body.image.data };
   }
@@ -194,7 +194,7 @@ export function registerAssistant({ member, admin, fail, allow, newId }) {
       [installId, r.shopRef, p.month, free ? limit : MONTHLY_CALLS],
     );
     if (!reserved) {
-      throw fail(402, free ? `You've used this month's ${FREE_READS} free plate reads. The Assistant module adds more.` : `You've used this month's ${MONTHLY_CALLS} Assistant calls. They start again with next month, or an owner can add ${TOPUP_CALLS} more.`);
+      throw fail(402, free ? `You've used this month's ${FREE_READS} free plate reads. The Assistant module adds more.` : `You've used this month's ${MONTHLY_CALLS + p.bonus} Assistant calls. They start again with next month, or an owner can add ${TOPUP_CALLS} more.`);
     }
     const refund = () => q(`UPDATE assistant_usage SET ${column} = greatest(0, ${column} - 1) WHERE install_id = $1 AND shop_ref = $2 AND month = $3`, [installId, r.shopRef, p.month]).catch(() => {});
 
