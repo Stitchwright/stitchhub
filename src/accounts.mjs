@@ -15,6 +15,7 @@ import { Hono } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { one, q, tx } from "./db.mjs";
 import { sendMail, mailProblem } from "./mail.mjs";
+import { assistantOffer, assistantPriceList, assistantStanding } from "./assistant-billing.mjs";
 import { standingOf, claimAnswer, billingOpen, billingProblem, FOREVER, FOUNDING_LIMIT, foundingMissing, foundingUsed, priceList, refreshFounding, SOLO_LOGINS, trialChargeStart } from "./billing.mjs";
 import { signer as hubSigner } from "./license.mjs";
 import { stripeMode } from "./stripe.mjs";
@@ -375,6 +376,9 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
     const founding = await refreshFounding(null, a.id);
     const resets = await resetStateOf(shops.map((s) => s.id));
     const optIn = new Map(shops.map((s) => [s.id, s.reset_opt_in === true]));
+    // The Assistant is its own subscription per shop (src/assistant-billing.mjs): its standing and what the page may offer.
+    const offer = assistantOffer();
+    const assist = new Map(await Promise.all(shops.map(async (s) => [s.id, await assistantStanding(s.id)])));
     return c.json({
       account: { id: a.id, email: a.email, verified: Boolean(a.verified_at), termsVersion: a.terms_version, createdAt: a.created_at, lastSignInAt: a.last_sign_in_at, hasBilling: Boolean(a.stripe_customer_id) },
       shops: (await Promise.all(shops.map(withStanding))).map((s) => ({
@@ -384,6 +388,13 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
         // Switch to Shop / Solo: a running subscription (paid, or retrying a payment), not one that has ended.
         canSwitch: open && s.source === "subscription" && s.standing !== "lapsed" && ["active", "trialing", "past_due"].includes(s.subscription?.status),
         canManage: open && Boolean(a.stripe_customer_id),
+        assistant: {
+          status: assist.get(s.id).status,
+          paidThrough: assist.get(s.id).paidThrough,
+          plan: assist.get(s.id).sub?.plan ?? null,
+          canAdd: open && offer.subscribe && ["none", "ended"].includes(assist.get(s.id).status),
+          canTopUp: open && offer.topup && ["active", "ending", "past_due"].includes(assist.get(s.id).status),
+        },
         // The program on that shop's PC allows a reset of its owner's password from here (src/provisioning.mjs).
         resetOptIn: optIn.get(s.id) ?? false,
         resetRequest: resets.get(s.id) ?? null,
@@ -391,7 +402,7 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
       hubName,
       // What each plan costs for this account (the founding prices for a founding shop), Solo's login limit, and the
       // founding mark: while a gap runs, the day it would go.
-      billing: { open, prices: open ? await priceList(founding.founding) : null, soloLogins: SOLO_LOGINS, founding: { on: founding.founding, gapSince: founding.gapSince, losesOn: founding.losesOn } },
+      billing: { open, prices: open ? await priceList(founding.founding) : null, assistantPrices: open && (offer.subscribe || offer.topup) ? await assistantPriceList() : null, soloLogins: SOLO_LOGINS, founding: { on: founding.founding, gapSince: founding.gapSince, losesOn: founding.losesOn } },
       // "Start a hosted StitchShop / StitchBench" (src/provisioning.mjs): which this hub offers, and whether it can sign resets.
       hosted: hostedOffer(),
       canSignResets: Boolean(hubSigner().signer),

@@ -8,7 +8,7 @@
   "main": "src/server.mjs",
   "scripts": {
     "start": "node src/server.mjs",
-    "check": "node --check src/server.mjs && node --check src/env.mjs && node --check src/discord.mjs && node --check src/db.mjs && node --check src/checker.mjs && node --check src/transfer.mjs && node --check src/parts.mjs && node --check src/market.mjs && node --check src/usage.mjs && node --check src/partners.mjs && node --check src/accounts.mjs && node --check src/mail.mjs && node --check src/billing.mjs && node --check src/stripe.mjs && node --check src/license.mjs && node --check src/moves.mjs && node --check src/provisioning.mjs && node --check src/terms.mjs && node --check test/stripe-mock.mjs && node --check test/move.mjs && node --check test/provisioning.mjs && node --check test/terms.mjs && node --check test/limits.mjs && node --check src/partnersign.mjs && node --check test/partner-signing.mjs && node --check src/assistant.mjs && node --check test/anthropic-mock.mjs && node --check test/assistant.mjs",
+    "check": "node --check src/server.mjs && node --check src/env.mjs && node --check src/discord.mjs && node --check src/db.mjs && node --check src/checker.mjs && node --check src/transfer.mjs && node --check src/parts.mjs && node --check src/market.mjs && node --check src/usage.mjs && node --check src/partners.mjs && node --check src/accounts.mjs && node --check src/mail.mjs && node --check src/billing.mjs && node --check src/stripe.mjs && node --check src/license.mjs && node --check src/moves.mjs && node --check src/provisioning.mjs && node --check src/terms.mjs && node --check test/stripe-mock.mjs && node --check test/move.mjs && node --check test/provisioning.mjs && node --check test/terms.mjs && node --check test/limits.mjs && node --check src/partnersign.mjs && node --check test/partner-signing.mjs && node --check src/assistant.mjs && node --check src/assistant-billing.mjs && node --check test/anthropic-mock.mjs && node --check test/assistant.mjs && node --check test/assistant-billing.mjs && node --check src/xpart-dups.mjs && node --check scripts/find-duplicate-xparts.mjs && node --check test/xpart-dups.mjs",
     "test": "node test/smoke.mjs",
     "test:db": "node test/db.mjs",
     "test:accounts": "node test/accounts.mjs",
@@ -19,7 +19,9 @@
     "test:provisioning": "node test/provisioning.mjs",
     "test:terms": "node test/terms.mjs",
     "test:limits": "node test/limits.mjs",
-    "test:assistant": "node test/assistant.mjs"
+    "test:assistant": "node test/assistant.mjs",
+    "test:assistant-billing": "node test/assistant-billing.mjs",
+    "test:xpart-dups": "node test/xpart-dups.mjs"
   },
   "engines": {
     "node": ">=20.12"
