@@ -7,7 +7,8 @@ StitchHub is the one small shared server that the shops sync with. It holds only
 
 - **Manual links.** Where each service, parts or operator manual can be downloaded, with a status (working, dead,
   or blocks robots) that the hub rechecks every week. Anyone can fix a dead link. Every change is kept and can be
-  rolled back. **The hub never stores manuals**, only links to where they're published.
+  rolled back. **The hub stores manuals only in the manual repository** (off until you switch it on, see below); everywhere
+  else it holds links to where they're published.
 - **Tech notes.** An issue found, how it was fixed, or a tip, per brand and model, with photos (wiring and
   connectors, inside the machine, parts). Customer names and serial numbers are never sent.
 - **Figure snapshots.** Small crops of manual pages that show a timing or adjustment, so a tech on a phone can see
@@ -361,6 +362,114 @@ placeholders and open questions are listed). Never edit a published version: add
   keeps the latest (`accounts.terms_version`, `terms_at`), `terms_acceptances` keeps each one (version, how, and for a
   Checkout the shop and the Checkout Session). A page left open over a version change is told to reload (409).
 
+## Manual repository
+Design: `docs/plans/manual-repository-design.md` in the StitchBench repo (read its sections 1 and 4 and the lawyer
+questions before you open it: **a plan, not legal advice**). Packages `repo-storage`, `repo-hub` and `repo-takedown`
+(`/copyright`, notices, strikes, counter-notices) are built here, so **leave `REPO_UPLOADS` unset until the launch gate in
+section 7 of the design is done** (the designated agent registered and named below, the copyright address working, the
+lawyer's review, a takedown and a restore run on a test hub). With it unset, `POST /v1/repository/uploads` answers
+403 "The manual repository opens soon." and nothing else changes; reading what is published needs no switch.
+
+- **Storage**: one private Cloudflare R2 bucket, `src/r2.mjs` (AWS Signature V4 by hand, no SDK: presigned PUT and GET,
+  and the hub's own HEAD, ranged GET, copy and delete). Variables: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`,
+  `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` (on the hub's service only; `R2_ENDPOINT` points a test at the mock in
+  `test/r2-mock.mjs`). Keys: `incoming/<upload id>.pdf` (the program PUTs here; lifecycle rule: delete after 1 day),
+  `files/<sha256>.pdf`, `retired/<sha256>.pdf` (a removed file; 30 days), `held/` (copyright, with the takedown package;
+  120 days). Bytes never pass through the hub except for the one verifying read of an upload (a whole file in memory,
+  two at a time, `REPO_MAX_MB` 150).
+- **Who may offer** (`POST /v1/repository/uploads`, install key and `X-Shop-Ref`): a company claimed by a verified,
+  enabled StitchHub account, on a member install (partner and pending installs are refused before the route), with
+  standing not lapsed, not in `REPO_OPERATOR_ACCOUNTS` (account emails or ids, comma separated: the hub's owner uploads
+  nothing of his own), and not stopped (`accounts.repo_uploads_off`, `installs.repo_uploads_off`, set from the admin
+  API). The offer names category, brand, models, a document type from the library's list, year, language and carries
+  the statement's version (`REPO_STATEMENT_VERSION`, when set, must match). Limits: 25 offers a day per company, 100 and
+  2 GB a day per account, 50 waiting per account.
+- **The flow**: offer -> `{ uploadId, putUrl, putHeaders, expiresAt }` (15 minutes; type and length signed) -> the program
+  PUTs to R2 -> `POST /uploads/:id/sent` -> the hub reads the object, checks size and sha256 and the PDF itself
+  (`src/pdfcheck.mjs`), deletes it if refused, otherwise files it under `files/` as **pending**. The same bytes already
+  there or waiting answer `{ duplicate, id }`; a removed or blocked hash answers `{ blocked }` (no slot).
+- **The PDF check** (no dependency): refused when it isn't a PDF, is encrypted, or names `/JavaScript`, `/JS`, `/Launch`,
+  `/EmbeddedFile`, `/RichMedia` or `/XFA` (searched in the file's own syntax and in inflated object streams, `#`-escaped
+  names too, not in picture or font data, where the bytes turn up by chance). A file the reader can't make sense of is
+  flagged for review. **Markings**: the first three pages and the last are read for scan_markings.py's words; a hit is a
+  flag in the review queue with the page and the words around it, never a refusal. The reader follows the page tree
+  and reads plain text with standard encodings; a scan or a font with its own encoding has no usable text layer. **OCR** (`src/ocr.mjs`; `REPO_OCR=off` turns it off, and
+  then such a file gives "not checked for markings: scan or unreadable text", for the owner to look at the cover himself):
+  the pages among the first three and the last that have no text are drawn to an image and read after the upload is
+  filed, off the request path (one job at a time; the review queue says "checking for markings" until done, then the
+  same flag as for text, with "(read by OCR)", or "not checked: OCR failed / timed out" for the owner to look at the cover). A hub restart
+  puts files still "checking" back in the queue. Pure JS/WASM, nothing installed on the machine: `pdfjs-dist` (draws the
+  page; handles CCITT, JBIG2, JPEG and Flate scans) on `@napi-rs/canvas` (prebuilt binary, Linux x64 glibc and musl
+  (the Dockerfile's alpine), Windows, macOS; no compiler), then `tesseract.js` (WASM, in a worker thread) with the English
+  `best_int` traineddata from `@tesseract.js-data/eng`, read from node_modules (nothing fetched from a CDN, no cache
+  written). Limits: `REPO_OCR_PAGE_MS` 20000 a page (the engine is restarted after a timeout), `REPO_OCR_MAX_MB` 60 (a
+  bigger file isn't read), `REPO_OCR_MAX_RSS_MB` 1200 (a page waits, then is skipped, while the process is that big);
+  pages are drawn at about 200 dpi, at most 3200 px on the long side; the engine is stopped after 60 s idle.
+  **Cost**: node_modules grows by about 130 MB on disk (tesseract.js-core 44 MB, the platform canvas binary about 37 MB,
+  pdfjs-dist 35 MB, the English data 14 MB incl. an unused second copy, tesseract.js 2 MB) and so does the Railway image
+  (the first build after this is slower). Memory: nothing is loaded until the first scan arrives; reading then
+  takes roughly 200 to 350 MB resident while a page is worked on (measured about 240 MB for a 3-page scan on
+  Windows), freed in part when the engine stops 60 s later; with the 1 GB-class Railway plan this fits beside the hub's
+  own use, and the RSS guard above keeps a busy hub from taking it further. Time: about 3 seconds a page here
+  (1.4 s drawing, 1.5 to 2 s reading) after a cold start of a few seconds (up to 12 s on a cold disk), so a 4-page check takes about
+  15 seconds. Test: `npm run test:ocr` (about 2 minutes).
+- **Review**: the admin page's "Manual repository" section lists what waits (offer as made, flags, markings, the people
+  who offered the same bytes, published files for the same brand, model and type); preview opens the file for five
+  minutes; **Approve** (with corrected metadata) puts it in the feed and on the Manuals page; **Reject** takes a reason
+  the uploader sees, deletes the object and can block the hash. `POST /v1/admin/repository/manuals/:id/remove` takes
+  a published manual down (`withdrawn` or `replaced`; bytes to `retired/`). Merge is not built yet; removal for
+  copyright is the takedown process below. A review item also lists earlier notices that named its brand.
+- **The feed and downloads**: `GET /v1/repository/changes?since=N` (its own cursor on the same change numbers; an old
+  program never calls it), `POST /v1/repository/files/:id/url` (the feed's id; published manuals only; 300 an hour and
+  3,000 a day per install; the URL lasts 5 minutes with the library's file name forced). `GET /v1/repository/uploads`
+  lists the company's own offers and their states.
+- **The free side**: signed in to `/account`, the **Manuals** page searches published manuals (brand, model, words,
+  type) and gives a short-lived download link: 25 a day per account and per address (an address is kept only as a hash).
+  The programs add convenience, not access.
+- **Takedowns** (`src/takedown.mjs`; design 4.2; the process of 17 U.S.C. 512(c) and (g) as the design states it, for a
+  lawyer to review). Variables: `COPYRIGHT_AGENT_NAME`, `COPYRIGHT_AGENT_ADDRESS`, `COPYRIGHT_EMAIL` (the designated
+  agent as registered with the Copyright Office; `COPYRIGHT_AGENT_PHONE` is shown when set) and `REPO_NOTICE_EMAIL` (where
+  new notices, counter-notices and the day-10 reminder are mailed; defaults to `COPYRIGHT_EMAIL`). **Until the three
+  agent variables are all set, `/copyright` says "Not yet open" and its form refuses.** Mail goes through `src/mail.mjs`
+  (`MAIL_DEV_LOG=true` prints it on a test hub).
+  - `GET /copyright` (public; linked from the home page): the agent, how to send a notice, the counter-notice and
+    repeat-infringer policy, what review checks, and the form. `POST /copyright/notice`: a field per 512(c)(3) element
+    (signature; the work; the material and where it is; name, address, telephone, email; the good-faith and the accuracy
+    statements); an incomplete one is refused with what is missing (nothing stored); 5 an hour per address, a honeypot
+    field (`website`), 16 KB. A complete notice that names a manual's reference (its id, shown on the Manuals page) or a
+    file's sha256 is acted on at once; any other waits for the owner (**Action** with the manual's reference, within one
+    business day; the list shows each notice's age in business days).
+  - **Acting on a notice**: the manual is `removed` (why: copyright) in the feed and gone from the free page; the object
+    moves to `held/<sha256>.pdf`; the hash goes into `blocked_hashes` (the notice's id on it); the account whose upload was
+    published gets a strike and an email (what, who complained: name or organisation only, how to counter-notify); anyone
+    else who offered the same bytes is told, with no strike; the owner is mailed. Three strikes in 12 months set
+    `accounts.repo_uploads_off` and reject that account's waiting offers. A notice logged from an email or letter
+    (`POST /v1/admin/repository/notices`, "Log a notice" on the admin page) is checked the same way; an incomplete one is
+    only acted on when the owner says it substantially complies.
+  - **Counter-notice**: signed in, `/account/repository` lists what was removed for the account with a form (signature,
+    name, address, telephone, the good-faith statement under penalty of perjury, consent to jurisdiction, acceptance of
+    service); the form says the whole counter-notice goes to the complainant. An incomplete one is refused with what is
+    missing. The complainant is mailed the whole of it and the window: **business days 10 to 14** after receipt, skipping
+    weekends and US federal holidays as observed (across Thanksgiving 26 Nov 2026 a counter-notice received Monday 16 Nov
+    gives 1 Dec to 7 Dec). The owner is reminded on day 10 (hourly sweep; `POST /v1/admin/repository/notices/reminders`
+    runs it now) and presses **Restore** (refused before day 10, and after "Complainant has sued", which keeps the file
+    down): the object returns to `files/`, the hash is unblocked, the strike withdrawn, the manual republished with a new
+    change number, and both sides are mailed.
+  - **The owner's admin page** has Copyright notices (each with its timeline, notes only ever appended; CSV export for the
+    lawyer at `/v1/admin/repository/notices.csv`), Strikes (withdraw one, end or allow an account's uploading) and Blocked
+    (hashes, with the notice that blocked them; refused brands). **Refused brands** (`/repository/refused-brands`, or
+    "Refuse offers for this brand" when pressing Action): a maker who sent a takedown; every later offer of that brand is
+    refused in words.
+  - `TAKEDOWN_TEST_TODAY` (YYYY-MM-DD) pins "today" for the window arithmetic; used by `test/takedown.mjs` only, never set
+    it on a real hub.
+- Moving a hub: the export carries the tables (`manuals`, `manual_files`, `uploads`, `blocked_hashes`,
+  `repo_downloads`, `takedown_notices`, `strikes`), not the bytes, which stay in the bucket.
+- **Migration numbering**: this branch's migrations are `024_repository.sql` and `025_takedown.sql` (renumbered at merge after
+  `hub-accounts`' 023; files apply in name order, once each).
+- **Before opening**: register the designated agent with the Copyright Office and set the three `COPYRIGHT_*` variables;
+  make `COPYRIGHT_EMAIL` a working mailbox and send a test notice through the form; set `REPO_NOTICE_EMAIL`; have the
+  lawyer review the process; run a takedown and a restore on a test hub; then `REPO_UPLOADS=on`.
+
 ## Checking a hub
 ```
 HUB_URL=http://localhost:8080 ADMIN_TOKEN=... JOIN_KEY=... npm test
@@ -387,6 +496,26 @@ limits.
 `DATABASE_URL=<a scratch database> npm run test:companies` does the same for companies on one install: a listing, order,
 note, link, part, usage report and figure made under a company's name shows that name (and the install's when none is
 named), two companies on one install are kept apart in ratings and usage counts, and one can't change the other's rows.
+
+`node test/r2.mjs` (`npm run test:r2`, no database) checks the R2 signing: AWS's documented examples yield their
+published signatures, and presigned PUT, HEAD, ranged GET, copy and delete work against the in-memory R2 mock, which
+refuses expired and altered URLs. (The design's one real 1 MB round trip against the bucket is done by hand once there
+is a bucket.)
+
+`DATABASE_URL=<a database on a server where the role may create databases> npm run test:repository` makes two fresh
+databases beside it (dropped at the end), starts hubs with the R2 mock and walks the repository: the PDF check (scripts,
+encryption, markings on the first three pages and the last), uploads off by default, the account rule, slot -> PUT ->
+sent -> pending, wrong hash, wrong size, not a PDF, encrypted and JavaScript refused with the object deleted,
+duplicates, blocked hashes, the 26th offer of a day and the 51st waiting (429), approve and reject, the feed, download
+URLs for published files only, one company never seeing another's offers, the free Manuals page and its 25 a day, and
+export and import into a second hub.
+
+`DATABASE_URL=<a database on a server where the role may create databases> npm run test:takedown` makes two fresh databases
+(dropped at the end) and walks the takedown process with the R2 mock and `MAIL_DEV_LOG`: business days and federal holidays
+(Thanksgiving 2026), `/copyright` unset and set, an incomplete notice refused with what is missing, a complete one removed
+(feed, free page, `held/`, blocked hash, strike, mails), the same bytes refused, a notice waiting for the owner, refused
+brands, a counter-notice and its window, restore after the window (unblocked, strike withdrawn, republished) with the
+day-10 reminder, a lawsuit, the third strike, the form's limit, honeypot and size, the CSV log, and export and import.
 
 `DATABASE_URL=<a fresh scratch database> npm run test:move` walks a company moving from one install to another: the move
 token (answered once, replaced, cancelled, expired, wrong, used), every table rewritten for that company only (legacy
