@@ -1,7 +1,8 @@
 // End-to-end check of a StitchHub server. Uses throwaway members, links, parts and listings, and cleans up what it can.
 // usage: HUB_URL=http://localhost:8080 ADMIN_TOKEN=... JOIN_KEY=... node test/smoke.mjs
 // Run it against a TEST hub: a run joins about eight members (a hub allows ten joins an hour from one address, so a
-// second run needs a restarted hub), leaves throwaway notes, links and parts behind, and posts about eight messages to
+// second run needs a restarted hub), leaves throwaway notes, links and parts behind (removed) and a data set named
+// "smoke-test" (replaced on each run: data sets can't be removed), and posts about eight messages to
 // the hub's Discord channel, so it refuses a hub that has a Discord webhook unless SMOKE_ALLOW_DISCORD=1.
 // Also, to check moving a hub: IMPORT_HUB_URL=http://localhost:8081 IMPORT_ADMIN_TOKEN=... (a second, EMPTY test hub):
 // the first hub's export is imported there and compared, and hostile import files are refused.
@@ -350,7 +351,12 @@ assert.equal((await call("/v1/reputation/nope", { key: buyerKey })).status, 404)
   assert.equal(sock.item.origin, null, "a listing from an install that doesn't say has an order that doesn't");
   sock = await send(`/v1/orders/${sock.id}/accept`, installKey, { payInstructions: "x" });
   await send(`/v1/orders/${sock.id}/paid`, installKey, {});
+  // Marked paid by the seller alone (cash, a check): the seller can't rate the buyer until the buyer has said it paid
+  // ("Payment sent") or the order has shipped. The buyer can rate from paid on.
+  assert.equal((await call(`/v1/orders/${sock.id}/rate`, { key: installKey, method: "POST", json: { stars: 1, comment: "never paid" } })).status, 409, "the seller rated a buyer that hadn't said it paid");
   await send(`/v1/orders/${sock.id}/rate`, sockKey, { stars: 1 });
+  await send(`/v1/orders/${sock.id}/ship`, installKey, { carrier: "USPS", tracking: "1" });
+  assert.equal((await send(`/v1/orders/${sock.id}/rate`, installKey, { stars: 5 })).ratings.seller.stars, 5, "once shipped, the seller rates the buyer");
   at = await feedEnd(buyerKey);
   assert.deepEqual((await get(`/v1/reputation/${sellerId}`, buyerKey)).asSeller, { avg: 2, count: 2 });
   await send(`/v1/admin/installs/${(await get("/v1/me", sockKey)).installId}/block`, ADMIN, { blocked: true });
@@ -478,11 +484,12 @@ console.log("usage: ok");
   co = await send(`/v1/orders/${co.id}/accept`, installKey, { payInstructions: "Zelle B" });
   assert.equal((await call(`/v1/listings/${coL.id}`, { key: installKey, method: "PUT", json: { qty: 5, expectedQty: 2 } })).status, 409);
   assert.equal((await send(`/v1/listings/${coL.id}`, installKey, { qty: 5, expectedQty: 1 }, "PUT")).qty, 5);
-  // The seller marks it paid and rates the buyer, then cancels: the buyer can still answer.
+  // The buyer says it paid, the seller marks it paid and rates the buyer, then cancels: the buyer can still answer.
+  co = await send(`/v1/orders/${co.id}/buyer-paid`, buyerKey, { note: "sent by Zelle" });
   co = await send(`/v1/orders/${co.id}/paid`, installKey, {});
-  co = await send(`/v1/orders/${co.id}/rate`, installKey, { stars: 1, comment: "never paid" });
+  co = await send(`/v1/orders/${co.id}/rate`, installKey, { stars: 1, comment: "paid late" });
   co = await send(`/v1/orders/${co.id}/cancel`, installKey, { reason: "smoke" });
-  co = await send(`/v1/orders/${co.id}/rate`, buyerKey, { stars: 2, comment: "marked paid without it" });
+  co = await send(`/v1/orders/${co.id}/rate`, buyerKey, { stars: 2, comment: "cancelled after I paid" });
   assert.equal(co.ratings.buyer.stars, 2);
   const coRep = await get(`/v1/reputation/${sellerId}?shopRef=coB`, buyerKey);
   assert.deepEqual(coRep.asSeller, { avg: 2, count: 1 });
@@ -553,6 +560,36 @@ console.log("companies: ok");
   const page2 = await r2.json();
   assert.deepEqual([page2.length, page2.at(-1).action, r2.headers.get("x-history-more")], [3, "added", null]);
   await ok(await call(`/v1/xparts/${partId}`, { key: installKey, method: "DELETE", json: { byName: "Tester", note: "smoke test" } }));
+}
+// Removing an entry and restoring it brings it back whole (numbers, fits, where to buy); a number another part took
+// while it was removed stays with that part.
+{
+  const kept = `RK${RUN}`;
+  const taken = `RT${RUN}`;
+  const source = { vendor: "Sew, Supply & Co", url: "https://example.com/r?a=1,2", priceCents: 1999, currency: "CAD", note: "per 10, boxed" };
+  const xr = await send("/v1/xparts", installKey, {
+    name: "Restore me",
+    numbers: [
+      { brand: "Juki", number: kept },
+      { brand: "Juki", number: taken },
+    ],
+    fits: [{ brand: "Juki", model: "TL2010Q" }],
+    sources: [source],
+    byName: "Tester",
+  });
+  const gone = await send(`/v1/xparts/${xr.id}`, installKey, { byName: "Tester", note: "by mistake" }, "DELETE");
+  assert.equal(gone.deleted, true);
+  assert.equal((await get(`/v1/xparts/${xr.id}`, installKey)).deleted, true);
+  const claimer = await send("/v1/xparts", installKey, { name: "Took a number", numbers: [{ brand: "Juki", number: taken }], byName: "Tester" }); // a removed part's numbers are free
+  const back = await send(`/v1/xparts/${xr.id}/restore`, installKey, { byName: "Tester" });
+  assert.equal(back.deleted, false);
+  assert.deepEqual(back.numbers.map((n) => n.number), [kept]);
+  assert.equal(back.fits.length, 1);
+  assert.deepEqual(back.sources.map((s) => [s.vendor, s.url, s.priceCents, s.currency, s.note]), [[source.vendor, source.url, source.priceCents, source.currency, source.note]]);
+  assert.deepEqual((await get(`/v1/xparts/${claimer.id}`, installKey)).numbers.map((n) => n.number), [taken]);
+  assert.deepEqual((await get(`/v1/xparts/${xr.id}/history`, installKey)).map((h) => h.action), ["restored", "removed", "added"]);
+  assert.equal((await call("/v1/xparts/nope/restore", { key: installKey, method: "POST", json: {} })).status, 404);
+  for (const id of [xr.id, claimer.id]) await ok(await call(`/v1/xparts/${id}`, { key: installKey, method: "DELETE", json: { byName: "Tester", note: "smoke test" } }));
 }
 console.log("parts safeguards: ok");
 
@@ -667,6 +704,36 @@ assert.equal((await send("/v1/upgrade", retailKey, { joinKey: `${JOIN} ` })).sco
 assert.equal((await call("/v1/changes?since=0&limit=1", { key: retailKey })).status, 200);
 console.log("partners: ok");
 
+// Admin tools: seeding manual links from a list (one already on the hub, one repeated in the list and one that isn't a
+// web address are skipped), and publishing a data set that members download. A member can do neither.
+{
+  const seed = (n) => ({ brand: "Singer", models: `SEED${n}`, docType: "UserManual", title: `Seeded ${n}`, url: `https://example.com/${RUN}/seed${n}.pdf`, status: "ok", checked: "2026-01-02T00:00:00Z", from: "smoke" });
+  const before = await changesEnd(installKey);
+  assert.equal((await call("/v1/admin/links/import", { key: installKey, method: "POST", json: [seed(9)] })).status, 401);
+  assert.deepEqual(await send("/v1/admin/links/import", ADMIN, [seed(1), seed(2), seed(1), { brand: "Singer", models: "X", url: link.url }, { brand: "Singer", models: "Y", url: "ftp://nope" }]), {
+    added: 2,
+    skipped: 3,
+  });
+  assert.equal((await call("/v1/admin/links/import", { key: ADMIN, method: "POST", json: { not: "a list" } })).status, 400);
+  const seeded = (await get(`/v1/changes?since=${before}&limit=2000`, installKey)).links.filter((l) => l.url.includes(`/${RUN}/seed`));
+  assert.deepEqual(seeded.map((l) => [l.models, l.status]).sort(), [["SEED1", "ok"], ["SEED2", "ok"]]);
+  assert.deepEqual((await get(`/v1/links/${seeded[0].id}/history`, installKey)).map((h) => [h.action, h.byShop, h.note]), [["added", "hub admin", "imported from smoke"]]);
+  for (const l of seeded) await ok(await call(`/v1/links/${l.id}`, { key: installKey, method: "DELETE", json: { byName: "Tester", note: "smoke test" } }));
+
+  // One fixed name, so runs replace the same row (data sets can't be removed).
+  const ds = zlib.gzipSync(Buffer.from(JSON.stringify({ smoke: RUN })));
+  assert.equal((await call("/v1/admin/datasets/smoke-test", { key: installKey, method: "PUT", body: ds })).status, 401);
+  assert.equal((await call("/v1/admin/datasets/smoke-test", { key: ADMIN, method: "PUT", body: Buffer.alloc(0) })).status, 400);
+  assert.deepEqual(await (await ok(await call(`/v1/admin/datasets/smoke-test?version=${RUN}`, { key: ADMIN, method: "PUT", body: ds }))).json(), { ok: true, version: RUN, size: ds.length });
+  const listed = (await get("/v1/datasets", buyerKey)).find((d) => d.name === "smoke-test");
+  assert.deepEqual([listed.version, Number(listed.size)], [RUN, ds.length]);
+  const dl = await ok(await call("/v1/datasets/smoke-test", { key: buyerKey }));
+  assert.equal(dl.headers.get("x-dataset-version"), RUN);
+  assert.deepEqual(JSON.parse(zlib.gunzipSync(Buffer.from(await dl.arrayBuffer())).toString("utf8")), { smoke: RUN });
+  assert.equal((await call("/v1/datasets/no-such-set", { key: buyerKey })).status, 404);
+}
+console.log("admin tools: ok");
+
 // Admin: wrong token refused; summary, export (valid gzip, new tables included), block.
 assert.equal((await call("/v1/admin/summary", { key: "wrong-token" })).status, 401);
 const summary = await (await ok(await call("/v1/admin/summary", { key: ADMIN }))).json();
@@ -727,6 +794,14 @@ else {
 }
 
 // Clean up: remove the note, link, listing and part; block the test members (blocked installs are refused).
+// A member can't remove another member's note (it stays, photo and all); the hub admin can remove any note.
+assert.equal((await call(`/v1/posts/${postId}`, { key: buyerKey, method: "DELETE" })).status, 404);
+await ok(await call(`/v1/photos/${post.photos[0].id}`, { key: buyerKey }));
+{
+  const at = await changesEnd(buyerKey);
+  await ok(await call(`/v1/admin/posts/${retriedId}`, { key: ADMIN, method: "DELETE" }));
+  assert.deepEqual((await get(`/v1/changes?since=${at}&limit=2000`, buyerKey)).posts.filter((p) => p.id === retriedId), [{ id: retriedId, deleted: true }]);
+}
 await ok(await call(`/v1/posts/${postId}`, { key: installKey, method: "DELETE" }));
 await ok(await call(`/v1/links/${link.id}`, { key: installKey, method: "DELETE", json: { byName: "Tester", note: "smoke test" } }));
 await ok(await call(`/v1/listings/${listing.id}`, { key: installKey, method: "DELETE" }));

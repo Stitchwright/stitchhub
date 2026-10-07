@@ -1,6 +1,8 @@
 // StitchHub: the community server for StitchBench.
 // Installs join with the community's join key and get their own key. They pull changes (manual links, tech notes,
-// figure snapshots, data sets) and push what their techs share. Manual PDFs are never stored, only links to them.
+// figure snapshots, data sets) and push what their techs share. Manual PDFs are stored only in the manual repository
+// (src/repository.mjs: private R2 storage, a tech's offer, the owner's review, off until REPO_UPLOADS=on); everywhere else
+// the hub holds links to them.
 import "./env.mjs"; // first: reads .env before the modules below read their variables
 import fs from "node:fs";
 import path from "node:path";
@@ -13,9 +15,18 @@ import { pool, q, one, tx, migrate, getSetting, setSetting, startFeeds, feedLimi
 import { startChecker, privateAddress } from "./checker.mjs";
 import { exportStream, importStream } from "./transfer.mjs";
 import { registerParts, partsByIds, partSizes } from "./parts.mjs";
-import { registerMarket, listingsByIds, sellerBlocked } from "./market.mjs";
+import { registerMarket, listingsByIds, sellerBlocked, claimListings, actingShop, sameCompany } from "./market.mjs";
 import { registerUsage } from "./usage.mjs";
 import { registerPartners } from "./partners.mjs";
+import { registerAccounts } from "./accounts.mjs";
+import { registerBilling } from "./billing.mjs";
+import { registerMoves } from "./moves.mjs";
+import { registerBackups } from "./backups.mjs";
+import { registerProvisioning } from "./provisioning.mjs";
+import { registerTerms } from "./terms.mjs";
+import { registerRepository } from "./repository.mjs";
+import { registerTakedown } from "./takedown.mjs";
+import { registerAssistant } from "./assistant.mjs";
 import { discordBody } from "./discord.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
@@ -140,7 +151,7 @@ const app = new Hono();
 app.onError((e, c) => {
   console.error(e);
   return c.json(
-    { error: e.expose ? e.message : "Something went wrong on the hub.", ...(e.linkId ? { linkId: e.linkId } : {}), ...(e.partId ? { partId: e.partId } : {}) },
+    { error: e.expose ? e.message : "Something went wrong on the hub.", ...(e.linkId ? { linkId: e.linkId } : {}), ...(e.partId ? { partId: e.partId } : {}), ...(e.expose && e.extra ? e.extra : {}) },
     e.status ?? 500,
   );
 });
@@ -160,7 +171,9 @@ const MB = 1024 * KB;
 const ADMIN_UPLOAD = (Number(process.env.ADMIN_UPLOAD_MB) || 1024) * MB; // bulk imports, data sets, moving the hub
 
 function maxBody(p) {
-  if (p === "/v1/register" || p === "/v1/partners/join") return 16 * KB; // no key needed: a join key or code and a name
+  if (p === "/v1/register" || p === "/v1/partners/join" || p === "/v1/accounts/start" || p === "/v1/shops/move" || p === "/copyright/notice") return 16 * KB; // no key needed: a join key, code, move token or email and a name
+  if (p === "/v1/assistant") return 256 * KB; // a question for the Assistant with its context (a plate photo is about 150 KB)
+  if (p === "/v1/stripe") return 256 * KB; // a Stripe webhook event (an invoice with its lines)
   if (p === "/v1/posts") return 12 * 3 * MB + MB; // a note with up to 12 photos of 3 MB
   if (p === "/v1/listings") return 8 * 3 * MB + MB; // a listing with up to 8 photos
   if (/^\/v1\/figures\/[^/]+$/.test(p)) return 2 * MB;
@@ -220,17 +233,21 @@ app.get("/health", (c) => c.json({ ok: true }));
 
 app.get("/", async (c) => {
   const s = await one(`SELECT (SELECT count(*) FROM links WHERE NOT deleted) links, (SELECT count(*) FROM posts WHERE NOT deleted) posts,
-    (SELECT count(*) FROM installs WHERE NOT blocked) installs`);
+    (SELECT count(*) FROM installs WHERE NOT blocked) installs, (SELECT count(*) FROM manuals WHERE status = 'published') manuals`);
   return c.html(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${HUB_NAME}</title>
 <body style="font:16px/1.5 system-ui;max-width:640px;margin:40px auto;padding:0 16px">
 <h1>${HUB_NAME}</h1><p>The community server for StitchBench repair shops: manual links, tech notes, photos and figure snapshots.
-Manuals are never stored here, only links to where they are published.</p>
+Manual links point to where makers publish them.${s.manuals > 0 ? " A community manual library is free with a StitchHub account (<a href=\"/account/manuals\">Manuals</a>)." : ""}</p>
 <p>${s.links} manual links · ${s.posts} shared notes · ${s.installs} shops</p>
 <p>To join, open StitchBench → Settings → Community hub and enter this address and the join key you were given.</p>
-<p><a href="/admin">Hub admin</a></p></body>`);
+<p><a href="/account">Your account</a> · <a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · <a href="/copyright">Copyright</a> · <a href="/admin">Hub admin</a></p></body>`);
 });
 
 app.get("/admin", (c) => c.html(fs.readFileSync(path.join(ROOT, "public", "admin.html"), "utf8")));
+
+// The Terms of Service and the Privacy Policy, every version on file (legal/, src/terms.mjs), and GET /v1/terms/current
+// for the programs (no key: registered before the member routes).
+registerTerms({ app, hubName: HUB_NAME });
 
 // Join: the community's join key gets an install its own key (shown once).
 app.post("/v1/register", async (c) => {
@@ -254,17 +271,24 @@ async function createInstall(db, name, contact, scope) {
 
 // ---------- installs (Authorization: Bearer <install key>) ----------
 
-const member = new Hono();
-member.use("*", async (c, next) => {
-  const h = c.req.header("authorization") ?? "";
-  const key = h.startsWith("Bearer ") ? h.slice(7) : "";
+/** The install an install key belongs to; 401 for a key the hub doesn't know, 403 for a blocked one. */
+async function installByKey(key) {
   if (!key) throw fail(401, "Join the hub first (Settings → Community hub).");
   const inst = await one(`SELECT id, name, scope, blocked, last_seen_at FROM installs WHERE key_hash = $1`, [sha(key)]);
   if (!inst) throw fail(401, "This install isn't known to the hub. Join again with the current join key.");
   if (inst.blocked) throw fail(403, "The hub admin has blocked this install.");
-  // Joined with a partner code only: the partner channel, nothing of the community's.
-  if (inst.scope === "partner" && !/^\/v1\/(partners\/|me$|upgrade$)/.test(c.req.path)) throw fail(403, "This shop is connected to its partner shops only. Join the community with a join key to use this.");
   if (!inst.last_seen_at || Date.now() - inst.last_seen_at.getTime() > 300_000) q(`UPDATE installs SET last_seen_at = now() WHERE id = $1`, [inst.id]).catch(() => {});
+  return inst;
+}
+
+const member = new Hono();
+member.use("*", async (c, next) => {
+  const h = c.req.header("authorization") ?? "";
+  const inst = await installByKey(h.startsWith("Bearer ") ? h.slice(7) : "");
+  // Joined with a partner code only: the partner channel and its own account and shops, nothing of the community's.
+  if (inst.scope === "partner" && !/^\/v1\/(partners\/|shops\/|accounts\/|assistant(\/usage)?$|me$|upgrade$)/.test(c.req.path)) throw fail(403, "This shop is connected to its partner shops only. Join the community with a join key to use this.");
+  // Joined by starting a StitchHub account (no join key): a member once the account's email is verified.
+  if (inst.scope === "pending" && !/^\/v1\/(shops\/|accounts\/|me$|upgrade$)/.test(c.req.path)) throw fail(403, "Finish setting up your StitchHub account first: open the link in the email we sent (Settings → Account).");
   c.set("install", inst);
   await next();
 });
@@ -288,7 +312,7 @@ function usageLimit(c) {
 
 // A hub restored from an older export: an install that had synced past it starts that feed over (staleCursor in
 // db.mjs). It receives everything again, and X-Feed-Reset: 1 says so.
-const FEEDS = { "/v1/changes": "change", "/v1/orders": "change", "/v1/partners/messages": "partner" };
+const FEEDS = { "/v1/changes": "change", "/v1/orders": "change", "/v1/repository/changes": "change", "/v1/partners/messages": "partner" };
 member.use("*", async (c, next) => {
   const feed = c.req.method === "GET" && FEEDS[c.req.path];
   const since = feed && c.req.query("since");
@@ -378,12 +402,21 @@ member.get("/changes", async (c) => {
   const links = ids("link").length ? (await q(`SELECT * FROM links WHERE id = ANY($1)`, [ids("link")])).rows.map(linkOut) : [];
   let posts = [];
   if (ids("post").length) {
-    const ps = (await q(`SELECT * FROM posts WHERE id = ANY($1)`, [ids("post")])).rows;
+    // The company's name as it is now (the shops table) when the note names a company that has claimed itself; else the
+    // name the note was shared under (the company's, or the install's from installs that don't say).
+    const ps = (
+      await q(
+        `SELECT p.*, s.id AS current_shop_id, s.name AS current_shop_name FROM posts p
+         LEFT JOIN shops s ON s.install_id = p.install_id AND s.shop_ref = p.shop_ref AND p.shop_ref <> '' WHERE p.id = ANY($1)`,
+        [ids("post")],
+      )
+    ).rows;
     const photos = (await q(`SELECT id, post_id, kind, caption, mime, sort_order FROM photos WHERE post_id = ANY($1) ORDER BY sort_order`, [ids("post")])).rows;
     // A removed note is only its id: what it said is gone from the hub.
     posts = ps.map((p) => p.deleted ? { id: p.id, deleted: true } : ({
       id: p.id,
-      shopName: p.shop_name,
+      shopName: p.current_shop_name ?? p.shop_name,
+      shopId: p.current_shop_id ?? null,
       authorName: p.author_name,
       brand: p.brand,
       model: p.model,
@@ -487,7 +520,7 @@ member.post("/links", async (c) => {
     );
     await saveRevision(client, id, "added", f, c, body.note);
   }), f.url, f.fileName);
-  notify`🔗 ${c.get("install").name} added a manual link: ${f.brand} ${f.models} — ${f.title}`;
+  notify`🔗 ${c.shopName ?? c.get("install").name} added a manual link: ${f.brand} ${f.models} — ${f.title}`;
   return c.json(linkOut(await one(`SELECT * FROM links WHERE id = $1`, [id])));
 });
 
@@ -516,12 +549,16 @@ member.put("/links/:id", async (c) => {
   const body = await c.req.json();
   byWhom(c, body);
   const link = await applyEdit(c, c.req.param("id"), linkFields(body), "edited", body.note);
-  notify`✏️ ${c.get("install").name} fixed a manual link: ${link.brand} ${link.models} — ${link.title}`;
+  notify`✏️ ${c.shopName ?? c.get("install").name} fixed a manual link: ${link.brand} ${link.models} — ${link.title}`;
   return c.json(link);
 });
 
 member.get("/links/:id/history", async (c) => {
-  const { rows } = await q(`SELECT * FROM link_revisions WHERE link_id = $1 ORDER BY created_at DESC`, [c.req.param("id")]);
+  const { rows } = await q(
+    `SELECT r.*, s.name AS current_shop_name FROM link_revisions r
+     LEFT JOIN shops s ON s.install_id = r.install_id AND s.shop_ref = r.shop_ref AND r.shop_ref <> '' WHERE r.link_id = $1 ORDER BY r.created_at DESC`,
+    [c.req.param("id")],
+  );
   return c.json(
     rows.map((r) => ({
       id: r.id,
@@ -532,8 +569,10 @@ member.get("/links/:id/history", async (c) => {
       title: r.title,
       url: r.url,
       byName: r.by_name,
-      // The company that made it, when its install said which; otherwise the install (as every revision was before)
-      byShop: r.shop_name || r.by_shop,
+      // The company that made it (its name as it is now, else as it was then), when its install said which; otherwise
+      // the install (as every revision was before)
+      byShop: r.current_shop_name ?? (r.shop_name || r.by_shop),
+      shopRef: r.shop_ref || null,
       note: r.note,
       createdAt: r.created_at,
     })),
@@ -642,8 +681,13 @@ member.post("/posts", async (c) => {
  * Removing a note (by its shop, or by the hub admin when installId is null) takes back what it said and its photos:
  * only its id stays, so installs drop their copy.
  */
-async function removePost(id, installId) {
+async function removePost(id, installId, acting) {
   return tx(async (client) => {
+    // One company on an install can't remove another company's note (when the request says which company it is).
+    if (acting) {
+      const p = (await client.query(`SELECT shop_ref FROM posts WHERE id = $1 AND install_id = $2 FOR UPDATE`, [id, installId])).rows[0];
+      if (p) sameCompany(acting, p.shop_ref, "note", fail);
+    }
     const r = await client.query(
       `UPDATE posts SET deleted = true, title = '', body = '', author_name = NULL, updated_at = now(), seq = nextval('change_seq')
        WHERE id = $1 AND ($2::text IS NULL OR install_id = $2)`,
@@ -655,7 +699,8 @@ async function removePost(id, installId) {
 }
 
 member.delete("/posts/:id", async (c) => {
-  if (!(await removePost(c.req.param("id"), c.get("install").id))) throw fail(404, "Only the shop that shared a note can remove it.");
+  const body = await c.req.json().catch(() => ({}));
+  if (!(await removePost(c.req.param("id"), c.get("install").id, actingShop(c, body)))) throw fail(404, "Only the shop that shared a note can remove it.");
   return c.json({ ok: true });
 });
 
@@ -683,12 +728,14 @@ member.put("/figures/:id", async (c) => {
   if (data.length > 2 * 1024 * 1024) throw fail(413, "Figure too large.");
   // The first shop to share a figure keeps it, and can replace it (a redraw); a figure the hub admin removed can be
   // shared again by anyone. stored: false means another shop's copy is already here and this one was not kept.
+  // Which company on the install shared it comes from X-Shop-Ref (null from installs that don't say); it is kept for
+  // the record, and ownership stays by install.
   const r = await q(
-    `INSERT INTO figures (id, mime, data, width, height, install_id) VALUES ($1,$2,$3,$4,$5,$6)
+    `INSERT INTO figures (id, mime, data, width, height, install_id, shop_ref) VALUES ($1,$2,$3,$4,$5,$6,$7)
      ON CONFLICT (id) DO UPDATE SET mime = EXCLUDED.mime, data = EXCLUDED.data, width = EXCLUDED.width, height = EXCLUDED.height,
-       install_id = EXCLUDED.install_id, deleted = false, seq = nextval('change_seq')
+       install_id = EXCLUDED.install_id, shop_ref = EXCLUDED.shop_ref, deleted = false, seq = nextval('change_seq')
      WHERE figures.install_id = EXCLUDED.install_id OR figures.deleted`,
-    [id, mime, data, Number(c.req.query("w")) || null, Number(c.req.query("h")) || null, c.get("install").id],
+    [id, mime, data, Number(c.req.query("w")) || null, Number(c.req.query("h")) || null, c.get("install").id, actingShop(c, null) || null],
   );
   return c.json({ ok: true, stored: r.rowCount > 0 });
 });
@@ -839,7 +886,30 @@ admin.post("/import", async (c) => c.json(await importStream(c.req.raw.body)));
 registerParts({ member, admin, fail, newId, writeLimit, validUrl });
 registerMarket({ member, fail, newId, writeLimit, notify, feedPage });
 registerUsage({ member, fail, writeLimit: usageLimit });
+// The Assistant proxy: the Anthropic key lives here only (src/assistant.mjs).
+registerAssistant({ member, admin, fail, allow, newId });
 registerPartners({ app, member, fail, newId, allow, clientIp, sha, hubName: HUB_NAME, createInstall });
+// Shop owners' accounts, their shops and standing (src/accounts.mjs, the /account pages; mail through src/mail.mjs), and
+// billing (src/billing.mjs: Stripe Checkout and Portal on the account page, the webhook at /v1/stripe, the keys the hub
+// signs for the program, the admin's "Lapse now").
+const accounts = registerAccounts({ app, member, admin, fail, newId, allow, bucket, clientIp, hubName: HUB_NAME, createInstall, installByKey, claimListings, root: ROOT });
+registerBilling({ app, acct: accounts.acct, admin, fail, allow, clientIp, hubName: HUB_NAME, hubUrl: accounts.hubUrl, requireAccount: accounts.requireAccount, ready: accounts.ready });
+// "Start a hosted StitchShop / StitchBench" from the account page, and a password reset from the account to a Windows
+// install that allows it: the grant the hub signs, fetched and answered by the program (src/provisioning.mjs).
+registerProvisioning({ member, acct: accounts.acct, fail, newId, allow, clientIp, requireAccount: accounts.requireAccount });
+// The manual repository (src/repository.mjs, docs/plans/manual-repository-design.md): upload slots, the owner's review,
+// the repository feed and download URLs, and the free "Manuals" page on /account. Uploads stay off until REPO_UPLOADS=on.
+registerRepository({ app, member, admin, acct: accounts.acct, fail, newId, allow, clientIp, requireAccount: accounts.requireAccount });
+// Takedown notices, counter-notices, strikes and /copyright (src/takedown.mjs): the process the repository's safe harbor rests on.
+registerTakedown({ app, admin, acct: accounts.acct, fail, newId, allow, clientIp, requireAccount: accounts.requireAccount, hubName: HUB_NAME, hubUrl: accounts.hubUrl });
+// Off-site backup storage: upload and download addresses for the programs, and the restore code from the account page
+// (src/backups.mjs, src/s3.mjs; BACKUP_S3_* in the environment).
+// (before the account routes are mounted: Hono copies a router's routes when it is mounted)
+registerBackups({ app, member, acct: accounts.acct, fail, newId, allow, bucket, requireAccount: accounts.requireAccount });
+app.route("/account/api", accounts.acct);
+// A company moving from one install to another: the move token, its redemption (with or without an install key), the
+// admin's list and move by hand (src/moves.mjs). Before the member routes, so a program on no hub yet can redeem.
+registerMoves({ app, member, admin, fail, newId, allow, bucket, clientIp, hubName: HUB_NAME, createInstall, installByKey });
 
 // Admin first: the member routes below would otherwise answer /v1/admin/* with their key check.
 app.route("/v1/admin", admin);

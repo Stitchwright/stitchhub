@@ -12,7 +12,93 @@ import { pool, holdFeeds } from "./db.mjs";
 // In import order (parents before children). `key` pages the export; `conflict` is the primary key.
 export const TABLES = [
   { t: "setting", table: "settings", cols: ["key", "value"], key: "key" },
-  { t: "install", table: "installs", cols: ["id", "name", "contact", "key_hash", "scope", "blocked", "invited_by", "created_at", "last_seen_at"] },
+  { t: "install", table: "installs", cols: ["id", "name", "contact", "key_hash", "scope", "blocked", "invited_by", "created_at", "last_seen_at", "repo_uploads_off"] },
+  // Shop owners' accounts (hashed passwords), their shops with standing, the links and codes out (hashed), and signed-in
+  // browsers: a move keeps everyone signed in and every link they were sent working.
+  { t: "account", table: "accounts", cols: ["id", "email", "password_hash", "verified_at", "terms_version", "terms_at", "stripe_customer_id", "disabled", "created_at", "last_sign_in_at", "founding_at", "founding_gap_since", "founding_lost_at", "repo_uploads_off"] },
+  {
+    t: "shop",
+    table: "shops",
+    cols: ["id", "install_id", "shop_ref", "name", "kind", "program", "version", "account_id", "comp_until", "comp_note", "lapsed_at", "reset_opt_in", "created_at", "last_seen_at"],
+  },
+  // Companies moving between installs: the move tokens out (hashed) and the record of each move, so a company's old
+  // install still hears where it went after the hub itself moved (src/moves.mjs).
+  {
+    t: "shop_move",
+    table: "shop_moves",
+    cols: ["id", "shop_id", "shop_ref", "token_hash", "from_install_id", "to_install_id", "expires_at", "used_at", "cancelled_at", "by_admin", "moved", "created_at"],
+    json: ["moved"],
+  },
+  // Password resets asked for on an account for a Windows install (signed grants, public, one use), and the hosted shops
+  // accounts started (src/provisioning.mjs): a moved hub still knows what was asked and answered.
+  {
+    t: "reset_grant",
+    table: "reset_grants",
+    cols: ["id", "shop_id", "account_id", "email", "nonce", "grant_text", "expires_at", "fetched_at", "used_at", "result", "why", "created_at"],
+  },
+  { t: "hosted_start", table: "hosted_starts", cols: ["id", "account_id", "program", "shop_name", "kind", "shop_ref", "install_id", "shop_id", "error", "created_at"] },
+  // Each time an account accepted the terms (src/terms.mjs): which version, how, and for a Checkout the shop and session.
+  { t: "terms_acceptance", table: "terms_acceptances", cols: ["id", "account_id", "version", "via", "shop_id", "checkout_id", "created_at"] },
+  { t: "account_token", table: "account_tokens", cols: ["token_hash", "kind", "account_id", "shop_id", "expires_at", "used_at", "created_at"], key: "token_hash" },
+  { t: "session", table: "sessions", cols: ["id_hash", "account_id", "created_at", "last_seen_at", "expires_at"], key: "id_hash" },
+  // Billing: each shop's subscription as Stripe last reported it, the webhook events handled (a replay on the new hub
+  // does nothing either), and every key the hub signed (the program keeps working on a moved hub; a kid can be retired).
+  {
+    t: "subscription",
+    table: "subscriptions",
+    cols: ["shop_id", "stripe_subscription_id", "stripe_customer_id", "plan", "status", "current_period_end", "cancel_at_period_end", "unpaid_since", "disputed_at", "mailed", "created_at", "updated_at", "tier", "founding", "price_id", "unpaid_charge_id", "refunded_in_trial", "inquiry_at", "inquiry_dispute_ids", "chargeback_dispute_ids"],
+    key: "shop_id",
+    json: ["mailed"],
+  },
+  // The Assistant's own subscription per shop and its paid top-ups (src/assistant-billing.mjs).
+  {
+    t: "assistant_subscription",
+    table: "assistant_subscriptions",
+    cols: ["shop_id", "stripe_subscription_id", "stripe_customer_id", "stripe_created", "plan", "status", "current_period_end", "cancel_at_period_end", "price_id", "created_at", "updated_at"],
+    key: "shop_id",
+  },
+  { t: "assistant_topup", table: "assistant_topups", cols: ["stripe_session_id", "shop_id", "calls", "month", "created_at"], key: "stripe_session_id" },
+  { t: "stripe_event", table: "stripe_events", cols: ["id", "type", "received_at"] },
+  { t: "license_issue", table: "license_issues", cols: ["key_id", "shop_id", "kid", "plan", "modules", "first_day", "last_day", "grace_days", "key", "issued_at", "revoked_at", "tier", "founding"], key: "key_id" },
+  // Off-site backups (src/backups.mjs): the index of what each company has in the bucket (the bytes stay there).
+  {
+    t: "backup_object",
+    table: "backup_objects",
+    cols: ["shop_id", "name", "kind", "size", "sha256", "created_at", "confirmed_at", "deleted_at"],
+    key: "shop_id || '|' || name",
+    conflict: ["shop_id", "name"],
+  },
+  // The manual repository (src/repository.mjs): the manuals shops see (numbered in the change sequence, which the
+  // repository feed pages by), the files in R2 by hash (the bytes stay in the bucket; a moved hub keeps the bucket), the
+  // offers, the hashes that may not come back, and the download counts.
+  {
+    t: "manual",
+    table: "manuals",
+    cols: ["id", "category", "brand", "models", "model_keys", "doc_type", "year", "language", "title", "file_id", "origin", "source_url", "status", "why", "created_at", "updated_at"],
+  },
+  { t: "manual_file", table: "manual_files", cols: ["id", "sha256", "sha1", "size_bytes", "pages", "object_key", "status", "manual_id", "checks", "created_at", "updated_at"], json: ["checks"] },
+  {
+    t: "upload",
+    table: "uploads",
+    cols: ["id", "shop_id", "account_id", "install_id", "shop_ref", "by_name", "sha256", "size_bytes", "offered", "original_name", "statement_version", "statement_at", "state", "reason", "file_id", "manual_id", "created_at", "updated_at"],
+    json: ["offered"],
+  },
+  // The takedown process (src/takedown.mjs): notices and counter-notices with their timelines, and the strikes.
+  {
+    t: "takedown_notice",
+    table: "takedown_notices",
+    cols: ["id", "kind", "parent_id", "via", "status", "missing", "complainant", "work", "locations", "statements", "signature", "raw_text", "manual_ids", "file_ids", "account_id", "reason", "received_at", "actioned_at", "countered_at", "restore_earliest", "restore_latest", "reminded_at", "restored_at", "closed_at", "notes", "updated_at"],
+    json: ["complainant", "statements", "notes"],
+  },
+  { t: "strike", table: "strikes", cols: ["id", "account_id", "install_id", "shop_id", "notice_id", "file_id", "created_at", "withdrawn_at"] },
+  { t: "blocked_hash", table: "blocked_hashes", cols: ["sha256", "why", "notice_id", "file_id", "created_at", "lifted_at"], key: "sha256" },
+  {
+    t: "repo_download",
+    table: "repo_downloads",
+    cols: ["file_id", "day", "who", "n"],
+    key: "file_id || '|' || day || '|' || who",
+    conflict: ["file_id", "day", "who"],
+  },
   {
     t: "link",
     table: "links",
@@ -21,7 +107,7 @@ export const TABLES = [
   { t: "revision", table: "link_revisions", cols: ["id", "link_id", "action", "brand", "models", "doc_type", "title", "url", "by_name", "by_shop", "install_id", "note", "created_at", "shop_ref", "shop_name"] },
   { t: "post", table: "posts", cols: ["id", "install_id", "client_id", "shop_name", "shop_ref", "author_name", "brand", "model", "model_key", "kind", "title", "body", "deleted", "created_at", "updated_at"] },
   { t: "photo", table: "photos", cols: ["id", "post_id", "kind", "caption", "mime", "data", "sort_order"] },
-  { t: "figure", table: "figures", cols: ["id", "mime", "data", "width", "height", "install_id", "deleted", "created_at"] },
+  { t: "figure", table: "figures", cols: ["id", "mime", "data", "width", "height", "install_id", "shop_ref", "deleted", "created_at"] },
   { t: "dataset", table: "datasets", cols: ["name", "version", "data", "updated_at"], key: "name" },
   { t: "xpart", table: "xparts", cols: ["id", "name", "kind", "category", "specs", "notes", "deleted", "created_at", "updated_at"] },
   {
@@ -38,7 +124,7 @@ export const TABLES = [
     key: "xpart_id || '|' || brand_key || '|' || model_key",
     conflict: ["xpart_id", "brand_key", "model_key"],
   },
-  { t: "xpart_source", table: "xpart_sources", cols: ["id", "xpart_id", "vendor", "url", "price_cents", "currency", "note", "by_shop", "updated_at"] },
+  { t: "xpart_source", table: "xpart_sources", cols: ["id", "xpart_id", "vendor", "url", "price_cents", "currency", "note", "by_shop", "shop_ref", "shop_name", "updated_at"] },
   { t: "xpart_revision", table: "xpart_revisions", cols: ["id", "xpart_id", "action", "snapshot", "by_name", "by_shop", "install_id", "note", "merged_from", "created_at", "shop_ref", "shop_name"] },
   {
     t: "listing",
@@ -73,29 +159,41 @@ export const TABLES = [
   {
     t: "partner_link",
     table: "partner_links",
-    cols: ["id", "repair_install_id", "repair_shop_ref", "repair_name", "retail_install_id", "retail_shop_ref", "retail_name", "terms", "status", "created_at", "ended_at"],
+    cols: ["id", "repair_install_id", "repair_shop_ref", "repair_name", "retail_install_id", "retail_shop_ref", "retail_name", "terms", "status", "created_at", "ended_at", "repair_key", "repair_proof", "retail_key", "retail_proof"],
   },
+  // The Assistant proxy's counts (src/assistant.mjs): tokens and cost per company and month, never any text.
+  { t: "assistant_shop", table: "assistant_shops", cols: ["install_id", "shop_ref", "tz", "comp_until", "comp_note", "updated_at"], key: "install_id || '|' || shop_ref", conflict: ["install_id", "shop_ref"] },
+  {
+    t: "assistant_usage",
+    table: "assistant_usage",
+    cols: ["install_id", "shop_ref", "month", "calls", "bonus", "free_reads", "input_tokens", "output_tokens", "cost_millicents", "updated_at"],
+    key: "install_id || '|' || shop_ref || '|' || month",
+    conflict: ["install_id", "shop_ref", "month"],
+  },
+  { t: "assistant_call", table: "assistant_calls", cols: ["id", "install_id", "shop_ref", "feature", "class", "model", "free", "input_tokens", "cache_tokens", "output_tokens", "cost_millicents", "ms", "error", "created_at"] },
+  // The 30-day grace of the real-partnership rule (billing.mjs): after the links it hangs on.
+  { t: "waiver_grace", table: "waiver_grace", cols: ["link_id", "since", "reason", "created_at"], key: "link_id" },
   {
     t: "partner_invite",
     table: "partner_invites",
-    cols: ["code_hash", "install_id", "shop_ref", "shop_name", "side", "terms", "expires_at", "used_at", "link_id", "created_at"],
+    cols: ["code_hash", "install_id", "shop_ref", "shop_name", "side", "terms", "expires_at", "used_at", "link_id", "created_at", "pub_key", "invite_sig"],
     key: "code_hash",
   },
   {
     // In the order they were sent, with their numbers (an export from before version 3 has none: numbered again).
     t: "partner_message",
     table: "partner_messages",
-    cols: ["id", "link_id", "from_side", "type", "data", "bytes", "created_at"],
+    cols: ["id", "link_id", "from_side", "type", "data", "bytes", "created_at", "sig", "verified"],
     key: "lpad(seq::text, 20, '0')",
     conflict: ["link_id", "from_side", "id"],
-    json: ["data"],
+    json: ["data", "sig"],
     seq: "own",
   },
 ];
 const BINARY = new Set(["data"]);
-const JSONB = new Set(["snapshot", "item", "buyer_contact", "seller_contact", "terms"]);
+const JSONB = new Set(["snapshot", "item", "buyer_contact", "seller_contact", "terms", "repair_proof", "retail_proof", "invite_sig"]);
 // Tables whose rows carry a number from change_seq (the change feed); partner_messages has its own sequence.
-const WITH_SEQ = new Set(["links", "posts", "figures", "xparts", "listings", "orders"]);
+const WITH_SEQ = new Set(["links", "posts", "figures", "xparts", "listings", "orders", "manuals"]);
 const hasSeq = (spec) => WITH_SEQ.has(spec.table) || spec.seq === "own";
 
 // An import reads the file line by line, and no more of it than these: a gzip a few hundred KB long can hold a single
@@ -202,6 +300,13 @@ const SETTINGS = {
   join_key: (v) => /^\S{8,}$/.test(v),
   discord_webhook: (v) => /^https:\/\/(discord\.com|discordapp\.com)\/api\/webhooks\//.test(v),
   discord_invite: (v) => /^https:\/\/(discord\.gg|discord\.com\/invite)\/[\w-]+$/.test(v),
+  repo_refused_brands: (v) => {
+    try {
+      return Array.isArray(JSON.parse(v));
+    } catch {
+      return false;
+    }
+  },
   feed_gaps: (v) => {
     try {
       const g = JSON.parse(v);
@@ -223,6 +328,20 @@ function checkRow(table, row) {
     if (!SETTINGS[row.key](row.value)) refuse(`the setting ${row.key} has a value the hub wouldn't take`);
   } else if (table === "installs") {
     if (!/^[0-9a-f]{64}$/.test(row.key_hash ?? "")) refuse("a member's key must be a SHA-256 hash");
+  } else if (table === "accounts") {
+    if (!/^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/.test(row.email ?? "")) refuse("an account needs an email address");
+    if (row.password_hash != null && !/^scrypt\$\d+\$\d+\$\d+\$[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+$/.test(row.password_hash)) refuse("an account's password must be a scrypt hash");
+  } else if (table === "shop_moves") {
+    if (row.token_hash != null && !/^[0-9a-f]{64}$/.test(row.token_hash)) refuse("a move token must be a SHA-256 hash");
+  } else if (table === "account_tokens" || table === "sessions") {
+    if (!/^[0-9a-f]{64}$/.test((table === "sessions" ? row.id_hash : row.token_hash) ?? "")) refuse("a token or session must be a SHA-256 hash");
+  } else if (table === "manual_files") {
+    if (!/^[0-9a-f]{64}$/.test(row.sha256 ?? "")) refuse("a manual file needs its sha-256");
+    if (!/^(files|held|retired)\/[0-9a-f]{64}\.pdf$/.test(row.object_key ?? "")) refuse("a manual file's object key must be files/, held/ or retired/ and its hash");
+  } else if (table === "blocked_hashes" || table === "uploads") {
+    if (!/^[0-9a-f]{64}$/.test(row.sha256 ?? "")) refuse("a hash must be a SHA-256");
+  } else if (table === "manuals") {
+    if (row.source_url && !webAddress(row.source_url)) refuse("a maker mirror's source must start with http:// or https://");
   } else if (table === "links" || table === "link_revisions") {
     if (!webAddress(row.url)) refuse("a link must start with http:// or https://");
   } else if (table === "xpart_sources") {
@@ -239,8 +358,11 @@ export async function importStream(webStream) {
   const counts = {};
   const meta = {};
   const linkIds = new Map(); // an imported link whose address is already here under another id: merged into that one
-  const client = await pool.connect();
-  const release = holdFeeds(); // members' feeds wait until the import has committed
+  const release = holdFeeds(); // members' feeds wait until the import has committed (refuses while waiting for the writer lock)
+  const client = await pool.connect().catch((e) => {
+    release();
+    throw e;
+  });
   let lineNo = 0;
   let table = null;
   try {

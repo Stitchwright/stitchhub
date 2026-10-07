@@ -1,0 +1,485 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StitchHub account</title>
+<style>
+  :root { --bg: #f4f2ee; --card: #fff; --ink: #1c2430; --muted: #5b6573; --line: #ddd8cf; --accent: #1f3a5f; --bad: #b3261e; --ok: #1e7a3c; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #15181d; --card: #1e232a; --ink: #e8ebef; --muted: #a3acb8; --line: #333a44; --accent: #8fb3e0; --bad: #ff8a80; --ok: #7dd3a0; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 system-ui, "Segoe UI", sans-serif; }
+  main { max-width: 720px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { margin: 0 0 4px; font-size: 26px; } h2 { font-size: 18px; margin: 0 0 10px; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin: 16px 0; }
+  .muted { color: var(--muted); } .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  label { display: block; margin: 8px 0 2px; color: var(--muted); font-size: 13px; }
+  input, button, select { font: inherit; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--ink); }
+  input { width: 100%; max-width: 360px; } button { background: var(--accent); color: #fff; border-color: var(--accent); cursor: pointer; margin-top: 10px; }
+  button.plain { background: var(--card); color: var(--ink); border-color: var(--line); }
+  a { color: var(--accent); } nav a { margin-right: 14px; }
+  table { width: 100%; border-collapse: collapse; } td, th { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 12px; text-transform: uppercase; color: var(--muted); }
+  .bad { color: var(--bad); } .ok { color: var(--ok); } #msg { min-height: 1.5em; }
+  .check { display: flex; gap: 8px; align-items: flex-start; margin: 10px 0; } .check input { width: auto; margin-top: 4px; }
+  .scroll { overflow-x: auto; }
+  .check label a { color: var(--accent); } #termsPrompt { border-color: var(--accent); border-width: 2px; }
+  footer { margin-top: 24px; font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1 id="title">StitchHub</h1>
+  <p class="muted">Your account for the shops you run with StitchBench or StitchShop.</p>
+  <p id="msg" role="status"></p>
+
+  <section id="signin" hidden>
+    <h2>Sign in</h2>
+    <form id="signinForm">
+      <label for="siEmail">Email</label><input id="siEmail" type="email" autocomplete="username" required>
+      <label for="siPassword">Password</label><input id="siPassword" type="password" autocomplete="current-password" required>
+      <div class="row"><button>Sign in</button><a href="/account/forgot">Forgot your password?</a></div>
+    </form>
+    <p class="muted">New here? <a href="#" id="showSignup">Create an account</a>. If you already use StitchBench or StitchShop, the easier way is Settings → Account inside the program: it starts the account for you.</p>
+    <p class="muted" id="resendRow" hidden>Didn't get the email? <a href="#" id="resend">Send it again</a>.</p>
+  </section>
+
+  <section id="signup" hidden>
+    <h2>Create an account</h2>
+    <form id="signupForm">
+      <label for="suEmail">Email</label><input id="suEmail" type="email" autocomplete="username" required>
+      <label for="suPassword">Password (8 characters or more)</label><input id="suPassword" type="password" autocomplete="new-password" minlength="8" required>
+      <label for="suPassword2">The same password again</label><input id="suPassword2" type="password" autocomplete="new-password" minlength="8" required>
+      <div class="check"><input id="suTerms" type="checkbox" required><label for="suTerms" style="margin:0">I accept the <a href="/terms" target="_blank" rel="noopener">Terms of Service</a> and the <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a><span id="suVersion"></span>.</label></div>
+      <div class="row"><button>Create account</button><button type="button" class="plain" id="showSignin">I have an account</button></div>
+    </form>
+  </section>
+
+  <section id="forgot" hidden>
+    <h2>Forgot your password</h2>
+    <p class="muted">Enter the email address of your account. If it has one, we'll send a link to set a new password; the link works once, for an hour.</p>
+    <form id="forgotForm">
+      <label for="fgEmail">Email</label><input id="fgEmail" type="email" autocomplete="username" required>
+      <div class="row"><button>Send the link</button><a href="/account">Back to sign in</a></div>
+    </form>
+  </section>
+
+  <section id="setpw" hidden>
+    <h2>Set your password</h2>
+    <form id="setpwForm">
+      <label for="spPassword">New password (8 characters or more)</label><input id="spPassword" type="password" autocomplete="new-password" minlength="8" required>
+      <label for="spPassword2">The same password again</label><input id="spPassword2" type="password" autocomplete="new-password" minlength="8" required>
+      <button>Save password and sign in</button>
+    </form>
+  </section>
+
+  <section id="verify" hidden>
+    <h2>Confirming your email</h2>
+    <p id="verifyText" class="muted">One moment.</p>
+  </section>
+
+  <div id="app" hidden>
+    <nav><a href="/account/shops">Your shops</a><a href="/account/manuals">Manuals</a><a href="/account/repository">Repository</a><a href="/account/settings">Settings</a><a href="#" id="signout">Sign out</a></nav>
+
+    <section id="termsPrompt" hidden>
+      <h2 id="tpTitle">We updated our terms</h2>
+      <p id="tpText"></p>
+      <div class="check"><input id="tpTick" type="checkbox"><label for="tpTick" style="margin:0">I accept the <a id="tpTerms" href="/terms" target="_blank" rel="noopener">Terms of Service</a> and the <a id="tpPrivacy" href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>, version <span id="tpVersion"></span>.</label></div>
+      <button id="tpAccept">Accept</button>
+    </section>
+
+    <section id="shops" hidden>
+      <h2>Your shops</h2>
+      <p class="muted" id="shopsEmpty" hidden>No shop is connected to this account yet. In the program, open Settings → Account, choose "I already have an account" and type the code it shows below.</p>
+      <div class="scroll"><table id="shopsTable"><thead><tr><th>Shop</th><th>Program</th><th>Standing</th><th>Billing</th><th>Last synced</th><th>Owner password</th><th>Off-site backup</th></tr></thead><tbody id="shopRows"></tbody></table></div>
+      <p class="muted" id="billingNote"></p>
+      <h2 style="margin-top:18px">Connect a shop</h2>
+      <form id="connectForm" class="row">
+        <input id="code" placeholder="Code from Settings → Account, like 7KQPM-2XH9T" autocomplete="off" required style="max-width:260px">
+        <button style="margin-top:0">Connect</button>
+      </form>
+      <div id="hosted" hidden>
+        <h2 style="margin-top:18px">Start a hosted shop</h2>
+        <p class="muted">A new shop on our hosted service, in your browser: nothing to install. Your email above is its owner login; you choose the password with the link shown next.</p>
+        <form id="hostedForm">
+          <label for="hsProgram">Program</label><select id="hsProgram"></select>
+          <label for="hsShop">Shop name</label><input id="hsShop" maxlength="120" required>
+          <label for="hsName">Your name</label><input id="hsName" maxlength="120" required autocomplete="name">
+          <button id="hsButton">Start the shop</button>
+        </form>
+        <div id="hostedDone" hidden>
+          <p><strong id="hdTitle"></strong></p>
+          <p>Choose your password here. The link works once, for 24 hours, and isn't shown again:</p>
+          <p><a id="hdLink" target="_blank" rel="noopener noreferrer"></a></p>
+        </div>
+      </div>
+    </section>
+
+    <section id="manuals" hidden>
+      <h2>Manuals</h2>
+      <p class="muted">A community manual library, free with your StitchHub account. Search by brand, model or document type; a download link works for five minutes. Up to <span id="mnLimit">25</span> downloads a day from the website.</p>
+      <form id="manualsForm" class="row">
+        <input id="mnQuery" placeholder="Brand, model or words, like: brother 1034d" style="max-width:320px">
+        <select id="mnDocType"><option value="">Any document type</option></select>
+        <button style="margin-top:0">Search</button>
+      </form>
+      <p class="muted" id="mnCount"></p>
+      <div class="scroll"><table id="mnTable" hidden><thead><tr><th>Brand</th><th>Models</th><th>Document</th><th>Year</th><th>Pages</th><th>Size</th><th></th></tr></thead><tbody id="mnRows"></tbody></table></div>
+      <div class="row"><button class="plain" id="mnMore" hidden>More</button></div>
+    </section>
+
+    <section id="repository" hidden>
+      <h2>Your files in the repository</h2>
+      <p class="muted" id="rpState"></p>
+      <p class="muted">A file you offered is removed when a copyright notice names it. Each removal is a strike; three strikes within 12 months end uploading from your account. If you believe a file was removed by mistake or misidentification you can send a counter-notice. Knowingly false notices and counter-notices make the sender liable for damages (17 U.S.C. 512(f)). See <a href="/copyright">Copyright</a>.</p>
+      <div class="scroll"><table id="rpTable" hidden><thead><tr><th>File</th><th>Notice from</th><th>Removed</th><th>State</th><th></th></tr></thead><tbody id="rpRows"></tbody></table></div>
+      <form id="rpForm" hidden>
+        <h2 style="margin-top:18px">Counter-notice for <span id="rpWhat"></span></h2>
+        <p><strong>The whole counter-notice, with your name, address and telephone number, is sent to the person who sent the notice.</strong> Unless they tell us within 10 to 14 business days that they have gone to court, the file is restored.</p>
+        <label for="rpName">Your name</label><input id="rpName" maxlength="200" required>
+        <label for="rpAddress">Your postal address</label><input id="rpAddress" maxlength="600" required>
+        <label for="rpPhone">Your telephone number</label><input id="rpPhone" maxlength="60" required>
+        <div class="check"><input type="checkbox" id="rpGood"><label for="rpGood">Under penalty of perjury, I have a good-faith belief that the file was removed or disabled as a result of mistake or misidentification.</label></div>
+        <div class="check"><input type="checkbox" id="rpJur"><label for="rpJur">I consent to the jurisdiction of the federal district court for the judicial district of my address (or, if it is outside the United States, any judicial district where this hub can be found).</label></div>
+        <div class="check"><input type="checkbox" id="rpSvc"><label for="rpSvc">I will accept service of process from the person who sent the notice.</label></div>
+        <label for="rpSig">Signature (type your full name)</label><input id="rpSig" maxlength="200" required>
+        <div class="row"><button>Send the counter-notice</button><button type="button" class="plain" id="rpCancel">Cancel</button></div>
+      </form>
+    </section>
+
+    <section id="settings" hidden>
+      <h2>Settings</h2>
+      <p>Signed in as <strong id="meEmail"></strong>.</p>
+      <h2 style="margin-top:18px">Change your password</h2>
+      <form id="passwordForm">
+        <label for="pwCurrent">Current password</label><input id="pwCurrent" type="password" autocomplete="current-password" required>
+        <label for="pwNew">New password (8 characters or more)</label><input id="pwNew" type="password" autocomplete="new-password" minlength="8" required>
+        <label for="pwNew2">The same password again</label><input id="pwNew2" type="password" autocomplete="new-password" minlength="8" required>
+        <button>Change password</button>
+      </form>
+      <h2 style="margin-top:18px">Sign out everywhere</h2>
+      <p class="muted">Signs this account out of every browser, this one included.</p>
+      <button class="plain" id="signoutAll">Sign out everywhere</button>
+    </section>
+  </div>
+  <footer class="muted"><a href="/terms">Terms of Service</a> · <a href="/privacy">Privacy Policy</a></footer>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const say = (t, bad) => { $("msg").textContent = t; $("msg").className = bad ? "bad" : "ok"; };
+  const page = location.pathname.replace(/\/+$/, "").split("/")[2] || "";
+  const token = new URLSearchParams(location.search).get("t") || "";
+  const SECTIONS = ["signin", "signup", "forgot", "setpw", "verify", "app", "shops", "manuals", "repository", "settings"];
+  function show(...ids) { for (const id of SECTIONS) $(id).hidden = !ids.includes(id); }
+  async function api(path, body) {
+    const r = await fetch("/account/api" + path, body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { const e = new Error(j.error || r.statusText); e.status = r.status; e.missing = j.missing; throw e; }
+    return j;
+  }
+  const when = (d) => (d ? new Date(d).toLocaleString() : "never");
+  const td = (text) => { const c = document.createElement("td"); c.textContent = text ?? ""; return c; };
+  const samePassword = (a, b) => { if (a !== b) { say("The two passwords aren't the same.", true); return false; } return true; };
+
+  async function loadMe(where) {
+    let me;
+    try { me = await api("/me"); } catch (e) { if (e.status === 401) { show("signin"); return; } throw e; }
+    document.title = `${me.hubName} account`; $("title").textContent = me.hubName;
+    $("meEmail").textContent = me.account.email;
+    $("shopsEmpty").hidden = me.shops.length > 0; $("shopsTable").hidden = !me.shops.length;
+    showTermsPrompt(me.terms);
+    $("shopRows").replaceChildren(...me.shops.map((s) => { const tr = document.createElement("tr"); tr.append(td(s.name), td([s.program, s.version].filter(Boolean).join(" ") || s.installName), td(s.message), billingCell(s, me.billing, me.terms), td(when(s.lastSeenAt)), resetCell(s, me), restoreCell(s)); return tr; }));
+    // Start a hosted shop: for a verified account, when this hub offers one.
+    const offered = Object.entries(me.hosted || {}).filter(([, on]) => on).map(([name]) => name);
+    $("hosted").hidden = !me.account.verified || !offered.length;
+    $("hsProgram").replaceChildren(...offered.map((name) => Object.assign(document.createElement("option"), { value: name, textContent: name === "StitchShop" ? "StitchShop (a sewing or quilt shop counter)" : "StitchBench (a repair bench)" })));
+    $("billingNote").textContent = me.billing.open ? billingWords(me.billing) : "Subscriptions aren't open yet. Every shop is free while the hub is in its community period.";
+    show("app", where === "settings" ? "settings" : where === "manuals" ? "manuals" : where === "repository" ? "repository" : "shops");
+    if (where === "manuals") searchManuals(0);
+    if (where === "repository") loadRepo();
+  }
+
+  // "We updated our terms" (or, for an account that never ticked, "Please accept our terms"): shown while the version in
+  // force is newer than the one this account accepted. Subscribe needs the same tick.
+  let termsNow = null;
+  function showTermsPrompt(t) {
+    termsNow = t || null;
+    $("termsPrompt").hidden = !t?.needsAccept;
+    if (!t?.needsAccept) return;
+    $("tpTitle").textContent = t.accepted ? "We updated our terms" : "Please accept our terms";
+    $("tpVersion").textContent = t.current + (t.draft ? " (a draft, not yet in force)" : "");
+    $("tpTerms").href = `/terms/${encodeURIComponent(t.current)}`; $("tpPrivacy").href = `/privacy/${encodeURIComponent(t.current)}`;
+    $("tpText").textContent = t.accepted
+      ? `This account accepted version ${t.accepted}${t.acceptedAt ? ` on ${new Date(t.acceptedAt).toLocaleDateString()}` : ""}. Please read the new version and accept it; subscribing a shop needs it.`
+      : "This account hasn't accepted the current Terms of Service and Privacy Policy yet. Please read them and accept them; subscribing a shop needs it.";
+    $("tpTick").checked = false;
+  }
+
+  // The two plans in words, under the shops table: what each costs for this account, and the founding mark.
+  function billingWords(billing) {
+    const p = billing.prices || {};
+    const cost = (x) => [x?.monthly, x?.yearly].filter(Boolean).join(" or ");
+    const lines = [
+      `Two plans, the same program and every feature on both: Solo, for up to ${billing.soloLogins} people signed in, ${cost(p.solo)}; Shop, for everyone at the shop, ${cost(p.shop)}. Yearly is ten times monthly: two months free.`,
+      "Switch between Solo and Shop at any time: moving up to Shop charges the difference for the rest of the period now, moving down to Solo credits it on the next invoice. A sewing or quilt shop partnered with a repair shop in good standing gets Shop free.",
+    ];
+    const f = billing.founding;
+    if (f?.on) lines.push(f.losesOn ? `This account is a founding shop: subscribe again by ${f.losesOn} to keep the founding prices (they stay while a subscription runs without a gap of more than 60 days).` : "This account is a founding shop: these are the founding prices, locked while a subscription runs without a gap of more than 60 days.");
+    const ap = billing.assistantPrices;
+    if (ap) lines.push(`The Assistant (drafts, likely causes, plate reads, parts and manuals help; 300 calls a month) is a separate add-on for any shop: ${[ap.monthly, ap.yearly].filter(Boolean).join(" or ")}${ap.topup ? `; ${ap.topUpCalls} more calls this month for ${ap.topup}` : ""}.`);
+    lines.push("Cards, cancelling and invoices are handled on Stripe's pages; the hub never sees your card.");
+    return lines.join(" ");
+  }
+  const TIER = { solo: "Solo", shop: "Shop" };
+
+  // Subscribe (Stripe Checkout) and Manage billing (Stripe's Customer Portal): the hub answers with the page to go to.
+  // Checkout names the terms version the page showed, and the tick when the account must accept it first. Switch moves a
+  // running subscription between Solo and Shop (same interval) with Stripe's proration.
+  function billingCell(s, billing, terms) {
+    const c = document.createElement("td");
+    const go = (path, body, label) => {
+      const b = document.createElement("button"); b.className = "plain"; b.style.marginTop = "0"; b.textContent = label;
+      b.onclick = async () => {
+        let send = body;
+        if (path === "/checkout" || path === "/assistant/checkout") {
+          if (terms?.needsAccept && !$("tpTick").checked) { say("Tick the box at the top to accept the updated terms first.", true); $("tpTick").focus(); return; }
+          send = { ...body, ...(terms?.current ? { termsVersion: terms.current } : {}), ...(terms?.needsAccept ? { acceptTerms: true } : {}) };
+        }
+        b.disabled = true;
+        try { const r = await api(`/shops/${s.id}${path}`, send); location.href = r.url; } catch (err) { say(err.message, true); b.disabled = false; }
+      };
+      return b;
+    };
+    if (!billing.open) { c.textContent = s.standing === "comped" ? "free" : "coming soon"; c.className = "muted"; return c; }
+    const prices = billing.prices || {};
+    if (s.canSubscribe) {
+      for (const tier of ["solo", "shop"]) {
+        const p = prices[tier] || {};
+        const row = Object.assign(document.createElement("div"), { className: "row" }); row.style.marginBottom = "6px";
+        row.append(Object.assign(document.createElement("span"), { textContent: tier === "solo" ? `Solo (up to ${billing.soloLogins} signed in):` : "Shop (everyone):" }));
+        // Yearly first (decision 8), shown as two months free.
+        if (p.yearly) row.append(go("/checkout", { plan: tier, interval: "yearly" }, `${p.yearly}, two months free`));
+        if (p.monthly) row.append(go("/checkout", { plan: tier, interval: "monthly" }, p.monthly));
+        if (!p.yearly && !p.monthly) row.append(Object.assign(document.createElement("span"), { className: "muted", textContent: "not set up on this hub yet" }));
+        c.append(row);
+      }
+      if (s.firstChargeOn) c.append(Object.assign(document.createElement("div"), { className: "muted", textContent: `Subscribe now and keep the rest of your free trial: the card is taken now and first charged on ${s.firstChargeOn}, when the trial ends.` }));
+      if (billing.founding?.on) c.append(Object.assign(document.createElement("div"), { className: "muted", textContent: "Founding-shop prices." }));
+      if (s.standing === "waived") c.append(Object.assign(document.createElement("div"), { className: "muted", textContent: s.lastDay ? s.message : "Free while partnered: no need to subscribe." }));
+    }
+    if (s.canSwitch) {
+      const sub = s.subscription;
+      const to = sub.plan === "solo" ? "shop" : "solo";
+      const price = (prices[to] || {})[sub.interval === "yearly" ? "yearly" : "monthly"];
+      const b = Object.assign(document.createElement("button"), { className: "plain", textContent: `Switch to ${TIER[to]}` }); b.style.marginTop = "0";
+      b.onclick = async () => {
+        const what = to === "shop" ? "everyone at the shop can sign in" : `up to ${billing.soloLogins} people can be signed in; anyone past that keeps working until you remove their access`;
+        const money = to === "shop" ? "The difference for the rest of this period is charged to your card now; the switch happens once it's paid." : "The difference for the rest of this period is credited on your next invoice.";
+        if (!confirm(`Switch ${s.name} to ${TIER[to]}${price ? ` (${price})` : ""}? On ${TIER[to]}, ${what}. ${money}`)) return;
+        b.disabled = true;
+        try {
+          const r = await api(`/shops/${s.id}/switch`, { plan: to });
+          if (r.pending) say(r.message, true);
+          else say(`${s.name} is on ${TIER[to]} now. The program learns it at its next sync (or Settings → Account → Check again).`);
+          await loadMe("shops");
+        }
+        catch (err) { say(err.message, true); b.disabled = false; }
+      };
+      const row = Object.assign(document.createElement("div"), { className: "row" }); row.style.marginBottom = "6px";
+      row.append(Object.assign(document.createElement("span"), { textContent: `On ${TIER[sub.plan] || "Shop"}${sub.interval ? `, ${sub.interval}` : ""}${sub.founding ? ", founding price" : ""}.` }), b);
+      c.append(row);
+    }
+    // The Assistant (its own subscription, $15 a month or $150 a year, 300 calls; 300 more for $10).
+    const ap = billing.assistantPrices;
+    const as = s.assistant;
+    if (ap && as) {
+      const box = Object.assign(document.createElement("div"), { className: "row" }); box.style.marginTop = "8px";
+      if (as.canAdd) {
+        box.append(Object.assign(document.createElement("span"), { textContent: "Add the Assistant:" }));
+        if (ap.monthly) box.append(go("/assistant/checkout", { interval: "monthly" }, `Add the Assistant (${ap.monthly})`));
+        if (ap.yearly) box.append(go("/assistant/checkout", { interval: "yearly" }, `${ap.yearly}, two months free`));
+      } else if (as.status !== "none") {
+        const words = as.status === "ending" ? `Assistant on, cancelled: paid through ${as.paidThrough}.` : as.status === "past_due" ? "Assistant: the last payment didn't go through. Update your card under Manage billing." : as.status === "active" ? `Assistant on, paid through ${as.paidThrough}.` : "Assistant ended.";
+        box.append(Object.assign(document.createElement("span"), { textContent: words }));
+      }
+      if (as.canTopUp && ap.topup) box.append(go("/assistant/topup", {}, `Buy ${ap.topUpCalls} more (${ap.topup})`));
+      if (box.childNodes.length) c.append(box);
+    }
+    if (s.canManage) c.append(go("/portal", {}, "Manage billing"));
+    if (!c.childNodes.length) { c.textContent = s.standing === "comped" ? "free" : ""; c.className = "muted"; }
+    return c;
+  }
+
+  // A password reset on the shop PC (the Windows program, when its owner allowed it there): the program's own window
+  // shows the request, and the new password, at the PC only.
+  function resetCell(s, me) {
+    const c = document.createElement("td");
+    if (!s.resetOptIn) { c.textContent = ""; return c; }
+    const r = s.resetRequest;
+    const note = Object.assign(document.createElement("div"), { className: "muted" });
+    if (r && !r.answeredAt && new Date(r.expiresAt) > new Date()) note.textContent = `Asked ${when(r.askedAt)}: open ${s.program || "the program"} on the shop PC and choose Allow. Good until ${when(r.expiresAt)}.`;
+    else if (r && r.result === "allowed") note.textContent = `Reset ${when(r.answeredAt)} at the shop PC.`;
+    else if (r && r.result === "refused") note.textContent = `Refused at the shop PC ${when(r.answeredAt)}.`;
+    if (!me.canSignResets) { c.className = "muted"; c.textContent = "Not available on this hub yet: use the tray icon's Reset a password on the shop PC."; return c; }
+    const b = Object.assign(document.createElement("button"), { className: "plain", textContent: `Reset the owner's password on ${s.name}` });
+    b.style.marginTop = "0";
+    b.onclick = async () => {
+      b.disabled = true;
+      try { await api(`/shops/${s.id}/reset-owner`, {}); say(`Asked. Go to the shop PC: ${s.program || "the program"}'s window shows the request within a minute (or at its next sync, ten at most). Choose Allow there to see the new password. The request works for an hour.`); await loadMe("shops"); }
+      catch (err) { say(err.message, true); b.disabled = false; }
+    };
+    c.append(b, note);
+    return c;
+  }
+
+  // The free side of the manual repository: published manuals, searched here, downloaded from a short-lived link.
+  const DOC_TYPES = ["ServiceManual", "TechnicalManual", "MaintenanceManual", "PartsList", "OperatorManual", "ErrorCodes", "WiringDiagram", "Schematic", "Firmware", "Training", "Bulletin"];
+  $("mnDocType").append(...DOC_TYPES.map((d) => Object.assign(document.createElement("option"), { value: d, textContent: d.replace(/([a-z])([A-Z])/g, "$1 $2") })));
+  let mnOffset = 0;
+  const size = (b) => (b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
+  const docCell = (m) => { const c = td(m.docType.replace(/([a-z])([A-Z])/g, "$1 $2")); const r = document.createElement("div"); r.className = "muted"; r.style.fontSize = "12px"; r.textContent = "Ref " + m.id; c.append(r); return c; };
+  // What was removed on a copyright notice, and the counter-notice.
+  let rpNotice = null;
+  async function loadRepo() {
+    try {
+      const r = await api("/repository");
+      $("rpState").textContent = r.uploadsOff ? "Uploading has ended for your account." : `Strikes in the last 12 months: ${r.strikes} of 3.`;
+      $("rpTable").hidden = !r.removals.length;
+      if (!r.removals.length) $("rpState").textContent += " Nothing of yours has been removed on a notice.";
+      $("rpRows").replaceChildren(...r.removals.map((x) => {
+        const tr = document.createElement("tr");
+        const state = x.status === "restored" ? `Restored ${when(x.restoredAt)}; strike withdrawn` : x.status === "countered" ? `Counter-notice sent. Restored between ${x.restoreEarliest} and ${x.restoreLatest} unless they go to court` : x.status === "lawsuit" ? "The sender says it has gone to court; the file stays down" : x.status === "actioned" ? "Removed" : x.status;
+        const last = document.createElement("td");
+        if (x.canCounter) { const b = Object.assign(document.createElement("button"), { className: "plain", textContent: "Counter-notice" }); b.style.marginTop = "0"; b.onclick = () => { rpNotice = x.noticeId; $("rpWhat").textContent = x.what; $("rpForm").hidden = false; $("rpName").focus(); }; last.append(b); }
+        tr.append(td(x.what), td(x.from), td(when(x.removedAt)), td(state), last);
+        return tr;
+      }));
+    } catch (err) { say(err.message, true); }
+  }
+  $("rpCancel").onclick = () => { $("rpForm").hidden = true; rpNotice = null; };
+  $("rpForm").onsubmit = async (e) => {
+    e.preventDefault();
+    try {
+      const r = await api("/repository/counter-notice", { noticeId: rpNotice, name: $("rpName").value, address: $("rpAddress").value, phone: $("rpPhone").value, signature: $("rpSig").value, goodFaith: $("rpGood").checked, jurisdiction: $("rpJur").checked, service: $("rpSvc").checked });
+      say(`Your counter-notice was sent. The file is restored between ${r.restoreEarliest} and ${r.restoreLatest} unless the sender goes to court.`); $("rpForm").hidden = true; e.target.reset(); await loadRepo();
+    } catch (err) { say(err.message, true); }
+  };
+  async function searchManuals(offset) {
+    try {
+      const qs = new URLSearchParams({ q: $("mnQuery").value, docType: $("mnDocType").value, offset: String(offset) });
+      const r = await api(`/manuals?${qs}`);
+      mnOffset = offset;
+      $("mnLimit").textContent = r.downloadLimit;
+      $("mnCount").textContent = r.total ? `${r.total} manual${r.total === 1 ? "" : "s"}. You've used ${r.downloadsToday} of ${r.downloadLimit} downloads today.` : "No manuals match yet.";
+      $("mnTable").hidden = !r.manuals.length;
+      const rows = r.manuals.map((m) => {
+        const tr = document.createElement("tr");
+        const b = Object.assign(document.createElement("button"), { className: "plain", textContent: "Download" }); b.style.marginTop = "0";
+        b.onclick = async () => { b.disabled = true; try { const d = await api(`/manuals/${m.id}/url`, {}); say(`${m.fileName}: ${d.remaining} download${d.remaining === 1 ? "" : "s"} left today.`); location.href = d.url; } catch (err) { say(err.message, true); } b.disabled = false; };
+        const last = document.createElement("td"); last.append(b);
+        tr.append(td(m.brand), td(m.models), docCell(m), td(m.year ?? ""), td(m.pages ?? ""), td(size(m.sizeBytes)), last);
+        return tr;
+      });
+      $("mnRows").replaceChildren(...rows);
+      $("mnMore").hidden = offset + r.manuals.length >= r.total;
+    } catch (err) { say(err.message, true); }
+  }
+  $("manualsForm").onsubmit = (e) => { e.preventDefault(); searchManuals(0); };
+  $("mnMore").onclick = () => searchManuals(mnOffset + 50);
+  // Off-site backup: a restore code (24 hours) for restoring this shop on another computer from its backups. The program's
+  // own recovery key, from the printed sheet, is still needed to open them.
+  function restoreCell(s) {
+    const c = document.createElement("td");
+    const b = Object.assign(document.createElement("button"), { className: "plain", textContent: "Restore this shop on another computer" });
+    b.style.marginTop = "0";
+    const out = Object.assign(document.createElement("div"), { className: "muted" });
+    b.onclick = async () => {
+      b.disabled = true;
+      try {
+        const r = await api(`/shops/${s.id}/restore-code`, {});
+        out.textContent = `Restore code: ${r.code} (good until ${when(r.expiresAt)}, one company). On the new computer, restore from off-site backup with this code and the recovery key from the printed sheet. Making a new code stops the old one.`;
+        say("Restore code made. It is shown here only now.");
+      } catch (err) { say(err.message, true); }
+      b.disabled = false;
+    };
+    c.append(b, out);
+    return c;
+  }
+
+  async function start() {
+    try {
+      if (page === "forgot") return show("forgot");
+      if (page === "set-password") { if (!token) { say("That link is missing its code. Ask for a new one.", true); return show("forgot"); } return show("setpw"); }
+      if (page === "verify") {
+        show("verify");
+        if (!token) { $("verifyText").textContent = "That link is missing its code."; return; }
+        try { await api("/verify", { token }); say("Your email is confirmed. You're signed in."); history.replaceState(null, "", "/account/shops"); await loadMe("shops"); }
+        catch (e) { $("verifyText").textContent = e.message; }
+        return;
+      }
+      const back = new URLSearchParams(location.search);
+      if (back.get("done")) { say("Thank you. Your subscription is set up; the shop's standing here and in the program updates within a minute of Stripe's confirmation."); history.replaceState(null, "", "/account/shops"); }
+      else if (back.get("cancelled")) { say("Checkout was cancelled. Nothing was charged.", true); history.replaceState(null, "", "/account/shops"); }
+      await loadMe(page);
+    } catch (e) { say(e.message, true); }
+  }
+
+  // The version in force, for the sign-up tick (the hub records it; a page left open over a new version is told to reload).
+  let signupTerms = null;
+  fetch("/v1/terms/current").then((r) => (r.ok ? r.json() : null)).then((t) => {
+    if (!t?.version) return;
+    signupTerms = t.version;
+    $("suVersion").textContent = `, version ${t.version}${t.draft ? " (a draft, not yet in force)" : ""}`;
+  }).catch(() => {});
+  $("tpAccept").onclick = async () => {
+    if (!$("tpTick").checked) return say("Tick the box to accept the terms.", true);
+    try { await api("/terms", { acceptTerms: true, termsVersion: termsNow?.current }); say("Thank you: your acceptance is recorded."); await loadMe(location.pathname.endsWith("/settings") ? "settings" : "shops"); }
+    catch (err) { say(err.message, true); }
+  };
+  $("showSignup").onclick = (e) => { e.preventDefault(); show("signup"); };
+  $("showSignin").onclick = () => show("signin");
+  $("signinForm").onsubmit = async (e) => {
+    e.preventDefault();
+    try { await api("/signin", { email: $("siEmail").value, password: $("siPassword").value }); say(""); history.replaceState(null, "", "/account/shops"); await loadMe("shops"); }
+    catch (err) { say(err.message, true); $("resendRow").hidden = !/Confirm your email/.test(err.message); }
+  };
+  $("resend").onclick = async (e) => { e.preventDefault(); try { const r = await api("/resend", { email: $("siEmail").value }); say(r.message); } catch (err) { say(err.message, true); } };
+  $("signupForm").onsubmit = async (e) => {
+    e.preventDefault();
+    if (!samePassword($("suPassword").value, $("suPassword2").value)) return;
+    try { await api("/signup", { email: $("suEmail").value, password: $("suPassword").value, acceptTerms: $("suTerms").checked, ...(signupTerms ? { termsVersion: signupTerms } : {}) }); say(`We've sent an email to ${$("suEmail").value}. Open the link in it to finish.`); show("signin"); $("siEmail").value = $("suEmail").value; }
+    catch (err) { say(err.message, true); }
+  };
+  $("forgotForm").onsubmit = async (e) => { e.preventDefault(); try { const r = await api("/forgot", { email: $("fgEmail").value }); say(r.message); } catch (err) { say(err.message, true); } };
+  $("setpwForm").onsubmit = async (e) => {
+    e.preventDefault();
+    if (!samePassword($("spPassword").value, $("spPassword2").value)) return;
+    try { await api("/set-password", { token, password: $("spPassword").value }); say("Your password is saved. You're signed in."); history.replaceState(null, "", "/account/shops"); await loadMe("shops"); }
+    catch (err) { say(err.message, true); }
+  };
+  $("hostedForm").onsubmit = async (e) => {
+    e.preventDefault();
+    $("hsButton").disabled = true;
+    try {
+      const r = await api("/hosted", { program: $("hsProgram").value, shopName: $("hsShop").value, ownerName: $("hsName").value, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+      $("hostedForm").hidden = true; $("hostedDone").hidden = false;
+      $("hdTitle").textContent = `${r.shopName} is ready on the hosted ${r.program}.`;
+      $("hdLink").href = r.setPasswordUrl; $("hdLink").textContent = r.setPasswordUrl;
+      say(r.tied ? "The shop is on your account." : "The shop is made. Connect it to this account from its Settings → Account once you're signed in there.");
+      if (r.tied) await loadMe("shops");
+      $("hosted").hidden = false;
+    } catch (err) { say(err.message, true); }
+    $("hsButton").disabled = false;
+  };
+  $("connectForm").onsubmit = async (e) => { e.preventDefault(); try { const r = await api("/connect", { code: $("code").value }); $("code").value = ""; say(`${r.shop.name} is connected to your account.`); await loadMe("shops"); } catch (err) { say(err.message, true); } };
+  $("passwordForm").onsubmit = async (e) => {
+    e.preventDefault();
+    if (!samePassword($("pwNew").value, $("pwNew2").value)) return;
+    try { await api("/password", { current: $("pwCurrent").value, password: $("pwNew").value }); say("Password changed. Other browsers are signed out."); e.target.reset(); } catch (err) { say(err.message, true); }
+  };
+  $("signout").onclick = async (e) => { e.preventDefault(); await api("/signout", {}); say("Signed out."); history.replaceState(null, "", "/account"); show("signin"); };
+  $("signoutAll").onclick = async () => { try { await api("/signout-all", {}); say("Signed out everywhere."); history.replaceState(null, "", "/account"); show("signin"); } catch (err) { say(err.message, true); } };
+  start();
+</script>
+</body>
+</html>

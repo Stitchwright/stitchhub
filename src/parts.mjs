@@ -41,7 +41,10 @@ function partOut(p, nums, fits, srcs) {
       priceCents: s.price_cents,
       currency: s.currency,
       note: s.note,
-      byShop: s.by_shop,
+      // The company that added or last changed it, when its install said which (a source carries no install id, so
+      // the name is the one given then); otherwise the install, or "StitchHub scan" for the admin's bulk load
+      byShop: s.shop_name ?? s.by_shop,
+      shopRef: s.shop_ref ?? null,
       updatedAt: s.updated_at,
     })),
   };
@@ -231,21 +234,24 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
         ],
       );
     }
-    const shop = who(c).byShop;
+    const w = who(c);
     const now = new Date();
     const srcs = f.sources.map((s) => {
       const was = s.id ? old.find((o) => o.id === s.id) : null;
       const same =
         was && was.vendor === s.vendor && (was.url ?? null) === s.url && (was.price_cents ?? null) === s.priceCents && was.currency === s.currency && (was.note ?? null) === s.note;
-      // A changed source is credited to the shop that changed it, not the one that first added it.
-      return { ...s, id: was ? was.id : newId(), byShop: same ? was.by_shop : shop, updatedAt: same ? was.updated_at : now };
+      // A changed source is credited to the shop that changed it (the install, and the company on it when it said
+      // which), not the one that first added it.
+      return same
+        ? { ...s, id: was.id, byShop: was.by_shop, shopRef: was.shop_ref, shopName: was.shop_name, updatedAt: was.updated_at }
+        : { ...s, id: was ? was.id : newId(), byShop: w.byShop, shopRef: w.shopRef || null, shopName: w.shopRef ? w.shopName : null, updatedAt: now };
     });
     if (srcs.length) {
       await client.query(
-        `INSERT INTO xpart_sources (id, xpart_id, vendor, url, price_cents, currency, note, by_shop, updated_at)
-         SELECT u.id, $1, u.vendor, u.url, u.price, u.currency, u.note, u.by_shop, u.updated_at
-         FROM unnest($2::text[], $3::text[], $4::text[], $5::int[], $6::text[], $7::text[], $8::text[], $9::timestamptz[])
-           AS u(id, vendor, url, price, currency, note, by_shop, updated_at)`,
+        `INSERT INTO xpart_sources (id, xpart_id, vendor, url, price_cents, currency, note, by_shop, updated_at, shop_ref, shop_name)
+         SELECT u.id, $1, u.vendor, u.url, u.price, u.currency, u.note, u.by_shop, u.updated_at, u.shop_ref, u.shop_name
+         FROM unnest($2::text[], $3::text[], $4::text[], $5::int[], $6::text[], $7::text[], $8::text[], $9::timestamptz[], $10::text[], $11::text[])
+           AS u(id, vendor, url, price, currency, note, by_shop, updated_at, shop_ref, shop_name)`,
         [
           id,
           srcs.map((s) => s.id),
@@ -256,6 +262,8 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
           srcs.map((s) => s.note),
           srcs.map((s) => s.byShop),
           srcs.map((s) => s.updatedAt),
+          srcs.map((s) => s.shopRef),
+          srcs.map((s) => s.shopName),
         ],
       );
     }
@@ -426,10 +434,24 @@ export function registerParts({ member, admin, fail, newId, writeLimit, validUrl
     let n = 0;
     for (let bytes = 0; n < Math.min(limit, sizes.length) && (n === 0 || bytes + sizes[n].bytes <= HISTORY_BYTES); n++) bytes += sizes[n].bytes;
     if (n < sizes.length) c.header("X-History-More", "1");
-    const { rows } = await q(`SELECT * FROM xpart_revisions WHERE id = ANY($1) ORDER BY created_at DESC, id DESC`, [sizes.slice(0, n).map((r) => r.id)]);
+    const { rows } = await q(
+      `SELECT r.*, s.name AS current_shop_name FROM xpart_revisions r
+       LEFT JOIN shops s ON s.install_id = r.install_id AND s.shop_ref = r.shop_ref AND r.shop_ref <> '' WHERE r.id = ANY($1) ORDER BY r.created_at DESC, r.id DESC`,
+      [sizes.slice(0, n).map((r) => r.id)],
+    );
     return c.json(
-      // byShop: the company that made it, when its install said which; otherwise the install (as every revision was before)
-      rows.map((r) => ({ id: r.id, action: r.action, snapshot: r.snapshot, byName: r.by_name, byShop: r.shop_name || r.by_shop, note: r.note, createdAt: r.created_at })),
+      // byShop: the company that made it (its name as it is now, else as it was then), when its install said which;
+      // otherwise the install (as every revision was before)
+      rows.map((r) => ({
+        id: r.id,
+        action: r.action,
+        snapshot: r.snapshot,
+        byName: r.by_name,
+        byShop: r.current_shop_name ?? (r.shop_name || r.by_shop),
+        shopRef: r.shop_ref || null,
+        note: r.note,
+        createdAt: r.created_at,
+      })),
     );
   });
 
