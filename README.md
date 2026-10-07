@@ -274,7 +274,12 @@ keys of a refunded or charged-back period (and of a "Lapse now") for the program
 the shop at once, with two exceptions (below). **A full refund also cancels the subscription in Stripe at once** (no
 proration, nothing refunded beyond what was), so it can't charge the shop again; a partial refund doesn't. A paid
 invoice makes a refunded or charged-back period good again only when its own payment stands (not refunded, not
-disputed) and it is newer than the one taken back: a late or retried `invoice.paid` for that period changes nothing. **A full refund of the subscription's first payment while the trial's original end
+disputed) and it is newer than the one taken back: a late or retried `invoice.paid` for that period changes nothing. Only a
+period's own charge (an invoice for `subscription_create` or `subscription_cycle`) takes the period back: refunding the
+difference charged for a plan switch leaves the period and the subscription alone. The Assistant's own subscription is
+treated the same way (its keys revoked at once, the proxy refuses them, cancelled on a full refund, good again on a later
+payment that stands or a won chargeback), and a refunded or charged-back top-up takes its calls back (a partial refund, its
+share, rounded up). **A full refund of the subscription's first payment while the trial's original end
 is still ahead** puts the shop back on its trial until that day (the trial key comes back, the paid period's key is still
 named for removal; after that day it is a trial that ended); a partial refund, a refund of a later payment or a chargeback
 inside the trial still lapses it. **A chargeback the shop wins** (`charge.dispute.closed` with status `won`, the dispute
@@ -345,10 +350,14 @@ StitchBench's Assistant add-on (drafts, likely causes, plate reading, manual que
 Anthropic key exists in one place. Set `ANTHROPIC_API_KEY` on the hub's service only (never on a shop's PC, the installer or
 the hosted StitchBench / StitchShop services). `POST /v1/assistant` takes `{ shopRef, tz, feature, model: draft | suggest | read
 | manuals, system, messages, maxTokens, image?, key }` with the install key; `key` is the company's `assistant` license key text,
-checked against `ASSISTANT_PUBLIC_KEYS` (JSON, `{"k1":"<x from license:keygen>"}`) and the hub's own signing key. 300 calls a
+checked against `ASSISTANT_PUBLIC_KEYS` (JSON, `{"k1":"<x from license:keygen>"}`) and the hub's own signing key. A key holds
+for one company only: one the hub signed must be on record for that company on that install (and not revoked), one of the
+owner's own signer belongs to the first install and company that used it. 300 calls a
 month per company (the month turns in `tz`), top-ups of 300 from `POST /v1/admin/assistant/topup { installId, shopRef }`, an
 admin comp from `POST /v1/admin/assistant/comp { installId, shopRef, until }`, and 20 free plate reads a month without the
-module. `GET /v1/admin/assistant/usage?month=2026-10` lists calls, tokens and cost per company. Variables:
+module (the read model with a photo and a short prompt, for a company claimed on that install; at most
+`ASSISTANT_FREE_READS_PER_INSTALL`, 100, a month for an install's companies together, and `ASSISTANT_FREE_DAILY`, 500, in 24
+hours on the whole hub). `GET /v1/admin/assistant/usage?month=2026-10` lists calls, tokens and cost per company. Variables:
 `ASSISTANT_MODEL_DRAFT` / `_SUGGEST` (claude-sonnet-5-5), `_READ` (claude-haiku-4-5-20251001), `_MANUALS` (claude-opus-5-5),
 `ASSISTANT_MONTHLY_CALLS`, `ASSISTANT_TOPUP_CALLS`, `ASSISTANT_FREE_READS`, `ASSISTANT_HOURLY_CALLS` (60 per company), and
 `ANTHROPIC_API_BASE` (the mock, for a test hub). The hub keeps counts, tokens and cost, never a prompt or an answer.

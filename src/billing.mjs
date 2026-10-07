@@ -25,7 +25,7 @@ import { sendMail } from "./mail.mjs";
 import * as stripe from "./stripe.mjs";
 import { signer as hubSigner, signKey, NO_END } from "./license.mjs";
 import { checkShown, currentVersion, needsAccept, recordAcceptance } from "./terms.mjs";
-import { assistantKeysFor, assistantOffer, assistantPriceFor, assistantStanding, creditTopupSession, isAssistantSub, syncAssistantSub, RUNNING as ASSISTANT_RUNNING } from "./assistant-billing.mjs";
+import { assistantKeysFor, assistantOffer, assistantPaidAgain, assistantPriceFor, assistantStanding, assistantTookBack, creditTopupSession, isAssistantSub, syncAssistantSub, topupTookBack, RUNNING as ASSISTANT_RUNNING } from "./assistant-billing.mjs";
 
 export const TRIAL_DAYS = 30;
 export const GRACE_DAYS = 14;
@@ -163,6 +163,9 @@ export function trialChargeStart(shop, sub = null) {
 const RUNNING = new Set(["active", "trialing", "past_due"]);
 const ENDED = new Set(["canceled", "incomplete_expired"]);
 const CHARGEBACK = new Set(["needs_response", "under_review"]); // a dispute that took the money (warning_*: an inquiry)
+// The invoices that pay for a period: a refund or chargeback of one takes the period back. Any other (the difference for a
+// plan switch, subscription_update) leaves the period as it is.
+const PERIOD_CHARGES = new Set(["subscription_create", "subscription_cycle"]);
 
 /**
  * Brings an account's founding mark up to date (in `client`'s transaction, or on its own): while any of its shops'
@@ -862,11 +865,15 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
   /** The subscription an invoice or charge belongs to (by id), or null. */
   const invoiceSub = (inv) => (typeof inv?.subscription === "string" ? inv.subscription : inv?.subscription?.id ?? null);
 
-  /** A charge as Stripe has it, with its invoice and the subscription that invoice is for; null (logged) when it isn't one. */
-  async function chargeOfSubscription(chargeId) {
+  /**
+   * A charge as Stripe has it, with its invoice and the subscription that invoice is for; null (logged) when it isn't one.
+   * With `orPayment`, a charge with no invoice but a payment (an Assistant top-up) comes back as { ch } for the caller.
+   */
+  async function chargeOfSubscription(chargeId, { orPayment = false } = {}) {
     const ch = await stripe.retrieveCharge(chargeId);
     const invoiceId = typeof ch.invoice === "string" ? ch.invoice : ch.invoice?.id;
     if (!invoiceId) {
+      if (orPayment && ch.payment_intent) return { ch, inv: null, subId: null };
       console.warn(`stripe: charge ${chargeId} isn't for an invoice; ignored`);
       return null;
     }
@@ -878,6 +885,9 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
     }
     return { ch, inv, subId };
   }
+
+  /** How much of a charge was refunded, 0 to 1. */
+  const refundedShare = (ch) => (ch.refunded === true ? 1 : Number.isInteger(ch.amount) && ch.amount > 0 ? Math.min(1, (ch.amount_refunded ?? 0) / ch.amount) : 0);
 
   /** Cancels a Stripe subscription at once (no proration, no refund), unless it has ended already. Logged. */
   async function cancelNow(subId, why) {
@@ -928,15 +938,28 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
    * A full refund of the subscription's first payment, made while the shop's trial still runs, sends the shop back to its
    * trial instead (standingOf: refunded_in_trial); a partial refund, a later payment or a chargeback lapses it. A full
    * refund also cancels the subscription in Stripe at once, so it can't charge the shop again (a chargeback cancels it
-   * when it is lost: disputeEvent).
+   * when it is lost: disputeEvent). Only a period's own charge takes the period back (PERIOD_CHARGES). The Assistant's own
+   * subscription is handled the same way (its keys revoked, cancelled on a full refund), and a top-up's charge takes its
+   * calls back.
    */
   async function tookBack(client, chargeId, disputed) {
-    const found = await chargeOfSubscription(chargeId);
+    const found = await chargeOfSubscription(chargeId, { orPayment: true });
     if (!found) return;
     const { ch, inv, subId } = found;
-    const row = (await client.query(`SELECT sub.shop_id, s.account_id, s.created_at FROM subscriptions sub JOIN shops s ON s.id = sub.shop_id WHERE sub.stripe_subscription_id = $1`, [subId])).rows[0];
-    if (!row) return console.warn(`stripe: subscription ${subId} isn't on the hub; ignored`);
     const full = ch.refunded === true || (Number.isInteger(ch.amount) && ch.amount > 0 && ch.amount_refunded >= ch.amount);
+    if (!subId) {
+      if (!(await topupTookBack(client, ch, disputed ? 1 : refundedShare(ch)))) console.warn(`stripe: charge ${chargeId} isn't for an invoice or an Assistant top-up; ignored`);
+      return;
+    }
+    if (!PERIOD_CHARGES.has(inv.billing_reason)) {
+      return console.log(`billing: charge ${chargeId} (invoice ${inv.id}, ${inv.billing_reason ?? "no reason"}) of subscription ${subId} was ${disputed ? "disputed" : "refunded"}; it didn't pay for a period, so the period stands`);
+    }
+    const row = (await client.query(`SELECT sub.shop_id, s.account_id, s.created_at FROM subscriptions sub JOIN shops s ON s.id = sub.shop_id WHERE sub.stripe_subscription_id = $1`, [subId])).rows[0];
+    if (!row) {
+      if (!(await assistantTookBack(client, subId, ch.id ?? chargeId))) return console.warn(`stripe: subscription ${subId} isn't on the hub; ignored`);
+      if (!disputed && full) await cancelNow(subId, `charge ${chargeId} of the Assistant was refunded in full`);
+      return;
+    }
     const trialEnd = trialEndMs(row);
     const inTrial = !disputed && full && inv.billing_reason === "subscription_create" && Date.now() < trialEnd && (!ch.created || ch.created * 1000 < trialEnd);
     // The first charge taken back is the one named (a won chargeback restores the period only when it was this charge);
@@ -1011,10 +1034,33 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
     const chargeId = typeof dp.charge === "string" ? dp.charge : dp.charge?.id;
     if (!chargeId) return console.warn(`stripe: dispute ${dp.id} names no charge; ignored`);
     const status = String(dp.status ?? "");
-    const found = await chargeOfSubscription(chargeId);
+    const found = await chargeOfSubscription(chargeId, { orPayment: true });
     if (!found) return;
+    // A chargeback took the money: on created or updated, or when it is lost.
+    const tookMoney = status === "lost" || ((type === "charge.dispute.created" || type === "charge.dispute.updated") && CHARGEBACK.has(status));
+    const won = status === "won" && type === "charge.dispute.closed";
+    if (!found.subId) {
+      // An Assistant top-up: a chargeback takes its calls back, a won one gives back what a refund didn't take.
+      if (tookMoney || won) {
+        if (!(await topupTookBack(client, found.ch, tookMoney ? 1 : refundedShare(found.ch)))) console.warn(`stripe: dispute ${dp.id} is on charge ${chargeId}, which isn't for an invoice or an Assistant top-up; ignored`);
+      } else console.log(`billing: dispute ${dp.id} (${type}, ${status}) on charge ${chargeId}; nothing changes`);
+      return;
+    }
     const row = (await client.query(`SELECT shop_id, inquiry_dispute_ids, chargeback_dispute_ids FROM subscriptions WHERE stripe_subscription_id = $1 FOR UPDATE`, [found.subId])).rows[0];
-    if (!row) return console.warn(`stripe: dispute ${dp.id} is on subscription ${found.subId}, which isn't on the hub; ignored`);
+    if (!row) {
+      const a = (await client.query(`SELECT shop_id, unpaid_charge_id FROM assistant_subscriptions WHERE stripe_subscription_id = $1 FOR UPDATE`, [found.subId])).rows[0];
+      if (!a) return console.warn(`stripe: dispute ${dp.id} is on subscription ${found.subId}, which isn't on the hub; ignored`);
+      // The Assistant's own subscription: a chargeback takes the period back (its keys revoked) and, lost, cancels it; won,
+      // the period counts again unless a refund also took it back.
+      if (tookMoney) {
+        await tookBack(client, chargeId, true);
+        if (status === "lost") await cancelNow(found.subId, `chargeback ${dp.id} on the Assistant was lost`);
+      } else if (won && a.unpaid_charge_id === chargeId && !(found.ch.amount_refunded > 0)) {
+        await assistantPaidAgain(client, found.subId);
+        console.log(`billing: dispute ${dp.id} on charge ${chargeId} was won; shop ${a.shop_id}'s Assistant counts again`);
+      } else console.log(`billing: dispute ${dp.id} (${type}, ${status}) on Assistant subscription ${found.subId}; nothing changes`);
+      return;
+    }
     const inquiry = row.inquiry_dispute_ids.includes(dp.id); // an open inquiry the hub holds
     const actedOn = row.chargeback_dispute_ids.includes(dp.id); // a chargeback the hub has already lapsed the shop for
     const dropInquiry = () =>
@@ -1107,7 +1153,12 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
         const subId = invoiceSub(inv);
         if (!subId) return;
         const r = await syncSubscription(client, subId);
-        if (!r) return;
+        if (!r) {
+          // The Assistant's own subscription: a period taken back by a refund or chargeback counts again on the same terms.
+          const a = (await client.query(`SELECT unpaid_charge_id FROM assistant_subscriptions WHERE stripe_subscription_id = $1 AND unpaid_since IS NOT NULL`, [subId])).rows[0];
+          if (a && (await paidAgain(inv, a.unpaid_charge_id))) await assistantPaidAgain(client, subId);
+          return;
+        }
         // Paid: a period that was taken back is good again when this payment stands and follows the one taken back (a late
         // or retried invoice.paid for the refunded or disputed period changes nothing); the admin's "Lapse now" ends.
         const taken = (await client.query(`SELECT unpaid_since, unpaid_charge_id FROM subscriptions WHERE shop_id = $1 AND stripe_subscription_id = $2`, [r.shop.id, subId])).rows[0];
