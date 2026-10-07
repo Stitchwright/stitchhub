@@ -201,6 +201,10 @@ try {
   console.log("move tokens: ok");
 
   // ----- the move: a goes from X to Z -----
+  // The Assistant's counts for a (a paid top-up's 300 among them; a call Z made for a before the move), and b's.
+  await db.query(`INSERT INTO assistant_usage (install_id, shop_ref, month, calls, bonus, free_reads) VALUES ($1, 'a', '2026-10', 4, 300, 2), ($1, 'b', '2026-10', 9, 0, 0), ($2, 'a', '2026-10', 1, 0, 0)`, [X.installId, Z.installId]);
+  await db.query(`INSERT INTO assistant_shops (install_id, shop_ref, tz, comp_until) VALUES ($1, 'a', 'America/Chicago', '2026-12-31')`, [X.installId]);
+  await db.query(`INSERT INTO assistant_calls (id, install_id, shop_ref, feature, class) VALUES ($1, $2, 'a', 'draft_work_done', 'draft')`, [`call${RUN}`, X.installId]);
   const t = await token(X.installKey, "a");
   // a message for a after its move file was made (before the move), and one for b
   await msg(L1, `after-${RUN}`);
@@ -215,6 +219,13 @@ try {
   assert.ok(moved.moved.listings >= 1 && moved.moved.orders === 2 && moved.moved.posts === 1, JSON.stringify(moved.moved));
 
   const shopOf = async (ref) => (await one(`SELECT install_id FROM shops WHERE shop_ref = $1`, [ref])).install_id;
+  // The Assistant's month moved with a (added to what Z had counted), so a top-up's refund takes its calls back from it.
+  assert.deepEqual(await all(`SELECT install_id, shop_ref, calls, bonus, free_reads FROM assistant_usage WHERE month = '2026-10' ORDER BY shop_ref`), [
+    { install_id: Z.installId, shop_ref: "a", calls: 5, bonus: 300, free_reads: 2 },
+    { install_id: X.installId, shop_ref: "b", calls: 9, bonus: 0, free_reads: 0 },
+  ]);
+  assert.deepEqual(await all(`SELECT install_id, tz, comp_until::text AS comp_until FROM assistant_shops WHERE shop_ref = 'a'`), [{ install_id: Z.installId, tz: "America/Chicago", comp_until: "2026-12-31" }]);
+  assert.equal((await one(`SELECT install_id FROM assistant_calls WHERE id = $1`, [`call${RUN}`])).install_id, Z.installId);
   assert.equal(await shopOf("a"), Z.installId);
   assert.equal(await shopOf("b"), X.installId);
   const listingAt = async (id) => (await one(`SELECT install_id FROM listings WHERE id = $1`, [id])).install_id;
