@@ -10,11 +10,12 @@
 // Admin:    /v1/admin/repository/notices (list, log, action, reject, restore, lawsuit, close, note, reminders, CSV),
 //           /strikes (list, withdraw), /refused-brands. (The blocked hashes are in src/repository.mjs.)
 //
-// A complete notice that names a manual (its id, or the sha256 of the file) is acted on at once; one that doesn't is
-// waiting for the owner, who matches the manual and presses Action. Acting: the manual leaves the feed and the free page
-// (status removed, why copyright), the object moves to held/, the hash is blocked, the account whose upload was published
-// gets a strike and an email, anyone else who offered the same bytes is told (no strike). Three strikes in 12 months
-// end that account's uploading. A counter-notice from the uploader sets the restore window: business days 10 to 14
+// A complete notice that names a manual (its id, or the sha256 of the file) is acted on at once, up to FORM_AUTO_MAX
+// manuals; one that names more, or none, is waiting for the owner, who matches the manuals and presses Action. Acting:
+// the manual leaves the feed and the free page (status removed, why copyright), the object moves to held/, the hash is
+// blocked, the account whose upload was published gets a strike (one per notice, however many of its manuals the notice
+// names) and an email, anyone else who offered the same bytes is told (no strike). Three strikes in 12 months end that
+// account's uploading. A counter-notice from the uploader sets the restore window: business days 10 to 14
 // (weekends and US federal holidays skipped), the complainant is sent a copy, the owner is reminded on day 10 and
 // presses Restore unless the complainant says it has sued.
 //
@@ -210,6 +211,8 @@ export function registerTakedown({ app, admin, acct, fail, newId, allow, clientI
   }
 
   const strikeWindow = `created_at > now() - interval '12 months' AND withdrawn_at IS NULL`;
+  // A notice from the public form names at most this many manuals or files to be removed without the owner looking.
+  const FORM_AUTO_MAX = 5;
 
   /**
    * Remove what a notice names. Per manual: out of the feed and the free page, object to held/, hash blocked, the uploader's
@@ -221,6 +224,7 @@ export function registerTakedown({ app, admin, acct, fail, newId, allow, clientI
     const mails = [];
     const oldKeys = [];
     const done = { manuals: [], files: [], skipped: [] };
+    const struckMails = new Map(); // account -> its one "struck" mail for this notice
     await tx(async (client) => {
       const hold = async (f, why) => {
         const key = `held/${f.sha256}.pdf`;
@@ -253,9 +257,15 @@ export function registerTakedown({ app, admin, acct, fail, newId, allow, clientI
         await client.query(`UPDATE uploads SET state = 'removed', reason = 'Removed on a copyright notice.', updated_at = now() WHERE id = ANY($1) AND state = 'approved'`, [ups.filter((u) => u.state === "approved").map((u) => u.id)]);
         const what = `${m.brand} ${m.models} ${m.doc_type}${m.year ? " " + m.year : ""}`;
         const seen = new Set();
-        if (owner?.account_id) {
+        if (owner?.account_id && struckMails.has(owner.account_id)) {
+          // Another manual of the same uploader in this notice: no second strike, one mail naming both.
           seen.add(owner.account_id);
-          await client.query(`INSERT INTO strikes (id, account_id, install_id, shop_id, notice_id, file_id) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (notice_id, file_id) DO NOTHING`, [newId(), owner.account_id, owner.install_id, owner.shop_id, notice.id, f.id]);
+          struckMails.get(owner.account_id).whats.push(what);
+        } else if (owner?.account_id) {
+          seen.add(owner.account_id);
+          // One strike per notice per uploader (an owner pressing Action again on the same notice adds none either).
+          const had = (await client.query(`SELECT 1 FROM strikes WHERE notice_id = $1 AND account_id = $2`, [notice.id, owner.account_id])).rowCount;
+          if (!had) await client.query(`INSERT INTO strikes (id, account_id, install_id, shop_id, notice_id, file_id) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (notice_id, file_id) DO NOTHING`, [newId(), owner.account_id, owner.install_id, owner.shop_id, notice.id, f.id]);
           const count = Number((await client.query(`SELECT count(*) AS n FROM strikes WHERE account_id = $1 AND ${strikeWindow}`, [owner.account_id])).rows[0].n);
           let ended = false;
           if (count >= 3) {
@@ -264,7 +274,9 @@ export function registerTakedown({ app, admin, acct, fail, newId, allow, clientI
             await client.query(`UPDATE uploads SET state = 'rejected', reason = 'Uploading ended for this account.', updated_at = now() WHERE account_id = $1 AND state = 'pending'`, [owner.account_id]);
           }
           const acc = (await client.query(`SELECT email FROM accounts WHERE id = $1`, [owner.account_id])).rows[0];
-          mails.push({ kind: "struck", to: acc?.email, what, count, ended, noticeId: notice.id });
+          const mail = { kind: "struck", to: acc?.email, whats: [what], count, ended, noticeId: notice.id };
+          struckMails.set(owner.account_id, mail);
+          mails.push(mail);
         }
         for (const u of ups) {
           if (!u.account_id || seen.has(u.account_id) || u.state === "refused" || u.state === "rejected") continue;
@@ -295,7 +307,7 @@ export function registerTakedown({ app, admin, acct, fail, newId, allow, clientI
         await notify(
           m.to,
           `A manual you offered was removed after a copyright notice`,
-          `${m.what} was removed from the ${hubName} manual repository after a copyright notice from ${from} (reference ${m.noticeId}).\n\n` +
+          `${m.whats.join("; ")} ${m.whats.length === 1 ? "was" : "were"} removed from the ${hubName} manual repository after a copyright notice from ${from} (reference ${m.noticeId}).\n\n` +
             `This is strike ${m.count} on your account. ${m.ended ? "Three strikes within 12 months end uploading: you can no longer offer manuals to the repository, and your waiting offers were rejected.\n\n" : "Three strikes within 12 months end uploading.\n\n"}` +
             `If you believe the file was removed by mistake or misidentification, you can send a counter-notice (the form is at ${accountUrl()}). It goes, with your name, address and telephone number, to the person who sent the notice. If they don't tell us within 10 to 14 business days that they have gone to court, the file is restored and the strike withdrawn. Knowingly false notices and counter-notices make the sender liable for damages (17 U.S.C. 512(f)).`,
         );
@@ -325,12 +337,22 @@ export function registerTakedown({ app, admin, acct, fail, newId, allow, clientI
           oldKeys.push(f.object_key);
           await client.query(`UPDATE manual_files SET status = 'published', object_key = $2, updated_at = now() WHERE id = $1`, [f.id, key]);
           await client.query(`UPDATE blocked_hashes SET lifted_at = now() WHERE sha256 = $1 AND lifted_at IS NULL`, [f.sha256]);
-          await client.query(`UPDATE strikes SET withdrawn_at = now() WHERE notice_id = $1 AND file_id = $2 AND withdrawn_at IS NULL`, [notice.id, f.id]);
           await client.query(`UPDATE uploads SET state = 'approved', reason = NULL, updated_at = now() WHERE (manual_id = $1 OR file_id = $2) AND state = 'removed'`, [m.id, f.id]);
+          // The notice's strike for the uploader (one per notice, recorded on the first of its files) is withdrawn.
+          await client.query(
+            `UPDATE strikes SET withdrawn_at = now() WHERE notice_id = $1 AND withdrawn_at IS NULL AND (file_id = $2 OR account_id IN (SELECT account_id FROM uploads WHERE (manual_id = $3 OR file_id = $2) AND state = 'approved' AND account_id IS NOT NULL))`,
+            [notice.id, f.id, m.id],
+          );
         }
         await client.query(`UPDATE manuals SET status = 'published', why = NULL, updated_at = now(), seq = nextval('change_seq') WHERE id = $1`, [m.id]);
         restored.push(m.id);
-        const struck = (await client.query(`SELECT a.email FROM strikes st JOIN accounts a ON a.id = st.account_id WHERE st.notice_id = $1 AND st.file_id = $2`, [notice.id, f?.id])).rows[0];
+        const struck = (
+          await client.query(
+            `SELECT a.email FROM strikes st JOIN accounts a ON a.id = st.account_id
+             WHERE st.notice_id = $1 AND (st.file_id = $2 OR st.account_id IN (SELECT account_id FROM uploads WHERE (manual_id = $3 OR file_id = $2) AND state = 'approved')) LIMIT 1`,
+            [notice.id, f?.id ?? null, m.id],
+          )
+        ).rows[0];
         if (struck) mails.push({ to: struck.email, what: `${m.brand} ${m.models} ${m.doc_type}` });
       }
       if (!restored.length) throw fail(409, "Nothing was restored (the manuals aren't removed, or another open notice names them).");
@@ -415,9 +437,15 @@ else{m.className="ok";m.textContent=j.message;e.target.reset()}}catch(err){m.cla
     await q(`INSERT INTO takedown_notices (id, kind, via, status, complainant, work, locations, statements, signature) VALUES ($1, 'notice', 'form', 'new', $2, $3, $4, $5, $6)`, [id, JSON.stringify(n.complainant), n.work, n.locations, JSON.stringify(n.statements), n.signature]);
     await addNote(id, "hub", "Received through the form.");
     let actioned = false;
+    let many = 0;
     try {
       const hit = await matchText(`${n.locations}\n${n.work}`);
-      if (hit.manualIds.length || hit.fileIds.length) {
+      const named = hit.manualIds.length + hit.fileIds.length;
+      if (named > FORM_AUTO_MAX) {
+        // A form notice is anyone's: one naming many manuals waits for the owner, who checks it and presses Action.
+        many = named;
+        await addNote(id, "hub", `Not actioned automatically: it names ${named} manuals or files, more than the ${FORM_AUTO_MAX} a form notice removes by itself (${[...hit.manualIds, ...hit.fileIds].join(", ")}).`);
+      } else if (named) {
         await remove({ id, complainant: n.complainant }, { ...hit, by: "hub (the notice named it)" });
         actioned = true;
       }
@@ -425,7 +453,7 @@ else{m.className="ok";m.textContent=j.message;e.target.reset()}}catch(err){m.cla
       console.error("takedown: acting on a notice:", e.message);
       await addNote(id, "hub", `Not actioned automatically: ${e.message}`);
     }
-    await notify(ownerEmail(), `Copyright notice ${id}${actioned ? " (removed automatically)" : " (waiting for you)"}`, `A notice came in through the form from ${n.complainant.name}${n.complainant.organization ? ` (${n.complainant.organization})` : ""}.\nWork: ${n.work}\nMaterial: ${n.locations}\n\n${actioned ? "It named a manual here and the manual was removed." : "It didn't name a manual the hub could match. Open the admin page's Notices section and press Action."}\nBusiness days to act within: 1.`);
+    await notify(ownerEmail(), `Copyright notice ${id}${actioned ? " (removed automatically)" : " (waiting for you)"}`, `A notice came in through the form from ${n.complainant.name}${n.complainant.organization ? ` (${n.complainant.organization})` : ""}.\nWork: ${n.work}\nMaterial: ${n.locations}\n\n${actioned ? "It named a manual here and the manual was removed." : many ? `It names ${many} manuals or files here, more than a form notice removes by itself. Check it, then open the admin page's Notices section and press Action.` : "It didn't name a manual the hub could match. Open the admin page's Notices section and press Action."}\nBusiness days to act within: 1.`);
     return c.json({ ok: true, id, message: actioned ? "Thank you. The material you named has been removed, and the person who offered it has been told." : "Thank you. We have your notice and will act on it within one business day." });
   });
 
