@@ -13,7 +13,11 @@ import { spawn } from "node:child_process";
 import pg from "pg";
 import { startAnthropicMock } from "./anthropic-mock.mjs";
 import { encodeLicense } from "../src/license.mjs";
-import { zoneDay, costMillicents } from "../src/assistant.mjs";
+import { zoneDay, costMillicents, PHOTO_FEATURES } from "../src/assistant.mjs";
+
+// The photo features the program uses (src/lib/assistant/features.ts and its prompts on the round-2 branches; read_invoice
+// and thread_photo/thread_match are named in shop-features-round-2-design.md 1.10 and 9.10, not built yet).
+const PROGRAM_PHOTO_FEATURES = ["read_plate", "read_label", "tag_fabric", "trade_in_note", "read_invoice", "thread_photo", "thread_match"];
 
 const ADMIN = "assistant-test-admin-token";
 const JOIN = "join-assistant-test";
@@ -181,7 +185,12 @@ try {
   assert.equal(lastReq.hasImage, true, "the photo reached the model as an image block");
   assert.equal(lastReq.headers["x-api-key"], ANTHROPIC_KEY, "the hub called with its own key");
   assert.equal(mock.requests.length, 3, "the refused 4th made no model call");
-  await refused(await ask(keyA, { shopRef: SA, feature: "draft_work_done", image: png }), 400, /plate, bolt-label and swatch readers/, "a photo on another feature");
+  await refused(await ask(keyA, { shopRef: SA, feature: "draft_work_done", image: png }), 400, /Only the photo readers take a photo/, "a photo on another feature");
+  // Every photo feature the program sends passes the photo gate (a GIF is then refused for its type, so no model call is made).
+  for (const feature of PROGRAM_PHOTO_FEATURES) {
+    assert.ok(PHOTO_FEATURES.has(feature), `${feature} is a photo feature`);
+    await refused(await ask(keyA, { shopRef: SA, feature, model: "read", text: "Read it.", image: { ...png, mediaType: "image/gif" } }), 400, /JPEG, PNG or WebP/, `a photo for ${feature}`);
+  }
   await refused(await ask(keyA, { shopRef: SA, model: "turbo" }), 400, /model must be/, "an unknown model class");
   await refused(await ask(keyA, { shopRef: SA, tz: "Mars/Base" }), 400, /time zone/, "a bad zone");
   // The install's ceiling (5 here) counts all its companies together; then the hub's daily one (7 here) counts every install.
