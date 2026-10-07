@@ -418,7 +418,7 @@ else{m.className="ok";m.textContent=j.message;e.target.reset()}}catch(err){m.cla
     : ""
 }
 <section><h2>Counter-notices</h2><p>If a file you offered was removed on a notice and you believe that was a mistake or a misidentification, sign in and send a counter-notice from your account's repository page. It needs your signature, name, address and telephone number; a statement under penalty of perjury that you believe the file was removed by mistake or misidentification; and your consent to the jurisdiction of the federal court for your address and acceptance of service from the person who sent the notice. We send the whole counter-notice to that person. Unless they tell us within 10 to 14 business days (weekends and US federal holidays don't count) that they have gone to court, the file is restored.</p></section>
-<section><h2>Repeat infringers</h2><p>Each file removed on a notice is a strike for the account that offered it, withdrawn if the file is restored after a counter-notice. Three strikes within 12 months end that account's uploading to the repository (a new account made to get round this is refused), its waiting offers are rejected and its other files are looked at again. In a flagrant case uploading can end sooner.</p></section>
+<section><h2>Repeat infringers</h2><p>A notice that removes files an account offered is one strike for that account (however many of its files the notice names), withdrawn if the files are restored after a counter-notice. Three strikes within 12 months end that account's uploading to the repository (a new account made to get round this is refused), its waiting offers are rejected and its other files are looked at again. In a flagrant case uploading can end sooner.</p></section>
 <section><h2>What review checks</h2><p>Every file offered is looked at before it appears: that it is a manual, readable and whole; that its brand, models, document type and year are right; that nothing private is in it; that the automatic checks passed (no scripts or encryption); that it isn't a duplicate of a better file; that it isn't a work an earlier notice named; and that it isn't marked confidential, dealer-only or not for distribution. This screens files; it doesn't decide who owns the rights to them.</p></section>
 <p class="muted"><a href="/">Home</a> · <a href="/terms">Terms</a> · <a href="/privacy">Privacy</a></p></main></body></html>`;
   };
@@ -470,7 +470,10 @@ else{m.className="ok";m.textContent=j.message;e.target.reset()}}catch(err){m.cla
     const rows = (
       await q(
         `SELECT st.id AS strike_id, st.created_at AS struck_at, st.withdrawn_at, st.file_id, n.id AS notice_id, n.status, n.complainant, n.actioned_at, n.restore_earliest, n.restore_latest, n.countered_at, n.restored_at,
-                m.id AS manual_id, m.brand, m.models, m.doc_type, m.year, m.title
+                m.id AS manual_id, m.brand, m.models, m.doc_type, m.year, m.title,
+                -- every manual of this account the notice removed (one strike per notice, recorded on the first file)
+                (SELECT array_agg(coalesce(nullif(x.title, ''), concat_ws(' ', x.brand, x.models, x.doc_type)) ORDER BY x.brand, x.models, x.id)
+                 FROM manuals x WHERE x.id = ANY (n.manual_ids) AND EXISTS (SELECT 1 FROM uploads u WHERE u.manual_id = x.id AND u.account_id = st.account_id)) AS whats
          FROM strikes st JOIN takedown_notices n ON n.id = st.notice_id LEFT JOIN manual_files f ON f.id = st.file_id LEFT JOIN manuals m ON m.id = f.manual_id
          WHERE st.account_id = $1 ORDER BY st.created_at DESC LIMIT 200`,
         [a.id],
@@ -482,7 +485,8 @@ else{m.className="ok";m.textContent=j.message;e.target.reset()}}catch(err){m.cla
       strikes: active,
       removals: rows.map((r) => ({
         noticeId: r.notice_id,
-        what: r.title || `${r.brand ?? ""} ${r.models ?? ""} ${r.doc_type ?? ""}`.trim(),
+        what: r.whats?.length ? r.whats.join("; ") : r.title || `${r.brand ?? ""} ${r.models ?? ""} ${r.doc_type ?? ""}`.trim(),
+        manuals: r.whats?.length ?? 1,
         from: r.complainant?.organization || r.complainant?.name || "a rights holder",
         removedAt: r.actioned_at,
         status: r.status,
