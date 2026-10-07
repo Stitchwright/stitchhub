@@ -170,7 +170,7 @@ try {
   assert.equal(lastReq.hasImage, true, "the photo reached the model as an image block");
   assert.equal(lastReq.headers["x-api-key"], ANTHROPIC_KEY, "the hub called with its own key");
   assert.equal(mock.requests.length, 3, "the refused 4th made no model call");
-  await refused(await ask(keyA, { shopRef: SA, feature: "draft_work_done", image: png }), 400, /plate reader/, "a photo on another feature");
+  await refused(await ask(keyA, { shopRef: SA, feature: "draft_work_done", image: png }), 400, /plate, bolt-label and swatch readers/, "a photo on another feature");
   await refused(await ask(keyA, { shopRef: SA, model: "turbo" }), 400, /model must be/, "an unknown model class");
   await refused(await ask(keyA, { shopRef: SA, tz: "Mars/Base" }), 400, /time zone/, "a bad zone");
 
