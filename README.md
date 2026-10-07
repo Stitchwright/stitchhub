@@ -415,8 +415,39 @@ A refund or chargeback of a payment for an Assistant period (a renewal, or a swi
 takes the period back and revokes its keys; a full refund also cancels the subscription, while a partial refund or a
 chargeback leaves it running and the account page shows the Assistant on hold (no second Checkout, which would bill twice)
 until a later payment stands. A chargeback is acted on once. A refunded or charged-back top-up takes back its share of the
-calls. A second Assistant Checkout that is paid cancels the older Assistant subscription in Stripe.
+calls. A second Assistant Checkout that is paid cancels the older Assistant subscription in Stripe. A top-up refunded (or
+charged back) before its Checkout credit lands is held (`assistant_topup_pending`) and taken back when the credit comes.
 `npm run test:assistant-billing` (the Stripe and Anthropic mocks, a fresh database).
+
+**Selling the add-ons** (`src/addons.mjs`, migration 032; StitchBench `pricing-review-2026-10.md`). The price list:
+
+| Add-on (module id) | Monthly | Yearly | Variables |
+|---|---|---|---|
+| Vac Shop (`vac`) | $10 | $100 | `STRIPE_PRICE_VAC_MONTHLY`, `STRIPE_PRICE_VAC_YEARLY` |
+| Small Appliance Repair (`appliance`) | $5 | $50 | `STRIPE_PRICE_APPLIANCE_MONTHLY`, `_YEARLY` |
+| Scheduling (`scheduling`) | $15 | $150 | `STRIPE_PRICE_SCHEDULING_MONTHLY`, `_YEARLY` |
+| Marketing (`marketing`) | $10 | $100 | `STRIPE_PRICE_MARKETING_MONTHLY`, `_YEARLY` |
+| Maker Shop (`maker`) | $10 | $100 | `STRIPE_PRICE_MAKER_MONTHLY`, `_YEARLY` |
+| All five add-ons (the bundle) | $30 | $300 | `STRIPE_PRICE_BUNDLE_MONTHLY`, `_YEARLY` |
+| Each store after the first | $25 | $250 | `STRIPE_PRICE_STORE_MONTHLY`, `_YEARLY` |
+
+The Assistant ($15 / $150) stays out of the bundle. Each variable is a comma list like the plans' (the first id is sold); an
+add-on isn't offered while either of its two is unset (the admin page lists what's missing). On the account page each shop
+gets a button for each add-on and for all five. Each add-on, and the bundle, is its own Stripe subscription per shop (table
+`addon_subscriptions`, one row per shop and product; metadata `hub_product: "addon"`, `hub_addon`), handled the way the
+Assistant's is: paying signs a key for its module ids (`{maker}`, or all five for the bundle), plan `m` or `y`, through the
+paid-through day plus 14 days, sent after the Assistant's in `moduleKeys` (five keys at most: a shop holds four single
+add-ons at most, the bundle costing less by then); a refund or chargeback of a period's charge takes the period back and
+revokes its keys (a full refund cancels it; a chargeback is acted on once and undone when won; a later payment that stands
+makes it good); a second Checkout for the same add-on cancels the older one. **Buying the bundle cancels the shop's single
+add-on subscriptions at once with Stripe's proration** (the unused days are a credit on the next invoice) and revokes their
+keys; a single add-on isn't sold while the bundle runs. **The comp**: the admin's comp can cover the five add-ons too
+("everything", `addons: true`: a key for all five, plan `c`, through the comp's last day; the Assistant keeps its own comp);
+taking the comp away, or comping the program only, revokes that key. **Extra stores**: the program reports `stores` at every
+claim (an older program says nothing and the count stays); each store after the first is a quantity of the store price on
+the shop's base subscription: in its Checkout, and changed with Stripe's proration (on the next invoice) when the reported
+count changes while it runs. The account and admin pages show the stores reported, the extra ones and those billed.
+`npm run test:addons-billing` (the Stripe mock, a fresh database).
 
 **Duplicate finder.** `node scripts/find-duplicate-xparts.mjs --dry` lists groups of cross-reference entries with the same
 brand, a shared fit and names a letter apart and what asking about them costs; without `--dry` it asks Claude Haiku through the
@@ -690,7 +721,7 @@ Members send `Authorization: Bearer <install key>`.
 | `GET /v1/partners/messages?since=N&shopRef=` | messages for this install's shops after `N`; `shopRef` keeps one company's (a company that just moved here pulls its backlog once from the old install's place) |
 | `POST /v1/partners/links/:id/end` | end a partnership (both shops are told) |
 | `POST /v1/upgrade` | `{ joinKey }`: a partner-only install becomes a member |
-| `POST /v1/shops/claim` | `{ shopRef, shopName, kind: "repair" \| "retail" \| "both", program: "StitchBench" \| "StitchShop", version, sole }` → `{ ok, listings, shop, account: { email, verified } \| null, terms: { version, draft, accepted }, standing: "trial" \| "active" \| "past_due" \| "waived" \| "comped" \| "lapsed", lastDay, message, plan: "solo" \| "shop", interval: "monthly" \| "yearly" \| null, founding, key: "SB1.…" \| null, revokeKeyIds: [] }`. Sent for every company at every sync; the first time starts its trial. `key` is the hub-signed key for the module `base` the program should hold (its current one, or a fresh one when the standing changed; null when the hub has no signing key, or billing is closed and the shop is on its trial); `revokeKeyIds` names hub keys to drop (a refund, a chargeback, "Lapse now"). `sole: true` (or a body with only `shopRef`, as older programs send) hands what the install listed, ordered and shared before it named its company to that company. `resetOptIn` (the Windows program's "allow a reset from my StitchHub account") is kept on the shop; left as it was when not sent; `false` withdraws a reset request still waiting |
+| `POST /v1/shops/claim` | `{ shopRef, shopName, kind: "repair" \| "retail" \| "both", program: "StitchBench" \| "StitchShop", version, sole }` → `{ ok, listings, shop, account: { email, verified } \| null, terms: { version, draft, accepted }, standing: "trial" \| "active" \| "past_due" \| "waived" \| "comped" \| "lapsed", lastDay, message, plan: "solo" \| "shop", interval: "monthly" \| "yearly" \| null, founding, key: "SB1.…" \| null, revokeKeyIds: [] }`. Sent for every company at every sync; the first time starts its trial. `key` is the hub-signed key for the module `base` the program should hold (its current one, or a fresh one when the standing changed; null when the hub has no signing key, or billing is closed and the shop is on its trial); `revokeKeyIds` names hub keys to drop (a refund, a chargeback, "Lapse now"). `sole: true` (or a body with only `shopRef`, as older programs send) hands what the install listed, ordered and shared before it named its company to that company. `stores` (an integer, 1 to 100: the company's stores; each after the first is billed on its base subscription) is kept on the shop, left as it was when not sent; `moduleKeys` carries the Assistant's key and the add-ons' (five at most); `resetOptIn` (the Windows program's "allow a reset from my StitchHub account") is kept on the shop; left as it was when not sent; `false` withdraws a reset request still waiting |
 | `GET /v1/shops/:ref/standing` | the same answer without the claim (404 until the shop has claimed itself). For a company that moved to another install, the install it left gets `410 { error, moved: true, to: <the install's name>, at }` here and at the claim |
 | `POST /v1/shops/:ref/move-token`, `DELETE` | the install the company is on, making a move file: `{ shopName, kind, program, version }` → `{ token, expiresAt, shopRef }`, answered once (only its hash is kept), one use, 14 days; a second call replaces the first. `DELETE` cancels it (the owner cancelled the move) |
 | `POST /v1/shops/move` (key optional) | `{ shopRef, token, shopName, kind, program, version }`: the install the company moved to redeems the token from the move file; every row of that company (shop, partner links, unused partner codes, listings, orders, ratings, notes, link and part revisions, parts usage) moves to it in one transaction, and listings, notes and orders are numbered again in the feeds. → the claim's answer plus `{ moved: { table: rows }, partner: { shopRef, links }, hubName }`; without a key (a program on no hub yet) the hub makes it an install with the old install's scope and adds `{ installId, installKey, scope }`. 404 wrong token, 409 used (the same install asking again gets the same answer), 410 replaced, cancelled or expired |
@@ -714,21 +745,25 @@ page showed: 409 when it isn't the one in force), `shops/:id/switch { plan: "sol
 standing, message, subscription }` (moves a running subscription to the other plan's price with proration: up to Shop the
 difference is charged now and `pending: true` with `message` says the card was declined and the shop stays on Solo until
 it is paid; down to Solo it is credited on the next invoice; 409 when there is none running or it is already on that
-plan) and
+plan), `shops/:id/addons/checkout { addon: "vac" | "appliance" | "scheduling" | "marketing" | "maker" | "bundle",
+interval, termsVersion, acceptTerms }` → `{ url, sessionId }` (an add-on's own subscription Checkout; 409 when the shop has it, has the
+bundle, or holds four single add-ons; 503 while its prices aren't set) and
 `shops/:id/portal` → `{ url }` (Stripe's Customer Portal for the account; 409 before it has ever subscribed),
 `hosted { program, shopName, ownerName, timeZone }` → `{ shopRef, setPasswordUrl, expiresAt, appUrl, tied }` (503 for a
 program this hub doesn't offer, 429 within 10 minutes of the last) and `shops/:id/reset-owner` → `{ id, expiresAt }`
 (409 while the program doesn't allow it, 503 without a signing key). `me` carries each shop's `standing`, `lastDay`,
 `message`, `plan`, `subscription` (`plan`, `interval`, `founding`, `status`, `trialEnd` while `trialing`, ...),
 `canSubscribe`, `firstChargeOn` (subscribing now is first charged that day, when the trial ends; null: at once), `canSwitch`,
-`canManage`, `resetOptIn` and `resetRequest`, `billing: { open, prices: { solo: { monthly, yearly }, shop: { ... } },
-soloLogins, founding: { on, gapSince, losesOn } }`, `hosted`,
+`canManage`, `resetOptIn` and `resetRequest`, `addons: { on, comped, items: { vac: { status, paidThrough, plan, canAdd }, ...,
+bundle } }`, `stores: { reported, extra, billed }`, `billing: { open, prices: { solo: { monthly, yearly }, shop: { ... } },
+addonPrices: { vac: { label, monthly, yearly }, ..., bundle, store } | null, soloLogins, founding: { on, gapSince, losesOn } }`, `hosted`,
 `canSignResets` and `terms: { current, draft, accepted, acceptedAt, needsAccept }`. A change
 asked for from another site (the browser's `Origin`) is refused. The admin API adds `GET /v1/admin/accounts` (with
 `billing`: open or why not, the Stripe mode, the signing kid and public x and the founding prices not set;
 `foundingPlaces: { used, limit }`; each account's `founding: { on, at, gapSince, lostAt }`),
 `POST /v1/admin/accounts/:id/founding { founding: true | false }` (409 for the 26th), `POST /v1/admin/shops/:id/comp { until:
-"YYYY-MM-DD" | "forever" | "", note }` (a comp also takes back a "Lapse now"), `POST /v1/admin/shops/:id/lapse { lapsed:
+"YYYY-MM-DD" | "forever" | "", note, addons: true | false }` (a comp also takes back a "Lapse now"; `addons: true` covers the five
+add-ons too, left out it stays as chosen before), `POST /v1/admin/shops/:id/lapse { lapsed:
 true | false }` ("Lapse now" and its undo), `GET /v1/admin/shops/:id/keys`, `POST /v1/admin/accounts/:id/resend`,
 `POST /v1/admin/accounts/:id/disable { disabled }` and `DELETE /v1/admin/accounts/:id`. Moves (the admin page's
 "Moves"): `GET /v1/admin/moves` (every move token and move, newest first, with its state: waiting, moved, cancelled,
