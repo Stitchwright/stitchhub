@@ -376,7 +376,11 @@ no new key and its last one runs out on its own last day plus 14 days). A top-up
 once by the webhook to the company's month (`assistant_topups`, one row per Checkout session). Variables, each a comma list
 like the plans' (the first id is sold): `STRIPE_PRICE_ASSISTANT_MONTHLY`, `STRIPE_PRICE_ASSISTANT_YEARLY`,
 `STRIPE_PRICE_ASSISTANT_TOPUP` (the Assistant isn't offered while the first two are unset, top-ups while the third is).
-Refunds of an Assistant payment aren't handled by the hub: refund in Stripe and use Lapse or the comp switch by hand.
+A refund or chargeback of a payment for an Assistant period (a renewal, or a switch to yearly, which starts a new year)
+takes the period back and revokes its keys; a full refund also cancels the subscription, while a partial refund or a
+chargeback leaves it running and the account page shows the Assistant on hold (no second Checkout, which would bill twice)
+until a later payment stands. A chargeback is acted on once. A refunded or charged-back top-up takes back its share of the
+calls. A second Assistant Checkout that is paid cancels the older Assistant subscription in Stripe.
 `npm run test:assistant-billing` (the Stripe and Anthropic mocks, a fresh database).
 
 **Duplicate finder.** `node scripts/find-duplicate-xparts.mjs --dry` lists groups of cross-reference entries with the same

@@ -197,8 +197,11 @@ export async function startStripeMock(o = {}) {
     return ch;
   }
 
-  /** A subscription's invoice: the price's amount (0 for the first invoice of a trial: nothing is charged). */
-  function invoiceFor(sub, paid, reason = "subscription_cycle", amount = sub.items.data[0].price.unit_amount) {
+  /**
+   * A subscription's invoice: the price's amount (0 for the first invoice of a trial: nothing is charged). Its lines as
+   * Stripe's: one for the period (proration false), or for a switch's difference only proration lines; `lines` overrides.
+   */
+  function invoiceFor(sub, paid, reason = "subscription_cycle", amount = sub.items.data[0].price.unit_amount, lines = null) {
     const inv = {
       id: `in_${hex(12)}`,
       object: "invoice",
@@ -211,6 +214,11 @@ export async function startStripeMock(o = {}) {
       amount_paid: paid ? amount : 0,
       period_start: sub.current_period_start,
       period_end: sub.current_period_end,
+      lines: {
+        object: "list",
+        data: (lines ?? [{ amount, proration: reason === "subscription_update" }]).map((l) => ({ object: "line_item", type: "subscription", period: { start: sub.current_period_start, end: sub.current_period_end }, ...l })),
+        has_more: false,
+      },
       charge: null,
       payment_intent: null,
       attempt_count: 1,
@@ -490,13 +498,23 @@ export async function startStripeMock(o = {}) {
         }
         sub.last_proration_behavior = f.proration_behavior ?? null;
         sub.last_payment_behavior = f.payment_behavior ?? null;
-        const apply = () => moves.forEach((x) => (x.item.price = priceOf(x.price)));
+        // A switch to another interval (monthly to yearly) starts a new period now, as Stripe's does: its invoice has a line
+        // for the whole new period (proration false) and a credit for the old one.
+        const newInterval = moves.find((x) => priceOf(x.price).recurring?.interval !== x.item.price.recurring?.interval)?.price;
+        const apply = () => {
+          moves.forEach((x) => (x.item.price = priceOf(x.price)));
+          if (newInterval) {
+            sub.current_period_start = now();
+            sub.current_period_end = addInterval(sub.current_period_start, priceOf(newInterval).recurring.interval);
+          }
+        };
         if (f.proration_behavior === "always_invoice") {
           const amount = Math.max(0, moves.reduce((n, x) => n + priceOf(x.price).unit_amount - x.item.price.unit_amount, 0));
           const c = customers.get(sub.customer);
           const declined = Boolean(c?.decline_next);
           if (c) c.decline_next = false;
-          const inv = invoiceFor(sub, !declined, "subscription_update", amount);
+          const lines = newInterval ? moves.flatMap((x) => [{ amount: priceOf(x.price).unit_amount, proration: false }, { amount: -x.item.price.unit_amount, proration: true }]) : null;
+          const inv = invoiceFor(sub, !declined, "subscription_update", amount, lines);
           if (declined && f.payment_behavior === "pending_if_incomplete") {
             sub.pending_update = { subscription_items: moves.map((x) => ({ id: x.item.id, price: x.price })), expires_at: now() + 23 * 3600 };
             emitLater("invoice.payment_failed", inv);
