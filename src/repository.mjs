@@ -24,7 +24,7 @@ import crypto from "node:crypto";
 import { one, q, tx, feedLimit } from "./db.mjs";
 import { standingOf } from "./billing.mjs";
 import { r2FromEnv } from "./r2.mjs";
-import { inspectPdf } from "./pdfcheck.mjs";
+import { inspectPdfIsolated } from "./pdfcheck.mjs";
 import { ocrOn, ocrMarkings, ocrQueue } from "./ocr.mjs";
 
 const MB = 1024 * 1024;
@@ -214,7 +214,8 @@ export function registerRepository({ app, member, admin, acct, fail, newId, allo
         if (bytes.length !== Number(up.size_bytes)) return { refused: "The file in storage isn't the size that was offered." };
         const sha = sha256of(bytes);
         if (sha !== up.sha256) return { refused: "The file's contents don't match its sha256: it changed or broke on the way. Offer it again." };
-        const look = inspectPdf(bytes, { ocr: ocrOn() });
+        // In a worker thread with a time and memory limit (src/pdfcheck.mjs): a file that runs over is refused.
+        const look = await inspectPdfIsolated(bytes, { ocr: ocrOn() });
         if (look.refused) return { refused: look.refused };
         return { sha, sha1: sha1of(bytes), look };
       });

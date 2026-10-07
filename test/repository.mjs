@@ -14,7 +14,7 @@ import path from "node:path";
 import zlib from "node:zlib";
 import { spawn } from "node:child_process";
 import pg from "pg";
-import { inspectPdf } from "../src/pdfcheck.mjs";
+import { inspectPdf, inspectPdfIsolated } from "../src/pdfcheck.mjs";
 import { startR2Mock } from "./r2-mock.mjs";
 
 const BASE_DB = process.env.DATABASE_URL;
@@ -90,6 +90,27 @@ function makePdf({ pages = ["Service manual for the machine, page one"], flate =
   r = inspectPdf(makePdf({ pages: ["a", "b"], image: true }));
   assert.equal(r.markings.status, "not-checked");
   assert.match(r.markings.reason, /scan or unreadable text/);
+  // Many objects and no stream after them: each object is searched only to its own endobj (not to the end of the file).
+  const manyObjs = Buffer.from(`%PDF-1.7\n${Array.from({ length: 100_000 }, (_, i) => `${i + 1} 0 obj\n<< /K ${i} >>\nendobj\n`).join("")}trailer\n<< /Size 100001 >>\n%%EOF\n`, "latin1");
+  let t0 = Date.now();
+  assert.equal(inspectPdf(manyObjs).refused, undefined);
+  assert.ok(Date.now() - t0 < 5000, `100,000 objects read in ${Date.now() - t0} ms`);
+  // A content stream named 40 times by a page is inflated once: 40 x 5 MB would be past the one 64 MB budget.
+  const big = zlib.deflateSync(Buffer.from("BT /F1 12 Tf (Service manual cover page words) Tj ET\n".repeat(100_000), "latin1"));
+  const repeated = Buffer.concat([
+    Buffer.from(`%PDF-1.7\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /Contents [${"4 0 R ".repeat(40)}] >>\nendobj\n4 0 obj\n<< /Filter /FlateDecode /Length ${big.length} >>\nstream\n`, "latin1"),
+    big,
+    Buffer.from("\nendstream\nendobj\ntrailer\n<< /Root 1 0 R /Size 5 >>\n%%EOF\n", "latin1"),
+  ]);
+  assert.equal(inspectPdf(repeated).markings.status, "clean", "the repeated stream is read once, within the budget");
+  // The upload path's check runs in a worker thread: the same answer, and a refusal past its time limit.
+  assert.deepEqual(await inspectPdfIsolated(makePdf({ pages: ten({ 0: "CONFIDENTIAL" }) })), inspectPdf(makePdf({ pages: ten({ 0: "CONFIDENTIAL" }) })));
+  assert.match((await inspectPdfIsolated(makePdf({ js: true }))).refused, /\/JavaScript/);
+  process.env.REPO_CHECK_MS = "1";
+  t0 = Date.now();
+  assert.match((await inspectPdfIsolated(manyObjs)).refused, /couldn't finish checking that PDF within/, "past the time limit: refused");
+  assert.ok(Date.now() - t0 < 2000, "and answered at once");
+  delete process.env.REPO_CHECK_MS;
   console.log("pdf check: ok");
 }
 

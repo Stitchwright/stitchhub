@@ -47,7 +47,12 @@ function verify(req, url) {
   if (Date.now() > issued + Number(q.get("X-Amz-Expires")) * 1000) return "expired";
   if (Number(q.get("X-Amz-Expires")) > 3600) return "too long";
   const params = [...q.entries()].filter(([k]) => k !== "X-Amz-Signature").sort(([a], [b]) => (a < b ? -1 : 1));
-  const canonical = [req.method, url.pathname.split("/").map((s) => enc(decodeURIComponent(s))).join("/"), params.map(([k, v]) => `${enc(k)}=${enc(v)}`).join("&"), `host:${req.headers.host}\n`, q.get("X-Amz-SignedHeaders"), "UNSIGNED-PAYLOAD"].join("\n");
+  // Every signed header is read from the request as it arrived (a PUT of another size has another content-length).
+  const names = (q.get("X-Amz-SignedHeaders") ?? "").split(";");
+  if (!names.includes("host")) return "host not signed";
+  if (req.method === "PUT" && !names.includes("content-length")) return "content-length not signed";
+  const headerLines = names.map((n) => `${n}:${String(req.headers[n] ?? "").trim()}\n`).join("");
+  const canonical = [req.method, url.pathname.split("/").map((s) => enc(decodeURIComponent(s))).join("/"), params.map(([k, v]) => `${enc(k)}=${enc(v)}`).join("&"), headerLines, names.join(";"), "UNSIGNED-PAYLOAD"].join("\n");
   const toSign = ["AWS4-HMAC-SHA256", stamp, `${date}/${region}/s3/aws4_request`, crypto.createHash("sha256").update(canonical).digest("hex")].join("\n");
   const want = crypto.createHmac("sha256", hmac(hmac(hmac(hmac(`AWS4${SECRET}`, date), region), "s3"), "aws4_request")).update(toSign).digest("hex");
   return want === sig ? null : "signature mismatch";
@@ -66,7 +71,14 @@ const s3 = http.createServer((req, res) => {
     }
     const key = decodeURIComponent(url.pathname).replace(`/${BUCKET}/`, "");
     if (req.method === "PUT") {
-      store.set(key, Buffer.concat(chunks));
+      const body = Buffer.concat(chunks);
+      const sum = req.headers["x-amz-checksum-sha256"];
+      if (sum && crypto.createHash("sha256").update(body).digest("base64") !== sum) {
+        refused.push("checksum");
+        res.writeHead(400).end("BadDigest");
+        return;
+      }
+      store.set(key, body);
       res.writeHead(200).end();
     } else if (req.method === "GET") {
       const b = store.get(key);
@@ -118,7 +130,8 @@ async function startHub(extraEnv = {}) {
   return { hub, HUB: `http://127.0.0.1:${port}` };
 }
 const s3env = { BACKUP_S3_ENDPOINT: `http://127.0.0.1:${s3port}`, BACKUP_S3_BUCKET: BUCKET, BACKUP_S3_KEY_ID: KEY_ID, BACKUP_S3_SECRET: SECRET, BACKUP_S3_REGION: REGION };
-let { hub, HUB } = await startHub({ ...s3env, BACKUP_QUOTA_GB: "0.00001" }); // about 10 KB: small enough to reach
+// About 10 KB a company and 21 KB an install: small enough to reach.
+let { hub, HUB } = await startHub({ ...s3env, BACKUP_QUOTA_GB: "0.00001", BACKUP_INSTALL_QUOTA_GB: "0.00002" });
 const db = new pg.Pool({ connectionString: DB, max: 2 });
 process.on("exit", () => hub.kill());
 
@@ -176,11 +189,21 @@ try {
   assert.equal((await fetch(a1.url.replace(`${shopA}/`, `${shopA}x/`), { method: "PUT", body: Buffer.alloc(100) })).status, 403, "or for another key");
   assert.equal((await fetch(got.url, { method: "PUT", body: Buffer.alloc(1) })).status, 403, "a download address can't write");
   assert.equal((await fetch(got.url.replace("X-Amz-Expires=900", "X-Amz-Expires=3000"))).status, 403, "changing the lifetime breaks the signature");
-  console.log("  ok  a presigned address works for its method and key only");
+  // Asked for, the address is signed for the bytes too (x-amz-checksum-sha256): other bytes of the same size are refused.
+  const sumBytes = crypto.randomBytes(50);
+  const withSum = await okJson(await call("/v1/backup/put", { key: X.installKey, json: { shopRef: "a", name: "photo/MachinePhoto/p9-dddddddddddddddd", size: 50, sha256: sha(sumBytes), checksum: "sha256" } }));
+  assert.deepEqual(Object.keys(withSum.headers), ["x-amz-checksum-sha256"]);
+  assert.equal((await fetch(withSum.url, { method: "PUT", body: sumBytes })).status, 403, "without the checksum header the signature doesn't match");
+  assert.equal((await fetch(withSum.url, { method: "PUT", body: crypto.randomBytes(50), headers: withSum.headers })).status, 400, "other bytes: the store refuses them");
+  assert.equal((await fetch(withSum.url, { method: "PUT", body: sumBytes, headers: withSum.headers })).status, 200, "the bytes named");
+  await okJson(await call("/v1/backup/delete", { key: X.installKey, json: { shopRef: "a", name: "photo/MachinePhoto/p9-dddddddddddddddd" } }));
+  refused.length = 0;
+  console.log("  ok  a presigned address works for its method, key and size only (and, asked for, its bytes)");
 
   // ----- done checks the object is there, at its size -----
   await status(await call("/v1/backup/done", { key: X.installKey, json: { shopRef: "a", name: "photo/MachinePhoto/p1-aaaaaaaaaaaaaaaa" } }), 409, "done before the upload");
-  await fetch(a1.url, { method: "PUT", body: Buffer.alloc(77) }); // the wrong size
+  assert.equal((await fetch(a1.url, { method: "PUT", body: Buffer.alloc(77) })).status, 403, "the address is signed for its size: another size is refused");
+  refused.length = 0;
   await status(await call("/v1/backup/done", { key: X.installKey, json: { shopRef: "a", name: "photo/MachinePhoto/p1-aaaaaaaaaaaaaaaa" } }), 409, "done at the wrong size");
   assert.ok(!(await okJson(await call("/v1/backup/list?shopRef=a", { key: X.installKey }))).objects.some((o) => o.name.startsWith("photo/")), "an unconfirmed object isn't listed");
   await fetch(a1.url, { method: "PUT", body: Buffer.alloc(100) });
@@ -202,7 +225,10 @@ try {
   await status(await put(X.installKey, "a", "data/2026-10-08-020000.sbob", crypto.randomBytes(20000)), 413, "far over");
   // company b has its own space
   await upload(X.installKey, "b", "photo/MachinePhoto/p3-cccccccccccccccc", big);
-  console.log("  ok  over the space new pictures wait and the company file still goes; each company has its own space");
+  // The install's companies together have a space too (21 KB here; 20,100 bytes used): a new company can't claim more.
+  await claim(X.installKey, "c", "C Crafts");
+  assert.match((await status(await put(X.installKey, "c", "photo/MachinePhoto/p4-eeeeeeeeeeeeeeee", crypto.randomBytes(2000)), 413, "over the install's space")).error, /install's backup space/);
+  console.log("  ok  over the space new pictures wait and the company file still goes; each company has its own space, within the install's");
 
   // ----- isolation: a second company, a second install -----
   await status(await call("/v1/backup/get", { key: X.installKey, json: { shopRef: "b", name: "data/2026-10-06-020000.sbob" } }), 404, "B asking for A's file name");
@@ -264,6 +290,24 @@ try {
   const again = await okJson(await call("/v1/backup/get", { key: Z.installKey, json: { shopRef: "a", name: "data/2026-10-06-020000.sbob" } }));
   assert.ok((await fetchUrl(again.url)).equals(data1), "and can fetch it");
   console.log("  ok  redeeming the code moves the company; its backups follow it to the new install; the old one is told");
+
+  // ----- an upload address never confirmed is swept after 6 hours: the object and its row -----
+  const stale = crypto.randomBytes(300);
+  const sa = await okJson(await put(Z.installKey, "a", "photo/MachinePhoto/p5-ffffffffffffffff", stale));
+  assert.equal((await fetch(sa.url, { method: "PUT", body: stale })).status, 200);
+  const fresh = await okJson(await put(Z.installKey, "a", "photo/MachinePhoto/p6-0000000000000000", stale));
+  assert.ok(fresh.url);
+  await db.query(`UPDATE backup_objects SET created_at = now() - interval '7 hours' WHERE name = 'photo/MachinePhoto/p5-ffffffffffffffff'`);
+  hub.kill();
+  ({ hub, HUB } = await startHub({ ...s3env, BACKUP_SWEEP_MS: "300" }));
+  const swept = async () => (await db.query(`SELECT deleted_at FROM backup_objects WHERE name = 'photo/MachinePhoto/p5-ffffffffffffffff'`)).rows[0].deleted_at;
+  for (let i = 0; i < 50 && !(await swept()); i++) await new Promise((r) => setTimeout(r, 200));
+  assert.ok(await swept(), "the stale row is marked deleted");
+  assert.ok(![...store.keys()].some((k) => k.endsWith("p5-ffffffffffffffff")), "and its object is gone from the bucket");
+  assert.equal((await db.query(`SELECT deleted_at FROM backup_objects WHERE name = 'photo/MachinePhoto/p6-0000000000000000'`)).rows[0].deleted_at, null, "a fresh unconfirmed one stays");
+  assert.equal(zl.objects.length, 2);
+  assert.equal((await okJson(await call("/v1/backup/list?shopRef=a", { key: Z.installKey }))).objects.length, 2, "confirmed objects are never swept");
+  console.log("  ok  upload addresses never confirmed are swept after 6 hours, object and row; confirmed ones stay");
 
   // ----- the bucket not set up -----
   hub.kill();

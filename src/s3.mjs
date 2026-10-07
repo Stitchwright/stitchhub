@@ -24,9 +24,11 @@ const encPath = (key) => key.split("/").map(enc).join("/");
 
 /**
  * A URL good for `expires` seconds that lets whoever holds it do `method` to `key` and nothing else. The payload is not
- * signed (UNSIGNED-PAYLOAD), which is what a presigned PUT is.
+ * signed (UNSIGNED-PAYLOAD), which is what a presigned PUT is; `headers` ({ name: value }) are signed with the host, so
+ * the request must carry exactly those (a PUT's content-length: no other size goes in; x-amz-checksum-sha256: no other
+ * bytes).
  */
-export function presign(cfg, method, key, { expires = 900, now = new Date() } = {}) {
+export function presign(cfg, method, key, { expires = 900, now = new Date(), headers = {} } = {}) {
   const url = new URL(cfg.endpoint);
   const stamp = now.toISOString().replace(/[:-]|\.\d{3}/g, ""); // 20261006T120000Z
   const date = stamp.slice(0, 8);
@@ -36,11 +38,14 @@ export function presign(cfg, method, key, { expires = 900, now = new Date() } = 
     "X-Amz-Credential": `${cfg.keyId}/${scope}`,
     "X-Amz-Date": stamp,
     "X-Amz-Expires": String(Math.min(Math.max(1, Math.floor(expires)), 3600)),
-    "X-Amz-SignedHeaders": "host",
   };
+  const signed = { host: url.host };
+  for (const [k, v] of Object.entries(headers)) signed[k.toLowerCase()] = String(v).trim();
+  const names = Object.keys(signed).sort();
+  params["X-Amz-SignedHeaders"] = names.join(";");
   const canonicalQuery = Object.keys(params).sort().map((k) => `${enc(k)}=${enc(params[k])}`).join("&");
   const path = `${url.pathname.replace(/\/+$/, "")}/${enc(cfg.bucket)}/${encPath(key)}`;
-  const canonical = [method, path, canonicalQuery, `host:${url.host}\n`, "host", "UNSIGNED-PAYLOAD"].join("\n");
+  const canonical = [method, path, canonicalQuery, names.map((n) => `${n}:${signed[n]}\n`).join(""), names.join(";"), "UNSIGNED-PAYLOAD"].join("\n");
   const toSign = ["AWS4-HMAC-SHA256", stamp, scope, hex(canonical)].join("\n");
   const signingKey = hmac(hmac(hmac(hmac(`AWS4${cfg.secret}`, date), cfg.region), "s3"), "aws4_request");
   const signature = crypto.createHmac("sha256", signingKey).update(toSign).digest("hex");

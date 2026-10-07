@@ -519,6 +519,28 @@ try {
   assert.equal((await ok(await acct("up", "/repository"))).strikes, 0);
   console.log("third strike: uploads off, waiting offers rejected, old strikes don't count: ok");
 
+  // ===== one strike per notice per uploader; a form notice naming more than 5 manuals waits for the owner =====
+  await restart({ TAKEDOWN_TEST_TODAY: "2026-12-01" }); // the form's count of five an hour starts again
+  const multi = await company(key1, "multi");
+  const many = [];
+  for (const [i, brand] of ["Janome", "Juki", "Babylock", "Bernina", "Necchi", "Kenmore", "Pfaff", "Riccar"].entries()) many.push(await publish(key1, "multi", uniquePdf(brand), { brand, models: [`X${i}00`] }));
+  const two = await ok(await admin("/repository/notices", { via: "email", raw: "two at once", ...notice({ locations: `references ${many[0].manualId} and ${many[1].manualId}` }) }));
+  assert.equal((await ok(await admin(`/repository/notices/${two.id}/action`, {}))).manuals.length, 2);
+  assert.equal((await db.query(`SELECT count(*)::int AS n FROM strikes WHERE notice_id = $1`, [two.id])).rows[0].n, 1, "one strike for the notice, not one per manual");
+  assert.equal((await ok(await acct("multi", "/repository"))).strikes, 1);
+  const struckTwo = mailsTo(multi.email).filter((m) => /strike 1/.test(m.text));
+  assert.equal(struckTwo.length, 1, "one mail for the notice");
+  assert.match(struckTwo[0].text, /Janome .*; Juki .* were removed/);
+  const six = await ok(await sendNotice({ locations: many.slice(2).map((m) => `reference ${m.manualId}`).join("\n") }));
+  assert.match(six.message, /will act on it within one business day/, "not removed by the form");
+  for (const m of many.slice(2)) assert.equal((await feedItem(key2, m.manualId)).removed, undefined, "each of the six is still there");
+  assert.equal((await dbNotice(six.id)).status, "new");
+  assert.ok((await dbNotice(six.id)).notes.some((n) => /names 6 manuals or files, more than the 5/.test(n.text)), "the log says why it waits");
+  assert.equal((await ok(await admin(`/repository/notices/${six.id}/action`, {}))).manuals.length, 6, "the owner's Action removes them");
+  assert.equal((await db.query(`SELECT count(*)::int AS n FROM strikes WHERE notice_id = $1`, [six.id])).rows[0].n, 1);
+  assert.equal((await ok(await acct("multi", "/repository"))).strikes, 2, "two notices, two strikes");
+  console.log("one strike per notice; a form notice naming many waits for the owner: ok");
+
   // ===== the per-address limit (a fresh hub: the count is in memory) =====
   await restart({ TAKEDOWN_TEST_TODAY: "2026-12-01" });
   for (let i = 0; i < 5; i++) await status(await sendNotice({ signature: "" }), 400, `notice ${i + 1} from the address`);

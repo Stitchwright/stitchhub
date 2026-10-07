@@ -14,6 +14,10 @@ export const MONTHLY_CALLS = Math.max(1, Math.floor(Number(process.env.ASSISTANT
 export const TOPUP_CALLS = Math.max(1, Math.floor(Number(process.env.ASSISTANT_TOPUP_CALLS)) || 300);
 const FREE_READS = Math.max(0, Math.floor(Number(process.env.ASSISTANT_FREE_READS ?? 20)));
 const HOURLY = Math.max(1, Math.floor(Number(process.env.ASSISTANT_HOURLY_CALLS)) || 60);
+// Free reads are a sample, not a service: at most this many a month for all the companies of one install together, and
+// at most this many a day on the whole hub (any install, the last 24 hours).
+const FREE_READS_PER_INSTALL = Math.max(0, Math.floor(Number(process.env.ASSISTANT_FREE_READS_PER_INSTALL ?? 100)));
+const FREE_DAILY = Math.max(0, Math.floor(Number(process.env.ASSISTANT_FREE_DAILY ?? 500)));
 
 /** The model each class of work uses; the owner moves every shop to a newer model by changing a variable. */
 const CLASSES = {
@@ -118,12 +122,37 @@ export function checkKey(text, shopRef, today) {
   return { ok: true, payload };
 }
 
+/**
+ * checkKey, then whose the key is, so one key copied to other installs gives them nothing: a key the hub signed must be on
+ * record (license_issues, not revoked) for this company on this install; a key of the owner's own signer belongs to the
+ * first install and company that used it (assistant_key_binds; a move takes it along).
+ */
+export async function keyHolds(text, installId, shopRef, today) {
+  const k = checkKey(text, shopRef, today);
+  if (!k.ok) return k;
+  const id = k.payload.id;
+  if (typeof id !== "string" || !id || id.length > 40) return { ok: false, why: "damaged key" };
+  const own = signer().signer;
+  if (own && k.payload.k === own.kid) {
+    const row = await one(`SELECT l.revoked_at FROM license_issues l JOIN shops s ON s.id = l.shop_id WHERE l.key_id = $1 AND s.install_id = $2 AND s.shop_ref = $3`, [id, installId, shopRef]);
+    if (!row) return { ok: false, why: "key for another company" };
+    if (row.revoked_at) return { ok: false, why: "ended" };
+    return k;
+  }
+  await q(`INSERT INTO assistant_key_binds (kid, key_id, install_id, shop_ref) VALUES ($1, $2, $3, $4) ON CONFLICT (kid, key_id) DO NOTHING`, [k.payload.k, id, installId, shopRef]);
+  const bind = await one(`SELECT install_id, shop_ref FROM assistant_key_binds WHERE kid = $1 AND key_id = $2`, [k.payload.k, id]);
+  if (bind && (bind.install_id !== installId || bind.shop_ref !== shopRef)) return { ok: false, why: "key in use by another company" };
+  return k;
+}
+
 // ----- request checks -----
 const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const PHOTO_FEATURES = new Set(["read_plate", "read_label", "tag_fabric"]);
 const MAX_SYSTEM = 40_000;
 const MAX_TEXT = 120_000;
 const MAX_IMAGE = 220_000; // base64 characters: the program shrinks a plate photo to about 150 KB
+const FREE_SYSTEM = 4_000; // a free read's instructions and its text: the plate reader's prompt is well under these
+const FREE_TEXT = 2_000;
 
 function clean(body, fail) {
   const cls = String(body.model ?? "");
@@ -155,6 +184,7 @@ function clean(body, fail) {
 
 export function registerAssistant({ member, admin, fail, allow, newId }) {
   const busy = new Set();
+  let freeInFlight = 0;
 
   // Tests move the clock with a header, only on a hub started with ASSISTANT_TEST_CLOCK=true.
   const testClock = process.env.ASSISTANT_TEST_CLOCK === "true";
@@ -169,7 +199,7 @@ export function registerAssistant({ member, admin, fail, allow, newId }) {
     const month = today.slice(0, 7);
     const shop = await one(`SELECT comp_until::text AS comp_until FROM assistant_shops WHERE install_id = $1 AND shop_ref = $2`, [installId, shopRef]);
     const comp = Boolean(shop?.comp_until && shop.comp_until >= today);
-    const k = key ? checkKey(key, shopRef, today) : { ok: false, why: "no key" };
+    const k = key ? await keyHolds(key, installId, shopRef, today) : { ok: false, why: "no key" };
     const row = await one(`SELECT calls, bonus, free_reads FROM assistant_usage WHERE install_id = $1 AND shop_ref = $2 AND month = $3`, [installId, shopRef, month]);
     return { month, today, entitled: comp || k.ok, why: comp ? null : k.ok ? null : k.why, calls: row?.calls ?? 0, bonus: row?.bonus ?? 0, freeReads: row?.free_reads ?? 0 };
   }
@@ -194,10 +224,20 @@ export function registerAssistant({ member, admin, fail, allow, newId }) {
 
     const at = nowOf(c);
     const p = await position(installId, r.shopRef, r.tz, r.key, at);
-    // Entitled: the paid allowance. Otherwise only the plate reader, 20 a month.
+    // Entitled: the paid allowance. Otherwise only the plate reader, 20 a month: the read model with a photo and a short
+    // prompt, for a company that has claimed itself on this install, within the install's and the hub's free ceilings.
     const free = !p.entitled;
-    if (free && r.feature !== "read_plate") {
-      throw fail(402, p.why === "ended" ? "The Assistant subscription for this company has ended. Renew it in Settings → Modules." : "The Assistant isn't turned on for this company. An owner can add it in Settings → Modules.");
+    if (free) {
+      if (r.feature !== "read_plate") {
+        throw fail(402, p.why === "ended" ? "The Assistant subscription for this company has ended. Renew it in Settings → Modules." : "The Assistant isn't turned on for this company. An owner can add it in Settings → Modules.");
+      }
+      const text = r.messages.reduce((n, m) => n + m.content.length, 0);
+      if (r.cls !== "read" || !r.image || r.system.length > FREE_SYSTEM || text > FREE_TEXT) throw fail(400, "A free plate read is the read model with a photo and a short prompt.");
+      if (!(await one(`SELECT 1 AS ok FROM shops WHERE install_id = $1 AND shop_ref = $2`, [installId, r.shopRef]))) throw fail(404, "That company hasn't told the hub about itself yet (it does at its next sync).");
+      const install = await one(`SELECT coalesce(sum(free_reads), 0)::int AS n FROM assistant_usage WHERE install_id = $1 AND month = $2`, [installId, p.month]);
+      if (install.n >= FREE_READS_PER_INSTALL) throw fail(402, `This install's companies have used this month's ${FREE_READS_PER_INSTALL} free plate reads. The Assistant module adds more.`);
+      const day = await one(`SELECT count(*)::int AS n FROM assistant_calls WHERE free AND error IS NULL AND created_at > now() - interval '1 day'`);
+      if (day.n + freeInFlight >= FREE_DAILY) throw fail(503, "Free plate reads are paused on this hub for today. Try again tomorrow.");
     }
     await q(
       `INSERT INTO assistant_shops (install_id, shop_ref, tz) VALUES ($1, $2, $3) ON CONFLICT (install_id, shop_ref) DO UPDATE SET tz = EXCLUDED.tz, updated_at = now()`,
@@ -218,6 +258,7 @@ export function registerAssistant({ member, admin, fail, allow, newId }) {
     const refund = () => q(`UPDATE assistant_usage SET ${column} = greatest(0, ${column} - 1) WHERE install_id = $1 AND shop_ref = $2 AND month = $3`, [installId, r.shopRef, p.month]).catch(() => {});
 
     busy.add(lock);
+    if (free) freeInFlight++;
     const started = Date.now();
     const model = modelFor(r.cls);
     let result = null;
@@ -260,6 +301,7 @@ export function registerAssistant({ member, admin, fail, allow, newId }) {
       }
     } finally {
       busy.delete(lock);
+      if (free) freeInFlight--;
     }
     const ms = Date.now() - started;
     const usage = result?.usage ?? {};
