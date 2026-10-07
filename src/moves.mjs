@@ -94,6 +94,10 @@ export async function rewriteCompany(client, shop, to) {
   await run("posts", `UPDATE posts SET install_id = $3, seq = nextval('change_seq') WHERE install_id = $1 AND shop_ref = $2`);
   await run("link_revisions", `UPDATE link_revisions SET install_id = $3 WHERE install_id = $1 AND shop_ref = $2`);
   await run("xpart_revisions", `UPDATE xpart_revisions SET install_id = $3 WHERE install_id = $1 AND shop_ref = $2`);
+  // Its shop hops: its place in each (with its pinned key), the hops it organizes, and the codes it used to join.
+  await run("hop_shops", `UPDATE hop_shops SET install_id = $3 WHERE install_id = $1 AND shop_ref = $2`);
+  await run("hops", `UPDATE hops SET organizer_install = $3 WHERE organizer_install = $1 AND organizer_shop_ref = $2`);
+  await run("hop_invites", `UPDATE hop_invites SET used_by_install = $3 WHERE used_by_install = $1 AND used_by_shop_ref = $2`);
   // An Assistant key of the owner's own signer stays the company's (src/assistant.mjs binds it to the first that used it).
   await run("assistant_key_binds", `UPDATE assistant_key_binds SET install_id = $3 WHERE install_id = $1 AND shop_ref = $2`);
   // The Assistant's counts go with the company: its month (paid top-ups were added to it, and a refund takes them back from
