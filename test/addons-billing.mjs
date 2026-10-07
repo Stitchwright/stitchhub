@@ -5,7 +5,10 @@
 // refused while the bundle runs; a full refund takes the bundle's period back (keys revoked, named for removal,
 // cancelled); a chargeback on an add-on acted on once and undone when won; the admin's comp of everything; extra stores
 // as a quantity on the base subscription (at Checkout, and following the stores the claim reports); a top-up refunded
-// before its credit lands; and a hub without the add-on prices offers none. A fresh scratch database, dropped at the end.
+// before its credit lands; keys owed (past_due, ended unpaid, more than five, the comp's last day, Lapse now), the bundle
+// over unpaid singles, a single paid under the bundle, a retried switch, a single on hold; a store-line refund; a hub
+// without the add-on prices offers none, and one with a price id in two variables stays closed. A fresh scratch database,
+// dropped at the end.
 // usage: node test/addons-billing.mjs   (or DATABASE_URL=postgresql://.../postgres to name the server)
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
@@ -193,6 +196,17 @@ const buy = async (jar, shopId, addon, interval = "monthly") => {
   return { co, paid, sub: paid.subscription };
 };
 const FIVE = "vac+appliance+scheduling+marketing+maker"; // the key names them in this order
+/** Waits (up to 15 seconds) until `fn` answers true: what the hub does in the background after it answers. */
+async function until(fn, what) {
+  for (let i = 0; i < 75; i++) {
+    if (await fn()) return;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  throw new Error(`${what}: never happened`);
+}
+const keysBy = (keys, ref) => keys.map((k) => keyPayload(k, ref, "module key"));
+const keyOfModule = (keys, ref, m) => keysBy(keys, ref).find((p) => p.m.join("+") === m);
+const storeQty = async (shopId) => (await db.query(`SELECT store_quantity FROM subscriptions WHERE shop_id = $1`, [shopId])).rows[0].store_quantity;
 
 try {
   // ----- 1. a shop on its trial and its owner's account; the page offers every add-on, Maker Shop among them -----
@@ -251,7 +265,8 @@ try {
   for (const s of [maker.sub, sched.sub]) {
     const m = stripeMock.subscriptions.get(s.id);
     assert.equal(m.status, "canceled", `${s.id} is cancelled at the switch`);
-    assert.equal(m.cancel_prorate, true, "with Stripe's proration (a credit for the unused days)");
+    assert.equal(m.cancel_prorate, true, "with Stripe's proration (a credit for the unused days), sent in the query string");
+    assert.equal(m.cancel_invoice_now, true, "and invoiced now");
   }
   assert.equal(stripeMock.subscriptions.get(bundle.sub.id).status, "active");
   st = await standing(installKey, "shopA");
@@ -317,6 +332,30 @@ try {
   st = await standing(installKey, "shopA");
   assert.ok(st.revokeKeyIds.includes(comp.id), "the comp's add-on key is revoked when the comp goes");
   assert.ok(!st.moduleKeys.some((k) => keyPayload(k, "shopA", "k").p === "c"));
+  // A new last day for the comp of everything: the 2099 key is revoked and one for the new day is signed; a last day in the
+  // past (the comp no longer covers today, comp_addons still true) revokes it and signs none.
+  await ok(await call(`/v1/admin/shops/${shopA}/comp`, { key: ADMIN, json: { until: "forever", addons: true } }));
+  const forever = keysBy((await standing(installKey, "shopA")).moduleKeys, "shopA").find((p) => p.p === "c");
+  const soon = day(Date.now() + 20 * 86400_000);
+  await ok(await call(`/v1/admin/shops/${shopA}/comp`, { key: ADMIN, json: { until: soon } }));
+  st = await standing(installKey, "shopA");
+  assert.ok(st.revokeKeyIds.includes(forever.id), "a new last day revokes the 2099 comp key");
+  assert.equal(keysBy(st.moduleKeys, "shopA").find((p) => p.p === "c")?.u, soon, "and signs one through the new day");
+  const soonId = keysBy(st.moduleKeys, "shopA").find((p) => p.p === "c").id;
+  await ok(await call(`/v1/admin/shops/${shopA}/comp`, { key: ADMIN, json: { until: day(Date.now() - 2 * 86400_000) } }));
+  assert.equal((await db.query(`SELECT comp_addons FROM shops WHERE id = $1`, [shopA])).rows[0].comp_addons, true, "the comp still names the add-ons");
+  st = await standing(installKey, "shopA");
+  assert.ok(st.revokeKeyIds.includes(soonId), "a last day in the past revokes the comp key");
+  assert.ok(!st.moduleKeys.some((k) => keyPayload(k, "shopA", "k").p === "c"), "and signs none");
+  // "Lapse now" takes the add-ons' comp key too, and none is signed while the shop is lapsed.
+  await ok(await call(`/v1/admin/shops/${shopA}/comp`, { key: ADMIN, json: { until: "forever", addons: true } }));
+  const lapseComp = keysBy((await standing(installKey, "shopA")).moduleKeys, "shopA").find((p) => p.p === "c");
+  await ok(await call(`/v1/admin/shops/${shopA}/lapse`, { key: ADMIN, json: {} }));
+  st = await standing(installKey, "shopA");
+  assert.ok(st.revokeKeyIds.includes(lapseComp.id), "Lapse now revokes the add-ons' comp key");
+  assert.ok(!st.moduleKeys.some((k) => keyPayload(k, "shopA", "k").p === "c"), "no comp key while lapsed");
+  await ok(await call(`/v1/admin/shops/${shopA}/lapse`, { key: ADMIN, json: { lapsed: false } }));
+  await ok(await call(`/v1/admin/shops/${shopA}/comp`, { key: ADMIN, json: { until: "" } }));
   // A comp of the program only covers no add-ons.
   await ok(await call(`/v1/admin/shops/${shopA}/comp`, { key: ADMIN, json: { until: "forever", addons: false } }));
   st = await standing(installKey, "shopA");
@@ -337,20 +376,29 @@ try {
   assert.deepEqual([sub.tier, sub.price_id, sub.store_quantity], ["solo", P.soloMonthly, 2], "the plan from the plan item; 2 stores billed");
   st = await standing(installKey, "shopA");
   assert.equal(keyPayload(st.key, "shopA", "base key").l, "solo", "the store item doesn't change the plan");
-  // The program now reports 4: one more is billed; then 1: the store item goes.
+  // The program now reports 4: one more is billed (after the claim is answered: Stripe being slow doesn't hold it up); then
+  // 1: the store item goes.
+  await mockPost("/__slow", { ms: 3000 });
+  const t0 = Date.now();
   await claim(installKey, { shopRef: "shopA", shopName: "A Repair", kind: "repair", program: "StitchBench", version: "1.8.0", sole: true, stores: 4 });
+  const took = Date.now() - t0;
+  await mockPost("/__slow", { ms: 0 });
+  assert.ok(took < 2500, `the claim answers before the stores reach Stripe (${took} ms)`);
+  await until(async () => (await storeQty(shopA)) === 3, "stores 4");
   await settle("stores 4");
   let ms = stripeMock.subscriptions.get(basePaid.subscription.id);
   assert.deepEqual(ms.items.data.map((i) => [i.price.id, i.quantity]), [[P.soloMonthly, 1], [P.storem, 3]]);
   assert.equal(ms.last_proration_behavior, "create_prorations");
   assert.equal((await db.query(`SELECT store_quantity FROM subscriptions WHERE shop_id = $1`, [shopA])).rows[0].store_quantity, 3);
   await claim(installKey, { shopRef: "shopA", shopName: "A Repair", kind: "repair", program: "StitchBench", version: "1.8.0", sole: true, stores: 1 });
+  await until(async () => (await storeQty(shopA)) === 0, "stores 1");
   await settle("stores 1");
   ms = stripeMock.subscriptions.get(basePaid.subscription.id);
   assert.deepEqual(ms.items.data.map((i) => i.price.id), [P.soloMonthly], "no extra stores: the item goes");
   assert.equal((await db.query(`SELECT store_quantity FROM subscriptions WHERE shop_id = $1`, [shopA])).rows[0].store_quantity, 0);
   // A claim that says nothing about stores leaves them as they were; 2 adds the item back.
   await claim(installKey, { shopRef: "shopA", shopName: "A Repair", kind: "repair", program: "StitchBench", version: "1.8.0", sole: true, stores: 2 });
+  await until(async () => (await storeQty(shopA)) === 1, "stores 2");
   await settle("stores 2");
   await claim(installKey, { shopRef: "shopA", shopName: "A Repair", kind: "repair", program: "StitchBench", version: "1.8.0", sole: true });
   await settle("stores unsaid");
@@ -373,6 +421,13 @@ try {
   const adm = adminShops.shops.find((s) => s.id === shopA);
   assert.deepEqual(adm.stores, { reported: 2, extra: 1, billed: 1 }, "the admin page shows the stores");
   assert.ok(adm.addons.on.includes("vac"));
+  // A refund of the renewal's extra-store line only is the stores' money: the plan's period stands.
+  const storeLine = renewed.invoice.lines.data.find((l) => l.price?.id === P.storem);
+  assert.equal(storeLine?.amount, 2500, "the renewal invoice has a line for the extra store");
+  await mockApi("/v1/refunds", { charge: renewed.invoice.charge, amount: "2500" });
+  sub = (await db.query(`SELECT unpaid_since FROM subscriptions WHERE shop_id = $1`, [shopA])).rows[0];
+  assert.equal(sub.unpaid_since, null, "a refund of the store line doesn't take the period back");
+  assert.equal((await standing(installKey, "shopA")).standing, "active");
   console.log("extra stores: ok");
 
   // ----- 8. a top-up refunded before its Checkout credit lands: held, then taken back when it does -----
@@ -397,7 +452,84 @@ try {
   assert.equal(use.bonus, 0, "credited and taken back at once");
   assert.equal((await db.query(`SELECT calls_taken FROM assistant_topups WHERE stripe_session_id = $1`, [tu.sessionId])).rows[0].calls_taken, 5);
   assert.equal((await db.query(`SELECT count(*)::int AS n FROM assistant_topup_pending`)).rows[0].n, 0, "the pending row is used up");
+  // A refunded charge with no invoice that isn't a top-up's (its payment says nothing of one) isn't held as one.
+  const bareCharge = (await mockPost("/__charges", { amount: 700 })).charge;
+  await mockApi("/v1/refunds", { charge: bareCharge.id });
+  assert.equal((await db.query(`SELECT count(*)::int AS n FROM assistant_topup_pending`)).rows[0].n, 0, "another app's refund isn't parked as a top-up");
   console.log("a top-up refunded before its credit: ok");
+
+  // ----- 8b. keys owed: past_due, ended unpaid, more than five, the bundle switch with unpaid singles, a single paid
+  // under the bundle, a retried switch, a single on hold -----
+  const subOf = async (product) => (await db.query(`SELECT * FROM addon_subscriptions WHERE shop_id = $1 AND product = $2`, [shopA, product])).rows[0];
+  const asstSub = (await db.query(`SELECT stripe_subscription_id FROM assistant_subscriptions WHERE shop_id = $1`, [shopA])).rows[0].stripe_subscription_id;
+  // past_due: Stripe has moved the period on to the one not paid; the key from the paid one stays, nothing new is signed.
+  const sch = await buy(a, shopA, "scheduling");
+  st = await standing(installKey, "shopA");
+  const schKey = keyOfModule(st.moduleKeys, "shopA", "scheduling");
+  const asstKey = keyOfModule(st.moduleKeys, "shopA", "assistant");
+  assert.ok(schKey && asstKey, "a Scheduling key and an Assistant key");
+  for (const id of [sch.sub.id, asstSub]) {
+    const cur = stripeMock.subscriptions.get(id);
+    await mockPost(`/__subscriptions/${id}`, { status: "past_due", current_period_end: cur.current_period_end + 30 * 86400 });
+  }
+  assert.equal((await subOf("scheduling")).status, "past_due");
+  st = await standing(installKey, "shopA");
+  assert.deepEqual([keyOfModule(st.moduleKeys, "shopA", "scheduling")?.id, keyOfModule(st.moduleKeys, "shopA", "scheduling")?.u], [schKey.id, schKey.u], "past_due: the paid period's key, no key for the unpaid one");
+  assert.deepEqual([keyOfModule(st.moduleKeys, "shopA", "assistant")?.id, keyOfModule(st.moduleKeys, "shopA", "assistant")?.u], [asstKey.id, asstKey.u], "the Assistant the same");
+  // More than five keys owed are all sent, the paid ones first and the comp's last.
+  const mktSession = await ok(await page(a, `/shops/${shopA}/addons/checkout`, { addon: "marketing", interval: "monthly", acceptTerms: true }));
+  await buy(a, shopA, "appliance");
+  await buy(a, shopA, "maker");
+  await ok(await call(`/v1/admin/shops/${shopA}/comp`, { key: ADMIN, json: { until: "forever", addons: true } }));
+  st = await standing(installKey, "shopA");
+  assert.deepEqual(keysBy(st.moduleKeys, "shopA").map((p) => p.m.join("+")).sort(), ["appliance", "assistant", "maker", "scheduling", "vac", FIVE].sort(), "six keys: none cut off");
+  assert.equal(keysBy(st.moduleKeys, "shopA").at(-1).p, "c", "the comp's last");
+  // A key that ran out isn't sent (an Assistant key of 2020 stored as the newest, its subscription past_due).
+  const oldPayload = { v: 1, k: "hub1", id: "OLDKEY2020", s: "shopA", n: "A Repair", m: ["assistant"], p: "m", f: "2020-01-01", u: "2020-01-31", g: 14, t: new Date().toISOString() };
+  const oldBytes = Buffer.from(JSON.stringify(oldPayload), "utf8");
+  const oldKey = `SB1.${oldBytes.toString("base64url")}.${crypto.sign(null, oldBytes, privateKey).toString("base64url")}`;
+  await db.query(`INSERT INTO license_issues (key_id, shop_id, kid, plan, modules, first_day, last_day, grace_days, key, tier, founding) VALUES ($1, $2, 'hub1', 'm', '{assistant}', '2020-01-01', '2020-01-31', 14, $3, NULL, false)`, [oldPayload.id, shopA, oldKey]);
+  st = await standing(installKey, "shopA");
+  assert.ok(!keyOfModule(st.moduleKeys, "shopA", "assistant"), "a key past its grace isn't sent");
+  await db.query(`DELETE FROM license_issues WHERE key_id = $1`, [oldPayload.id]);
+  await ok(await call(`/v1/admin/shops/${shopA}/comp`, { key: ADMIN, json: { until: "" } }));
+  // Ended unpaid (dunning gave up): its key is revoked and not sent again.
+  for (const id of [sch.sub.id, asstSub]) await mockPost(`/__subscriptions/${id}/cancel`, {});
+  st = await standing(installKey, "shopA");
+  assert.deepEqual([keyOfModule(st.moduleKeys, "shopA", "scheduling")?.id ?? null, keyOfModule(st.moduleKeys, "shopA", "assistant")?.id ?? null], [null, null], "no key for a subscription that ended unpaid");
+  assert.ok(st.revokeKeyIds.includes(schKey.id) && st.revokeKeyIds.includes(asstKey.id), "both named for removal");
+  // The bundle over an unpaid single: it is cancelled without proration; the paid ones with it.
+  const appl = await subOf("appliance");
+  await mockPost(`/__subscriptions/${appl.stripe_subscription_id}`, { status: "past_due" });
+  const vacRow = await subOf("vac");
+  const makerRow = await subOf("maker");
+  const bundle2 = await buy(a, shopA, "bundle");
+  assert.deepEqual([stripeMock.subscriptions.get(appl.stripe_subscription_id).status, stripeMock.subscriptions.get(appl.stripe_subscription_id).cancel_prorate], ["canceled", false], "a past_due single: no credit for days never paid");
+  for (const r of [vacRow, makerRow]) assert.deepEqual([stripeMock.subscriptions.get(r.stripe_subscription_id).status, stripeMock.subscriptions.get(r.stripe_subscription_id).cancel_prorate], ["canceled", true], `${r.product} with proration`);
+  // A single's Checkout started before the bundle and paid after it: cancelled, refunded in full, the owner told.
+  const mktPaid = await mockPost(`/__pay/${mktSession.sessionId}`);
+  allDelivered(mktPaid, "marketing payment");
+  const mkt = stripeMock.subscriptions.get(mktPaid.subscription.id);
+  assert.equal(mkt.status, "canceled", "the single paid under the bundle is cancelled");
+  assert.equal(stripeMock.charges.get(mktPaid.invoice.charge).refunded, true, "and its charge refunded in full");
+  assert.match(hubLog, /Marketing refunded/, "the owner is told");
+  st = await standing(installKey, "shopA");
+  assert.deepEqual(modulesOfKeys(st.moduleKeys, "shopA"), [FIVE], "only the bundle's key");
+  // The bundle's switch handled again after a rollback (Stripe had cancelled vac already): vac's row and keys still follow.
+  await db.query(`UPDATE addon_subscriptions SET status = 'active' WHERE shop_id = $1 AND product = 'vac'`, [shopA]);
+  await db.query(`UPDATE license_issues SET revoked_at = NULL WHERE shop_id = $1 AND modules = '{vac}'`, [shopA]);
+  const bundleDone = stripeMock.events.filter((e) => e.type === "checkout.session.completed" && e.data.object.id === bundle2.co.sessionId).at(-1);
+  await db.query(`DELETE FROM stripe_events WHERE id = $1`, [bundleDone.id]);
+  allDelivered(await mockPost(`/__replay/${bundleDone.id}`), "the switch again");
+  assert.equal((await subOf("vac")).status, "canceled", "the row follows Stripe");
+  assert.equal((await db.query(`SELECT count(*)::int AS n FROM license_issues WHERE shop_id = $1 AND modules = '{vac}' AND revoked_at IS NULL`, [shopA])).rows[0].n, 0, "and its keys are revoked again");
+  // A single on hold (refunded in part while it runs): the bundle isn't sold until that is settled.
+  await mockApi("/v1/refunds", { charge: bundle2.paid.invoice.charge });
+  const appl2 = await buy(a, shopA, "appliance");
+  await mockApi("/v1/refunds", { charge: appl2.paid.invoice.charge, amount: "100" });
+  assert.equal((await subOf("appliance")).unpaid_since !== null, true);
+  await status(await page(a, `/shops/${shopA}/addons/checkout`, { addon: "bundle", interval: "monthly", acceptTerms: true }), 409, "the bundle while a single is on hold");
+  console.log("keys owed and the bundle's edges: ok");
 
   // ----- 9. a hub without the add-on prices offers none -----
   await stopHub();
@@ -410,6 +542,12 @@ try {
   const adm2 = await ok(await call("/v1/admin/accounts", { key: ADMIN }));
   assert.match(adm2.billing.addonProblem, /STRIPE_PRICE_MAKER_MONTHLY/);
   console.log("prices not set: ok");
+  // ----- 10. a price id given to a plan and an add-on: billing stays closed and says why -----
+  await stopHub();
+  await startHub({ ...ENV, STRIPE_PRICE_VAC_MONTHLY: P.soloMonthly });
+  const adm3 = await ok(await call("/v1/admin/accounts", { key: ADMIN }));
+  assert.match(adm3.billing.problem, new RegExp(`${P.soloMonthly} is in the plans and STRIPE_PRICE_VAC_MONTHLY`));
+  console.log("overlapping price ids: ok");
   console.log("all add-on billing checks passed");
 } catch (e) {
   console.error(e);
