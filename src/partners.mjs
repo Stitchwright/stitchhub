@@ -2,12 +2,16 @@
 // in for repair, orders parts and notions, holds the repair shop's stock on consignment). One side makes an invite code
 // and hands it over in person; the other side redeems it. After that each side sends messages that only the other side
 // receives. The hub doesn't act on them: machine intake, repair status, orders, consignment sales and statements are all
-// just typed JSON to it. It does not hide or sign them either: they are kept as plain JSON for a year (and are in
-// exports), so whoever runs the hub can read them, and the apps take the hub's word for who sent one. A sewing shop that
-// isn't a community member joins with the invite alone and can then use the partner routes and nothing else.
+// just typed JSON to it. It does not hide them: they are kept as plain JSON for a year (and are in exports), so whoever
+// runs the hub can read them. Since migration 023 a program signs each message with its company's Ed25519 key (see
+// partnersign.mjs); the hub checks the signature when it takes the message and marks it verified (the real-partnership
+// rule counts those), and the programs check it again against the key they pinned when the partnership was made, so a
+// message the hub made up is refused by them. A sewing shop that isn't a community member joins with the invite alone
+// and can then use the partner routes and nothing else.
 import crypto from "node:crypto";
 import { bodyLimit } from "hono/body-limit";
 import { one, q, tx, feedLimit } from "./db.mjs";
+import { fingerprint, isPublicKey, sigShape, verifyInvite, verifyMessage, verifyRedeem } from "./partnersign.mjs";
 
 const SIDES = new Set(["repair", "retail"]);
 const TYPE = /^[a-z]{2,20}(\.[a-z]{2,20})?$/;
@@ -17,6 +21,10 @@ const MAX_INSTALL_HOUR_BYTES = 1024 * 1024 * 1024; // and one install, all its s
 const MAX_LINK_HOUR_BYTES = 128 * 1024 * 1024; // and one side of one link (about 35 intakes with photos)
 const MAX_STORED = 2 * 1024 * 1024 * 1024; // what one install may have on the hub at once (a busy year of intakes with photos is under 1 GB)
 const MAX_LINK_STORED = 512 * 1024 * 1024; // what one side of one link may have on the hub at once
+// What a member and every partner-only install its codes brought on may have on the hub together. Each install has a
+// room of its own above, so without this a member's 50 brought-on installs could hold about 100 GB between them, enough
+// to fill the hub's disk. A hub admin can set it with PARTNER_MEMBER_STORED_MB.
+const MAX_MEMBER_STORED = (Number(process.env.PARTNER_MEMBER_STORED_MB) || 4096) * 1024 * 1024;
 const MAX_PAGE_BYTES = 16 * 1024 * 1024; // one answer to a message poll; the first message always fits
 const MAX_MINTED = 50; // partner-only installs one member's codes may bring onto the hub, all told
 // New work isn't taken on a partnership that has ended; updates, payments and terms still pass (the last statement).
@@ -47,8 +55,9 @@ function allowBytes(budgets, bytes) {
   return true;
 }
 
-// What each install, and each side of each link, has on the hub now (about: the stored size of its messages). Read
-// again every ten minutes so the sweep's deletions count; what is sent in between is added on.
+// What each install, each side of each link, and each member with the installs it brought on has on the hub now
+// (about: the stored size of its messages). Read again every ten minutes so the sweep's deletions count; what is sent
+// in between is added on.
 const stored = new Map();
 async function storedBytes(key, sql, params) {
   const s = stored.get(key);
@@ -68,6 +77,18 @@ const installStored = (installId) =>
   );
 const linkStored = (linkId, side) =>
   storedBytes(`l:${linkId}:${side}`, `SELECT coalesce(sum(pg_column_size(data)), 0)::bigint AS bytes FROM partner_messages WHERE link_id = $1 AND from_side = $2`, [linkId, side]);
+// A member and the installs that go back to it (installs.invited_by: the partner-only installs its codes, or its
+// partners' codes, brought on), all together. Each message counts once, on the side that sent it.
+const memberStored = (root) =>
+  storedBytes(
+    `r:${root}`,
+    `SELECT coalesce(sum(pg_column_size(m.data)), 0)::bigint AS bytes
+     FROM installs i JOIN partner_links l ON l.repair_install_id = i.id OR l.retail_install_id = i.id
+     JOIN partner_messages m ON m.link_id = l.id
+       AND ((l.repair_install_id = i.id AND m.from_side = 'repair') OR (l.retail_install_id = i.id AND m.from_side = 'retail'))
+     WHERE i.id = $1 OR i.invited_by = $1`,
+    [root],
+  );
 
 // Hours that are over are forgotten (keys include shop refs, which the install chooses).
 setInterval(() => {
@@ -89,8 +110,8 @@ function linkOut(l) {
     id: l.id,
     status: l.status,
     terms: l.terms,
-    repair: { installId: l.repair_install_id, shopRef: l.repair_shop_ref, name: l.repair_name },
-    retail: { installId: l.retail_install_id, shopRef: l.retail_shop_ref, name: l.retail_name },
+    repair: { installId: l.repair_install_id, shopRef: l.repair_shop_ref, name: l.repair_name, publicKey: l.repair_key ?? null, proof: l.repair_proof ?? null },
+    retail: { installId: l.retail_install_id, shopRef: l.retail_shop_ref, name: l.retail_name, publicKey: l.retail_key ?? null, proof: l.retail_proof ?? null },
     createdAt: l.created_at,
     endedAt: l.ended_at,
   };
@@ -113,13 +134,35 @@ export function registerPartners({ app, member, fail, newId, allow, clientIp, sh
     return { shopRef, shopName };
   }
 
-  async function redeem(client, install, code, shopRef, shopName) {
+  // A company's public key and its proof (the signature over the invite or the redeem), as sent: both or neither. A key
+  // that isn't an Ed25519 key, or a proof that doesn't verify, is refused (an older program sends neither).
+  function keyOf(body) {
+    const publicKey = body.publicKey == null ? null : String(body.publicKey).slice(0, 300);
+    const proof = body.proof && typeof body.proof === "object" && !Array.isArray(body.proof) ? { issuedAt: String(body.proof.issuedAt ?? "").slice(0, 40), sig: String(body.proof.sig ?? "").slice(0, 200) } : null;
+    return { publicKey, proof: publicKey == null ? null : proof };
+  }
+  function keyFields(body, check) {
+    const { publicKey, proof } = keyOf(body);
+    if (publicKey == null) return { publicKey: null, proof: null };
+    if (!isPublicKey(publicKey) || !check(publicKey, proof)) throw fail(400, "The signature with the public key doesn't check out.");
+    return { publicKey, proof };
+  }
+
+  async function redeem(client, install, code, shopRef, shopName, given = { publicKey: null, proof: null }) {
     const inv = (await client.query(`SELECT * FROM partner_invites WHERE code_hash = $1 FOR UPDATE`, [sha(normCode(code))])).rows[0];
     if (!inv) throw fail(404, "That partner code isn't right. Check it with the shop that gave it to you.");
     if (inv.used_at) throw fail(409, "That partner code was already used. Ask for a new one.");
     if (inv.expires_at < new Date()) throw fail(410, "That partner code has expired. Ask for a new one.");
     if (inv.install_id === install.id && inv.shop_ref === shopRef) throw fail(400, "That's your own partner code. Give it to the other shop.");
-    const mine = inv.side === "repair" ? "retail" : "repair";
+    const mySide = inv.side === "repair" ? "retail" : "repair";
+    // The redeemer's key comes with a proof made for this code (so it can't be a key the hub saw somewhere else).
+    let mine = { publicKey: null, proof: null };
+    if (given.publicKey != null) {
+      if (!isPublicKey(given.publicKey) || !verifyRedeem(given.publicKey, { codeHash: inv.code_hash, shopRef }, given.proof)) {
+        throw fail(400, "The signature with the public key doesn't check out.");
+      }
+      mine = given;
+    }
     const repair = inv.side === "repair" ? { i: inv.install_id, r: inv.shop_ref, n: inv.shop_name } : { i: install.id, r: shopRef, n: shopName };
     const retail = inv.side === "retail" ? { i: inv.install_id, r: inv.shop_ref, n: inv.shop_name } : { i: install.id, r: shopRef, n: shopName };
     // Linking the same two shops again picks up the old link instead of making a second one. Redeems for the same
@@ -132,19 +175,25 @@ export function registerPartners({ app, member, fail, newId, allow, clientIp, sh
         [repair.i, repair.r, retail.i, retail.r],
       )
     ).rows[0];
+    // The keys and proofs of this pair are the two the invite and the redeem brought (none when a side's program is
+    // older): a new code is how a company that lost its key is trusted again.
+    const keys = { repair: inv.side === "repair" ? { publicKey: inv.pub_key, proof: inv.invite_sig } : mine, retail: inv.side === "retail" ? { publicKey: inv.pub_key, proof: inv.invite_sig } : mine };
+    const kv = [keys.repair.publicKey ?? null, keys.repair.proof ? JSON.stringify(keys.repair.proof) : null, keys.retail.publicKey ?? null, keys.retail.proof ? JSON.stringify(keys.retail.proof) : null];
     if (link) {
       link = (
         await client.query(
-          `UPDATE partner_links SET status = 'ACTIVE', ended_at = NULL, terms = $2, repair_name = $3, retail_name = $4 WHERE id = $1 RETURNING *`,
-          [link.id, inv.terms, repair.n, retail.n],
+          `UPDATE partner_links SET status = 'ACTIVE', ended_at = NULL, terms = $2, repair_name = $3, retail_name = $4,
+             repair_key = $5, repair_proof = $6, retail_key = $7, retail_proof = $8 WHERE id = $1 RETURNING *`,
+          [link.id, inv.terms, repair.n, retail.n, ...kv],
         )
       ).rows[0];
     } else {
       link = (
         await client.query(
-          `INSERT INTO partner_links (id, repair_install_id, repair_shop_ref, repair_name, retail_install_id, retail_shop_ref, retail_name, terms)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-          [newId(), repair.i, repair.r, repair.n, retail.i, retail.r, retail.n, inv.terms],
+          `INSERT INTO partner_links (id, repair_install_id, repair_shop_ref, repair_name, retail_install_id, retail_shop_ref, retail_name, terms,
+             repair_key, repair_proof, retail_key, retail_proof)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
+          [newId(), repair.i, repair.r, repair.n, retail.i, retail.r, retail.n, inv.terms, ...kv],
         )
       ).rows[0];
     }
@@ -155,7 +204,7 @@ export function registerPartners({ app, member, fail, newId, allow, clientIp, sh
       link.id,
       JSON.stringify(linkOut(link)),
     ]);
-    return { link: linkOut(link), side: mine };
+    return { link: linkOut(link), side: mySide };
   }
 
   async function myLink(c, id, shopRef) {
@@ -179,9 +228,10 @@ export function registerPartners({ app, member, fail, newId, allow, clientIp, sh
     if (!SIDES.has(side)) throw fail(400, "side is repair or retail.");
     const terms = body.terms && typeof body.terms === "object" && !Array.isArray(body.terms) ? body.terms : {};
     if (JSON.stringify(terms).length > 20_000) throw fail(400, "The terms are too long.");
+    const { publicKey, proof } = keyFields(body, (pub, pr) => verifyInvite(pub, { side, shopRef, terms }, pr));
     const code = newCode();
     const expiresAt = new Date(Date.now() + INVITE_DAYS * 86400_000);
-    await q(`INSERT INTO partner_invites (code_hash, install_id, shop_ref, shop_name, side, terms, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7)`, [
+    await q(`INSERT INTO partner_invites (code_hash, install_id, shop_ref, shop_name, side, terms, expires_at, pub_key, invite_sig) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, [
       sha(normCode(code)),
       c.get("install").id,
       shopRef,
@@ -189,8 +239,10 @@ export function registerPartners({ app, member, fail, newId, allow, clientIp, sh
       side,
       JSON.stringify(terms),
       expiresAt,
+      publicKey,
+      proof ? JSON.stringify(proof) : null,
     ]);
-    return c.json({ code, expiresAt, hubName });
+    return c.json({ code, expiresAt, hubName, fingerprint: publicKey ? fingerprint(publicKey) : null });
   });
 
   // An install that's already on the hub redeems a code for one of its shops.
@@ -198,7 +250,7 @@ export function registerPartners({ app, member, fail, newId, allow, clientIp, sh
     const body = await c.req.json().catch(() => ({}));
     const { shopRef, shopName } = shopFields(body);
     if (!allowShop(c, "predeem", shopRef, 20, 200)) throw fail(429, "Too many tries. Wait an hour.");
-    return c.json(await tx((client) => redeem(client, c.get("install"), body.code, shopRef, shopName)));
+    return c.json(await tx((client) => redeem(client, c.get("install"), body.code, shopRef, shopName, keyOf(body))));
   });
 
   // A sewing shop that isn't a community member: the partner code alone gets it an install key for the partner routes.
@@ -222,7 +274,7 @@ export function registerPartners({ app, member, fail, newId, allow, clientIp, sh
       await tx(async (client) => {
         const { id, key } = await createInstall(client, shopName, str(body.contact, 200), "partner");
         await client.query(`UPDATE installs SET invited_by = $2 WHERE id = $1`, [id, inv.root]);
-        const out = await redeem(client, { id }, body.code, shopRef, shopName);
+        const out = await redeem(client, { id }, body.code, shopRef, shopName, keyOf(body));
         return { installId: id, installKey: key, hubName, scope: "partner", ...out };
       }),
     );
@@ -258,6 +310,28 @@ export function registerPartners({ app, member, fail, newId, allow, clientIp, sh
     if (link.status !== "ACTIVE" && NEW_WORK.has(type)) throw fail(409, "That partnership has ended: it takes no new work, only updates and payments.");
     const data = JSON.stringify(body.data);
     if (data === undefined || data.length > MAX_MESSAGE) throw fail(400, "Send data (4 MB at most).");
+    // Signed by the sender's company key (a program from before this sends no signature). A signature is checked against
+    // the key this side of the partnership has on file (from the invite or the redeem); a side with none yet takes the key
+    // of its first valid signature. Once a side has a key it takes signed messages only (an unsigned one would be a
+    // downgrade), and a message signed with another key, or wrongly, is refused for good. `verified` is what the
+    // real-partnership rule counts.
+    let sig = null;
+    let verified = false;
+    if (body.sig != null) {
+      sig = sigShape(body.sig);
+      if (!sig || !isPublicKey(sig.pub)) throw fail(400, "sig is { v: 1, pub, seq, ts, sig }.");
+      const known = link[`${side}_key`];
+      if (known && known !== sig.pub) throw fail(400, "That message is signed with a key this partnership doesn't know for your shop. A new partner code makes a new key trusted.");
+      if (!verifyMessage(sig, { linkId: link.id, fromSide: side, type, id, data: body.data })) throw fail(400, "The message's signature doesn't check out.");
+      if (!known) {
+        await q(`UPDATE partner_links SET ${side}_key = $2 WHERE id = $1 AND ${side}_key IS NULL`, [link.id, sig.pub]);
+        const now = await one(`SELECT ${side}_key AS k FROM partner_links WHERE id = $1`, [link.id]);
+        if (now.k !== sig.pub) throw fail(400, "That message is signed with a key this partnership doesn't know for your shop. A new partner code makes a new key trusted.");
+      }
+      verified = true;
+    } else if (link[`${side}_key`]) {
+      throw fail(400, "This partnership takes signed messages from your shop only: update StitchBench to send them.");
+    }
     // Room as well as count: an hour's budget, and a ceiling on what the install and the link have on the hub
     // altogether. These answers make StitchBench try again later rather than give the message up.
     const bytes = Buffer.byteLength(data);
@@ -272,21 +346,32 @@ export function registerPartners({ app, member, fail, newId, allow, clientIp, sh
     if (kept.bytes + bytes > MAX_STORED || keptLink.bytes + bytes > MAX_LINK_STORED) {
       throw fail(507, "This shop's partner messages fill its room on the hub. Old ones clear after a year; ask the hub admin if you need room sooner.");
     }
+    // And the room this install shares with the member that brought it on (or, for a member, with the installs its
+    // codes brought on).
+    const root = (await one(`SELECT coalesce(invited_by, id) AS root FROM installs WHERE id = $1`, [installId]))?.root ?? installId;
+    const keptMember = await memberStored(root);
+    if (keptMember.bytes + bytes > MAX_MEMBER_STORED) {
+      throw fail(
+        507,
+        "The partner messages of this shop and the partner shops that came onto the hub through the same member fill the room they share on the hub. Old ones clear after a year; ask the hub admin if you need room sooner.",
+      );
+    }
     const row = await one(
-      `INSERT INTO partner_messages (id, link_id, from_side, type, data, bytes) VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO partner_messages (id, link_id, from_side, type, data, bytes, sig, verified) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        ON CONFLICT (link_id, from_side, id) DO NOTHING RETURNING seq`,
-      [id, link.id, side, type, data, bytes],
+      [id, link.id, side, type, data, bytes, sig ? JSON.stringify(sig) : null, verified],
     );
     if (row) {
       kept.bytes += bytes;
       keptLink.bytes += bytes;
+      keptMember.bytes += bytes;
     }
     return c.json({ ok: true, duplicate: !row, seq: row ? String(row.seq) : null });
   });
 
   // The rows of the feed for the messages `seqs`, as this install's shops get them: a hub message goes to both sides,
-  // and when both shops of a link live in this same install each gets its own copy.
-  async function messagesFor(installId, seqs) {
+  // and when both shops of a link live in this same install each gets its own copy. `shopRef`: only that shop's copies.
+  async function messagesFor(installId, seqs, shopRef = null) {
     if (!seqs.length) return [];
     const rows = (
       await q(
@@ -298,7 +383,7 @@ export function registerPartners({ app, member, fail, newId, allow, clientIp, sh
         [installId, seqs],
       )
     ).rows;
-    return rows.map((m) => ({
+    return rows.filter((m) => shopRef == null || m.to_shop_ref === shopRef).map((m) => ({
       seq: String(m.seq),
       id: m.id,
       linkId: m.link_id,
@@ -307,6 +392,7 @@ export function registerPartners({ app, member, fail, newId, allow, clientIp, sh
       toShopRef: m.to_shop_ref,
       type: m.type,
       data: m.data,
+      sig: m.sig ?? null,
       createdAt: m.created_at,
     }));
   }
@@ -332,10 +418,12 @@ export function registerPartners({ app, member, fail, newId, allow, clientIp, sh
   });
 
   // Messages for this install's shops after `since`, oldest first. A hub message goes to both sides; when both shops
-  // of a link live in this same install each gets its own copy.
+  // of a link live in this same install each gets its own copy. `shopRef`: one shop's messages only (a company that
+  // just moved here pulls its backlog once from the old install's place in the feed: src/moves.mjs).
   member.get("/partners/messages", async (c) => {
     const id = c.get("install").id;
     const since = /^\d+$/.test(c.req.query("since") ?? "") ? c.req.query("since") : "0";
+    const shopRef = str(c.req.query("shopRef"), 64);
     const limit = Math.min(Math.max(Number(c.req.query("limit")) || 200, 1), 500);
     // A page is cut by size as well as by count. Messages can be 4 MB each: a page of hundreds would be more JSON
     // than the hub can build or the shop can take in before it gives up, and it would stay stuck on that page for
@@ -344,16 +432,18 @@ export function registerPartners({ app, member, fail, newId, allow, clientIp, sh
     const page = (
       await q(
         `SELECT m.seq, coalesce(m.bytes, octet_length(m.data::text)) AS bytes FROM partner_messages m JOIN partner_links l ON l.id = m.link_id
-         WHERE m.seq > $2 AND m.seq <= $4 AND ((l.repair_install_id = $1 AND m.from_side <> 'repair') OR (l.retail_install_id = $1 AND m.from_side <> 'retail'))
+         WHERE m.seq > $2 AND m.seq <= $4
+           AND ((l.repair_install_id = $1 AND m.from_side <> 'repair' AND ($5::text IS NULL OR l.repair_shop_ref = $5))
+             OR (l.retail_install_id = $1 AND m.from_side <> 'retail' AND ($5::text IS NULL OR l.retail_shop_ref = $5)))
          ORDER BY m.seq LIMIT $3`,
-        [id, since, limit, (await feedLimit()).partner],
+        [id, since, limit, (await feedLimit()).partner, shopRef],
       )
     ).rows;
     let n = 0;
     for (let bytes = 0; n < page.length && (n === 0 || bytes + page[n].bytes <= MAX_PAGE_BYTES); n++) bytes += page[n].bytes;
     const seqs = page.slice(0, n).map((r) => r.seq);
     const next = seqs.length ? String(seqs[seqs.length - 1]) : since;
-    return c.json({ messages: await messagesFor(id, seqs), next, more: page.length >= limit || n < page.length });
+    return c.json({ messages: await messagesFor(id, seqs, shopRef), next, more: page.length >= limit || n < page.length });
   });
 
   // Either side can end the partnership; both keep their records, and messages can still pass for the final statement.
