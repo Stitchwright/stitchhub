@@ -111,7 +111,9 @@ export async function syncAssistantSub(client, s) {
       `INSERT INTO assistant_subscriptions (shop_id, stripe_subscription_id, stripe_customer_id, stripe_created, plan, status, current_period_end, cancel_at_period_end, price_id)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        ON CONFLICT (shop_id) DO UPDATE SET stripe_subscription_id = EXCLUDED.stripe_subscription_id, stripe_customer_id = EXCLUDED.stripe_customer_id, stripe_created = EXCLUDED.stripe_created,
-         plan = EXCLUDED.plan, status = EXCLUDED.status, current_period_end = EXCLUDED.current_period_end, cancel_at_period_end = EXCLUDED.cancel_at_period_end, price_id = EXCLUDED.price_id, updated_at = now()
+         plan = EXCLUDED.plan, status = EXCLUDED.status, current_period_end = EXCLUDED.current_period_end, cancel_at_period_end = EXCLUDED.cancel_at_period_end, price_id = EXCLUDED.price_id,
+         unpaid_since = CASE WHEN assistant_subscriptions.stripe_subscription_id = EXCLUDED.stripe_subscription_id THEN assistant_subscriptions.unpaid_since END,
+         unpaid_charge_id = CASE WHEN assistant_subscriptions.stripe_subscription_id = EXCLUDED.stripe_subscription_id THEN assistant_subscriptions.unpaid_charge_id END, updated_at = now()
        RETURNING *`,
       [shopId, s.id, customer ?? null, s.created ?? null, plan, s.status, periodEnd, Boolean(s.cancel_at_period_end), priceId],
     )
@@ -122,14 +124,15 @@ export async function syncAssistantSub(client, s) {
 
 /**
  * The shop's Assistant standing for the account page: "active" (paid through a day), "ending" (cancelled but paid through
- * a day), "past_due" (the last payment failed), "ended", or "none".
+ * a day), "past_due" (the last payment failed), "ended" (also: its payment was refunded or charged back), or "none".
  */
 export async function assistantStanding(shopId, t = day(new Date())) {
   const sub = await one(`SELECT * FROM assistant_subscriptions WHERE shop_id = $1`, [shopId]);
   if (!sub) return { status: "none", sub: null, paidThrough: null };
   const paidThrough = sub.current_period_end ? day(sub.current_period_end) : null;
   let status = "ended";
-  if (RUNNING.has(sub.status) && paidThrough) status = sub.status === "past_due" ? "past_due" : sub.cancel_at_period_end ? "ending" : "active";
+  if (sub.unpaid_since) status = "ended";
+  else if (RUNNING.has(sub.status) && paidThrough) status = sub.status === "past_due" ? "past_due" : sub.cancel_at_period_end ? "ending" : "active";
   else if (sub.status === "canceled" && paidThrough && paidThrough >= t) status = "ending";
   else if (ENDED.has(sub.status) || sub.status === "paused") status = "ended";
   else if (!paidThrough) status = "none";
@@ -171,6 +174,54 @@ export async function assistantKeysFor(shop) {
   return { keys: [made.key] };
 }
 
+/** Every Assistant key of the shop is revoked: the proxy refuses it at once (src/assistant.mjs keyHolds) and the program drops it at its next sync. */
+export const revokeAssistantKeys = (client, shopId) =>
+  client.query(`UPDATE license_issues SET revoked_at = now() WHERE shop_id = $1 AND revoked_at IS NULL AND 'assistant' = ANY(modules)`, [shopId]);
+
+/**
+ * A refund or chargeback of an Assistant subscription's period charge (billing.mjs tookBack): the period is taken back, its
+ * keys revoked, and no new key is signed until a later payment stands (billing.mjs invoice.paid clears it) or the shop
+ * subscribes again. Returns the row, or null when the hub holds no Assistant subscription with that id.
+ */
+export async function assistantTookBack(client, subId, chargeId) {
+  const row = (
+    await client.query(
+      `UPDATE assistant_subscriptions SET unpaid_since = coalesce(unpaid_since, now()), unpaid_charge_id = CASE WHEN unpaid_since IS NULL THEN $2 ELSE unpaid_charge_id END, updated_at = now()
+       WHERE stripe_subscription_id = $1 RETURNING shop_id, unpaid_charge_id`,
+      [subId, chargeId],
+    )
+  ).rows[0];
+  if (!row) return null;
+  await revokeAssistantKeys(client, row.shop_id);
+  console.log(`billing: charge ${chargeId} of Assistant subscription ${subId} was taken back; shop ${row.shop_id}'s Assistant keys are revoked`);
+  return row;
+}
+
+/** The taken-back period counts again (a later payment stands, or a chargeback was won). */
+export const assistantPaidAgain = (client, subId) =>
+  client.query(`UPDATE assistant_subscriptions SET unpaid_since = NULL, unpaid_charge_id = NULL, updated_at = now() WHERE stripe_subscription_id = $1 AND unpaid_since IS NOT NULL`, [subId]);
+
+/**
+ * A refund or chargeback of a top-up's payment: `share` (0 to 1) of its calls is taken back from the month it was added to;
+ * a smaller share than before (a chargeback won) gives the difference back. Returns false when the charge isn't a top-up's.
+ */
+export async function topupTookBack(client, ch, share) {
+  const pi = typeof ch.payment_intent === "string" ? ch.payment_intent : ch.payment_intent?.id;
+  if (!pi) return false;
+  const t = (
+    await client.query(`SELECT t.stripe_session_id, t.calls, t.calls_taken, t.month, s.id AS shop_id, s.install_id, s.shop_ref FROM assistant_topups t JOIN shops s ON s.id = t.shop_id WHERE t.stripe_payment_intent = $1 FOR UPDATE OF t`, [pi])
+  ).rows[0];
+  if (!t) return false;
+  const want = Math.min(t.calls, Math.max(0, Math.ceil(t.calls * share)));
+  const more = want - t.calls_taken;
+  if (more) {
+    await client.query(`UPDATE assistant_usage SET bonus = greatest(0, bonus - $4), updated_at = now() WHERE install_id = $1 AND shop_ref = $2 AND month = $3`, [t.install_id, t.shop_ref, t.month, more]);
+    await client.query(`UPDATE assistant_topups SET calls_taken = $2 WHERE stripe_session_id = $1`, [t.stripe_session_id, want]);
+    console.log(`billing: ${more > 0 ? `${more} Assistant calls taken back from` : `${-more} Assistant calls given back to`} shop ${t.shop_id} for ${t.month} (top-up ${t.stripe_session_id}, charge ${ch.id})`);
+  }
+  return true;
+}
+
 /**
  * A completed Checkout for a top-up (mode payment, paid): the company's month gets TOPUP_CALLS more, once. The session is
  * re-read from Stripe by the caller. Returns true when something was credited.
@@ -186,7 +237,8 @@ export async function creditTopupSession(client, session) {
   const run = (sql, params) => client.query(sql, params);
   // The month is worked out first so the record names it; the primary key makes a second delivery a no-op.
   const credited = await creditTopup(run, shop.install_id, shop.shop_ref, 0);
-  const made = await client.query(`INSERT INTO assistant_topups (stripe_session_id, shop_id, calls, month) VALUES ($1, $2, $3, $4) ON CONFLICT (stripe_session_id) DO NOTHING`, [session.id, shop.id, TOPUP_CALLS, credited.month]);
+  const pi = typeof session.payment_intent === "string" ? session.payment_intent : (session.payment_intent?.id ?? null);
+  const made = await client.query(`INSERT INTO assistant_topups (stripe_session_id, shop_id, calls, month, stripe_payment_intent) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (stripe_session_id) DO NOTHING`, [session.id, shop.id, TOPUP_CALLS, credited.month, pi]);
   if (!made.rowCount) return false;
   await creditTopup(run, shop.install_id, shop.shop_ref, TOPUP_CALLS);
   console.log(`billing: ${TOPUP_CALLS} Assistant calls added to shop ${shop.id} for ${credited.month} (session ${session.id})`);

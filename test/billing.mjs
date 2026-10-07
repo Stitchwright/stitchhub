@@ -520,6 +520,11 @@ try {
   assert.deepEqual([kShop.p, kShop.l, kShop.u], ["m", "shop", k.u], "the same period, the other plan");
   assert.notEqual(kShop.id, k.id, "a plan switch signs a new key");
   assert.ok(mock.webhooks.filter((w) => w.type === "customer.subscription.updated").every((w) => w.status === 200), "the switch's webhook was taken");
+  // A full refund of the switch's difference (not a period's charge) leaves the period and the subscription alone.
+  assert.equal((await mockApi("/v1/refunds", { charge: upInvoice.charge })).object, "refund");
+  assert.equal(mock.subscriptions.get(subP).status, "active", "refunding a plan switch's difference doesn't cancel the subscription");
+  assert.equal((await standing(keyP, "shopP")).standing, "active", "nor take the period back");
+  assert.match(hubLog, new RegExp(`charge ${upInvoice.charge} .*subscription_update.* the period stands`));
   const swDown = await ok(await page(pj, `/shops/${shopP}/switch`, { plan: "solo" }));
   await settle("switch to Solo");
   assert.deepEqual([swDown.pending, swDown.plan], [false, "solo"]);

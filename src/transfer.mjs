@@ -54,10 +54,10 @@ export const TABLES = [
   {
     t: "assistant_subscription",
     table: "assistant_subscriptions",
-    cols: ["shop_id", "stripe_subscription_id", "stripe_customer_id", "stripe_created", "plan", "status", "current_period_end", "cancel_at_period_end", "price_id", "created_at", "updated_at"],
+    cols: ["shop_id", "stripe_subscription_id", "stripe_customer_id", "stripe_created", "plan", "status", "current_period_end", "cancel_at_period_end", "price_id", "created_at", "updated_at", "unpaid_since", "unpaid_charge_id"],
     key: "shop_id",
   },
-  { t: "assistant_topup", table: "assistant_topups", cols: ["stripe_session_id", "shop_id", "calls", "month", "created_at"], key: "stripe_session_id" },
+  { t: "assistant_topup", table: "assistant_topups", cols: ["stripe_session_id", "shop_id", "calls", "month", "created_at", "stripe_payment_intent", "calls_taken"], key: "stripe_session_id" },
   { t: "stripe_event", table: "stripe_events", cols: ["id", "type", "received_at"] },
   { t: "license_issue", table: "license_issues", cols: ["key_id", "shop_id", "kid", "plan", "modules", "first_day", "last_day", "grace_days", "key", "issued_at", "revoked_at", "tier", "founding"], key: "key_id" },
   // Off-site backups (src/backups.mjs): the index of what each company has in the bucket (the bytes stay there).
@@ -170,6 +170,7 @@ export const TABLES = [
     key: "install_id || '|' || shop_ref || '|' || month",
     conflict: ["install_id", "shop_ref", "month"],
   },
+  { t: "assistant_key_bind", table: "assistant_key_binds", cols: ["kid", "key_id", "install_id", "shop_ref", "created_at"], key: "kid || '|' || key_id", conflict: ["kid", "key_id"] },
   { t: "assistant_call", table: "assistant_calls", cols: ["id", "install_id", "shop_ref", "feature", "class", "model", "free", "input_tokens", "cache_tokens", "output_tokens", "cost_millicents", "ms", "error", "created_at"] },
   // The 30-day grace of the real-partnership rule (billing.mjs): after the links it hangs on.
   { t: "waiver_grace", table: "waiver_grace", cols: ["link_id", "since", "reason", "created_at"], key: "link_id" },
