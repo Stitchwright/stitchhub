@@ -222,7 +222,18 @@ export async function topupTookBack(client, ch, share) {
   const t = (
     await client.query(`SELECT t.stripe_session_id, t.calls, t.calls_taken, t.month, s.id AS shop_id, s.install_id, s.shop_ref FROM assistant_topups t JOIN shops s ON s.id = t.shop_id WHERE t.stripe_payment_intent = $1 FOR UPDATE OF t`, [pi])
   ).rows[0];
-  if (!t) return false;
+  if (!t) {
+    // Refunded (or charged back) before its checkout.session.completed was handled: the share waits for the credit
+    // (creditTopupSession applies it when the calls land). The hub sells no other one-time payment, so a charge with a
+    // payment and no invoice is a top-up's; a pending row that never meets a credit takes nothing.
+    await client.query(
+      `INSERT INTO assistant_topup_pending (stripe_payment_intent, share, charge_id) VALUES ($1, $2, $3)
+       ON CONFLICT (stripe_payment_intent) DO UPDATE SET share = EXCLUDED.share, charge_id = EXCLUDED.charge_id`,
+      [pi, share, ch.id ?? null],
+    );
+    console.log(`billing: charge ${ch.id} (payment ${pi}) was taken back before its top-up was credited; ${Math.round(share * 100)}% of the calls come off when it is`);
+    return true;
+  }
   const want = Math.min(t.calls, Math.max(0, Math.ceil(t.calls * share - 1e-9))); // less a hair: 0.1 x 300 is 30.000000000000004
   const more = want - t.calls_taken;
   if (more) {
@@ -253,5 +264,8 @@ export async function creditTopupSession(client, session) {
   if (!made.rowCount) return false;
   await creditTopup(run, shop.install_id, shop.shop_ref, TOPUP_CALLS);
   console.log(`billing: ${TOPUP_CALLS} Assistant calls added to shop ${shop.id} for ${credited.month} (session ${session.id})`);
+  // A refund or chargeback that came first: its share is taken back now.
+  const pending = pi ? (await client.query(`DELETE FROM assistant_topup_pending WHERE stripe_payment_intent = $1 RETURNING share, charge_id`, [pi])).rows[0] : null;
+  if (pending) await topupTookBack(client, { id: pending.charge_id, payment_intent: pi }, Number(pending.share));
   return true;
 }

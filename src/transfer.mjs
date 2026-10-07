@@ -19,7 +19,7 @@ export const TABLES = [
   {
     t: "shop",
     table: "shops",
-    cols: ["id", "install_id", "shop_ref", "name", "kind", "program", "version", "account_id", "comp_until", "comp_note", "lapsed_at", "reset_opt_in", "created_at", "last_seen_at"],
+    cols: ["id", "install_id", "shop_ref", "name", "kind", "program", "version", "account_id", "comp_until", "comp_note", "lapsed_at", "reset_opt_in", "created_at", "last_seen_at", "comp_addons", "stores"],
   },
   // Companies moving between installs: the move tokens out (hashed) and the record of each move, so a company's old
   // install still hears where it went after the hub itself moved (src/moves.mjs).
@@ -46,7 +46,7 @@ export const TABLES = [
   {
     t: "subscription",
     table: "subscriptions",
-    cols: ["shop_id", "stripe_subscription_id", "stripe_customer_id", "plan", "status", "current_period_end", "cancel_at_period_end", "unpaid_since", "disputed_at", "mailed", "created_at", "updated_at", "tier", "founding", "price_id", "unpaid_charge_id", "refunded_in_trial", "inquiry_at", "inquiry_dispute_ids", "chargeback_dispute_ids"],
+    cols: ["shop_id", "stripe_subscription_id", "stripe_customer_id", "plan", "status", "current_period_end", "cancel_at_period_end", "unpaid_since", "disputed_at", "mailed", "created_at", "updated_at", "tier", "founding", "price_id", "unpaid_charge_id", "refunded_in_trial", "inquiry_at", "inquiry_dispute_ids", "chargeback_dispute_ids", "store_quantity", "store_item_id"],
     key: "shop_id",
     json: ["mailed"],
   },
@@ -56,6 +56,16 @@ export const TABLES = [
     table: "assistant_subscriptions",
     cols: ["shop_id", "stripe_subscription_id", "stripe_customer_id", "stripe_created", "plan", "status", "current_period_end", "cancel_at_period_end", "price_id", "created_at", "updated_at", "unpaid_since", "unpaid_charge_id", "chargeback_dispute_ids"],
     key: "shop_id",
+  },
+  // A top-up refunded before its credit landed: the share waiting for it.
+  { t: "assistant_topup_pending", table: "assistant_topup_pending", cols: ["stripe_payment_intent", "share", "charge_id", "created_at"], key: "stripe_payment_intent" },
+  // The trade add-ons' own subscriptions per shop and product (src/addons.mjs).
+  {
+    t: "addon_subscription",
+    table: "addon_subscriptions",
+    cols: ["shop_id", "product", "stripe_subscription_id", "stripe_customer_id", "stripe_created", "plan", "status", "current_period_end", "cancel_at_period_end", "price_id", "unpaid_since", "unpaid_charge_id", "chargeback_dispute_ids", "created_at", "updated_at"],
+    key: "shop_id || '|' || product",
+    conflict: ["shop_id", "product"],
   },
   { t: "assistant_topup", table: "assistant_topups", cols: ["stripe_session_id", "shop_id", "calls", "month", "created_at", "stripe_payment_intent", "calls_taken"], key: "stripe_session_id" },
   { t: "stripe_event", table: "stripe_events", cols: ["id", "type", "received_at"] },

@@ -189,6 +189,9 @@ export async function startStripeMock(o = {}) {
     while (inflight.size) await Promise.allSettled([...inflight]);
   }
 
+  /** A period's amount: each item's price times its quantity (the plan, and an extra-stores quantity beside it). */
+  const periodAmount = (sub) => sub.items.data.reduce((n, it) => n + it.price.unit_amount * Number(it.quantity ?? 1), 0);
+
   function charge(sub, inv, amount) {
     const ch = { id: `ch_${hex(12)}`, object: "charge", amount, amount_refunded: 0, refunded: false, customer: sub.customer, invoice: inv.id, payment_intent: `pi_${hex(12)}`, status: "succeeded", created: now() };
     charges.set(ch.id, ch);
@@ -201,7 +204,7 @@ export async function startStripeMock(o = {}) {
    * A subscription's invoice: the price's amount (0 for the first invoice of a trial: nothing is charged). Its lines as
    * Stripe's: one for the period (proration false), or for a switch's difference only proration lines; `lines` overrides.
    */
-  function invoiceFor(sub, paid, reason = "subscription_cycle", amount = sub.items.data[0].price.unit_amount, lines = null) {
+  function invoiceFor(sub, paid, reason = "subscription_cycle", amount = periodAmount(sub), lines = null) {
     const inv = {
       id: `in_${hex(12)}`,
       object: "invoice",
@@ -259,13 +262,13 @@ export async function startStripeMock(o = {}) {
       trial_end: trialEnd,
       current_period_start: start,
       current_period_end: trialEnd ?? addInterval(start, price.recurring.interval),
-      items: { object: "list", data: [{ id: `si_${hex(8)}`, object: "subscription_item", price, quantity: 1 }] },
+      items: { object: "list", data: s.line_items.data.map((l) => ({ id: `si_${hex(8)}`, object: "subscription_item", price: priceOf(l.price.id), quantity: Number(l.quantity ?? 1) })) },
       metadata: s.subscription_data?.metadata ?? {},
       latest_invoice: null,
       created: stamp(),
     };
     subscriptions.set(sub.id, sub);
-    const inv = invoiceFor(sub, true, "subscription_create", trialEnd ? 0 : price.unit_amount);
+    const inv = invoiceFor(sub, true, "subscription_create", trialEnd ? 0 : periodAmount(sub));
     s.status = "complete";
     s.payment_status = "paid";
     s.subscription = sub.id;
@@ -474,6 +477,10 @@ export async function startStripeMock(o = {}) {
         const sub = subscriptions.get(m[1]);
         if (!sub) return stripeError(res, 404, `No such subscription: '${m[1]}'`);
         if (sub.status === "canceled") return stripeError(res, 400, `This subscription is already canceled: '${m[1]}'`);
+        const cf = parseForm(await readBody(req));
+        sub.cancel_prorate = cf.prorate === "true"; // not Stripe's: for the tests (prorate=true credits the unused days)
+        sub.cancel_invoice_now = cf.invoice_now === "true";
+        sub.ended_at = now();
         sub.status = "canceled";
         sub.canceled_at = now();
         sub.cancel_at_period_end = false;
@@ -490,11 +497,31 @@ export async function startStripeMock(o = {}) {
         const f = parseForm(await readBody(req));
         const items = Array.isArray(f.items) ? f.items : [];
         const moves = [];
+        const quantities = [];
         for (const it of items) {
+          if (!it.id) {
+            // A new item (the extra stores): a price and a quantity.
+            if (!it.price || !catalog.has(it.price)) return stripeError(res, 400, `No such price: '${it.price ?? ""}'`);
+            quantities.push({ add: { id: `si_${hex(8)}`, object: "subscription_item", price: priceOf(it.price), quantity: Number(it.quantity ?? 1) } });
+            continue;
+          }
           const item = sub.items.data.find((x) => x.id === it.id);
           if (!item) return stripeError(res, 400, `No such subscription item: '${it.id ?? ""}'`);
+          if (it.deleted === "true") {
+            quantities.push({ remove: item });
+            continue;
+          }
+          if (it.quantity != null && !it.price) {
+            quantities.push({ item, quantity: Number(it.quantity) });
+            continue;
+          }
           if (!it.price || !catalog.has(it.price)) return stripeError(res, 400, `No such price: '${it.price ?? ""}'`);
           moves.push({ item, price: it.price });
+        }
+        for (const x of quantities) {
+          if (x.add) sub.items.data.push(x.add);
+          else if (x.remove) sub.items.data = sub.items.data.filter((i) => i !== x.remove);
+          else x.item.quantity = x.quantity;
         }
         sub.last_proration_behavior = f.proration_behavior ?? null;
         sub.last_payment_behavior = f.payment_behavior ?? null;
