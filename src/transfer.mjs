@@ -60,6 +60,14 @@ export const TABLES = [
   { t: "assistant_topup", table: "assistant_topups", cols: ["stripe_session_id", "shop_id", "calls", "month", "created_at"], key: "stripe_session_id" },
   { t: "stripe_event", table: "stripe_events", cols: ["id", "type", "received_at"] },
   { t: "license_issue", table: "license_issues", cols: ["key_id", "shop_id", "kid", "plan", "modules", "first_day", "last_day", "grace_days", "key", "issued_at", "revoked_at", "tier", "founding"], key: "key_id" },
+  // Off-site backups (src/backups.mjs): the index of what each company has in the bucket (the bytes stay there).
+  {
+    t: "backup_object",
+    table: "backup_objects",
+    cols: ["shop_id", "name", "kind", "size", "sha256", "created_at", "confirmed_at", "deleted_at"],
+    key: "shop_id || '|' || name",
+    conflict: ["shop_id", "name"],
+  },
   // The manual repository (src/repository.mjs): the manuals shops see (numbered in the change sequence, which the
   // repository feed pages by), the files in R2 by hash (the bytes stay in the bucket; a moved hub keeps the bucket), the
   // offers, the hashes that may not come back, and the download counts.
