@@ -18,7 +18,13 @@
 // markings.ocrPages for src/ocr.mjs (status "checking" until that has run). If none of the
 // pages read, the answer is "not checked: scan or unreadable text" for the owner to look at the cover himself. A hit is
 // a flag with the page and the words around it, never a refusal (lawyer question L1).
+//
+// Every inflate (object streams and page contents) counts against the one 64 MB budget, and a content stream named by
+// several pages is read once. The upload path calls inspectPdfIsolated: the same check in a worker thread with a time
+// limit (REPO_CHECK_MS, 60000) and a heap limit (REPO_CHECK_HEAP_MB, 1024), so a hostile file can't stall the hub; a
+// file that runs over either is refused.
 import zlib from "node:zlib";
+import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
 
 const MB = 1024 * 1024;
 const INFLATE_BUDGET = 64 * MB;
@@ -75,11 +81,25 @@ const inflate = (data, max) => {
   }
 };
 
+const budgetError = () => Object.assign(new Error("the inflate budget is spent"), { code: "ERR_BUFFER_TOO_LARGE", budget: true });
+/** Inflates against the file's one budget ({ left } bytes); throws once it is spent. */
+function inflateCounted(data, budget, cap) {
+  if (budget.left <= 0) throw budgetError();
+  let bytes;
+  try {
+    bytes = inflate(data, Math.min(budget.left, cap));
+  } catch (e) {
+    if (e.code === "ERR_BUFFER_TOO_LARGE" && budget.left <= cap) budget.left = 0;
+    throw e;
+  }
+  budget.left -= bytes.length;
+  return bytes;
+}
+
 /** The objects of a file as { dict (text), data (the stream's bytes or null) }, by object number, in file order. */
-function readObjects(buf, raw, flags) {
+function readObjects(buf, raw, flags, budget) {
   const objs = new Map();
   const structure = []; // text outside stream data, for the name search
-  let budget = INFLATE_BUDGET;
   const rx = /(\d{1,10})\s+(\d{1,5})\s+obj\b/g;
   let m;
   let last = 0;
@@ -88,16 +108,18 @@ function readObjects(buf, raw, flags) {
     const end = raw.indexOf("endobj", rx.lastIndex);
     const stop = end < 0 ? raw.length : end;
     const body = rx.lastIndex;
-    const s = raw.indexOf("stream", body);
+    // Searched within this object only (to its endobj): a search to the end of the file from every object is quadratic.
+    const rel = raw.slice(body, stop).indexOf("stream");
+    const s = rel < 0 ? -1 : body + rel;
     let dict;
     let data = null;
-    if (s >= 0 && s < stop) {
+    if (s >= 0) {
       dict = raw.slice(body, s);
       let from = s + 6;
       if (raw[from] === "\r") from++;
       if (raw[from] === "\n") from++;
-      const e = raw.indexOf("endstream", from);
-      data = buf.subarray(from, e < 0 ? stop : e);
+      const e = from < stop ? raw.slice(from, stop).indexOf("endstream") : -1;
+      data = buf.subarray(from, e < 0 ? stop : from + e);
     } else dict = raw.slice(body, stop);
     structure.push(dict);
     objs.set(Number(m[1]), { dict, data });
@@ -111,9 +133,7 @@ function readObjects(buf, raw, flags) {
     if (!o.data || !/\/Type\s*\/ObjStm\b/.test(o.dict)) continue;
     try {
       const flate = /\/Filter\s*(\/FlateDecode|\[\s*\/FlateDecode\s*\])/.test(o.dict);
-      const bytes = flate ? inflate(o.data, Math.min(budget, 64 * MB)) : o.data;
-      budget -= bytes.length;
-      if (budget < 0) throw Object.assign(new Error("budget"), { code: "ERR_BUFFER_TOO_LARGE" });
+      const bytes = flate ? inflateCounted(o.data, budget, INFLATE_BUDGET) : o.data;
       const text = bytes.toString("latin1");
       const n = Number(/\/N\s+(\d+)/.exec(o.dict)?.[1] ?? 0);
       const first = Number(/\/First\s+(\d+)/.exec(o.dict)?.[1] ?? 0);
@@ -161,13 +181,13 @@ function pageOrder(objs, structure) {
 }
 
 /** The decoded bytes of an object's stream: Flate or no filter; null for any other filter or no stream. */
-function streamOf(o) {
+function streamOf(o, budget) {
   if (!o?.data) return null;
   const filter = /\/Filter\s*(\[[^\]]*\]|\/\w+)/.exec(o.dict)?.[1];
   if (!filter) return o.data;
   const names = [...filter.matchAll(/\/(\w+)/g)].map((x) => x[1]);
   if (names.length !== 1 || names[0] !== "FlateDecode") return null;
-  return inflate(o.data, 16 * MB);
+  return inflateCounted(o.data, budget, 16 * MB);
 }
 
 /** The text of a page's content stream(s): the strings of the text-showing operators, TJ gaps over 200 as spaces. */
@@ -247,13 +267,14 @@ function textOfContent(bytes) {
 const letters = (t) => (t.match(/[A-Za-z]/g) ?? []).length;
 
 /** The markings part: which pages were read and what they say. */
-function markingsOf(objs, order, ocr) {
+function markingsOf(objs, order, ocr, budget) {
   if (!order || !order.pages.length) return { status: "not-checked", reason: "not checked for markings: the file's pages couldn't be found", hits: [], pagesRead: [] };
   const n = order.pages.length;
   const want = [...new Set([0, 1, 2, n - 1].filter((i) => i >= 0 && i < n))];
   const hits = [];
   const read = [];
   const ocrPages = [];
+  const texts = new Map(); // a content stream named by several pages is read once
   for (const i of want) {
     const page = objs.get(order.pages[i]);
     const c = /\/Contents\s*(\[[^\]]*\]|\d+\s+\d+\s+R\b)/.exec(page?.dict ?? "")?.[1];
@@ -265,11 +286,17 @@ function markingsOf(objs, order, ocr) {
     }
     let text = "";
     try {
-      for (const r of refs.slice(0, 40)) {
-        const bytes = streamOf(objs.get(r));
-        if (bytes) text += `${textOfContent(bytes)}\n`;
+      // Each stream once per page (the same one drawn again adds no words), and a page's words up to 4 MB.
+      for (const r of new Set(refs.slice(0, 40))) {
+        if (text.length > 4 * MB) break;
+        if (!texts.has(r)) {
+          const bytes = streamOf(objs.get(r), budget);
+          texts.set(r, bytes ? `${textOfContent(bytes)}\n` : "");
+        }
+        text += texts.get(r);
       }
-    } catch {
+    } catch (e) {
+      if (e.budget) throw e;
       continue;
     }
     if (letters(text) < 20) {
@@ -289,10 +316,11 @@ export function inspectPdf(buf, { ocr = false } = {}) {
   if (buf.length < 8 || buf.subarray(0, 5).toString("latin1") !== "%PDF-") return { refused: "That file isn't a PDF (it doesn't start with %PDF-)." };
   const raw = buf.toString("latin1");
   const flags = [];
+  const budget = { left: INFLATE_BUDGET };
   let objs;
   let structure;
   try {
-    ({ objs, structure } = readObjects(buf, raw, flags));
+    ({ objs, structure } = readObjects(buf, raw, flags, budget));
   } catch (e) {
     return { pages: null, flags: [{ code: "unreadable", text: `The file's structure couldn't be read (${e.message}): look at it before approving.` }], markings: { status: "not-checked", reason: "not checked for markings: the file couldn't be read", hits: [], pagesRead: [] } };
   }
@@ -310,9 +338,49 @@ export function inspectPdf(buf, { ocr = false } = {}) {
   if (!order) flags.push({ code: "no-page-tree", text: "The page tree couldn't be followed: the page count and the markings aren't known." });
   let markings;
   try {
-    markings = markingsOf(objs, order, ocr);
+    markings = markingsOf(objs, order, ocr, budget);
   } catch (e) {
-    markings = { status: "not-checked", reason: `not checked for markings: ${e.message}`, hits: [], pagesRead: [] };
+    markings = { status: "not-checked", reason: e.budget ? "not checked for markings: the file's streams inflate past the hub's 64 MB check budget" : `not checked for markings: ${e.message}`, hits: [], pagesRead: [] };
   }
   return { pages: order?.count ?? null, flags, markings };
+}
+
+const envNum = (name, dflt) => {
+  const v = Number(process.env[name]);
+  return Number.isFinite(v) && v > 0 ? v : dflt;
+};
+
+/**
+ * inspectPdf in a worker thread, off the hub's main thread: the same answer, or { refused } when the check runs past its
+ * time (REPO_CHECK_MS) or its heap (REPO_CHECK_HEAP_MB), or the worker fails. The worker is stopped either way.
+ */
+export function inspectPdfIsolated(buf, opts = {}) {
+  const ms = envNum("REPO_CHECK_MS", 60_000);
+  return new Promise((resolve) => {
+    let done = false;
+    let timer = null;
+    const w = new Worker(new URL(import.meta.url), {
+      workerData: { pdfcheck: true, bytes: buf, opts },
+      resourceLimits: { maxOldGenerationSizeMb: envNum("REPO_CHECK_HEAP_MB", 1024), maxYoungGenerationSizeMb: 64 },
+    });
+    const finish = (answer) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      w.terminate().catch(() => {});
+      resolve(answer);
+    };
+    timer = setTimeout(() => finish({ refused: `The hub couldn't finish checking that PDF within ${Math.round(ms / 1000)} seconds. Save it again (for example with Microsoft Print to PDF) and offer it again.` }), ms);
+    w.once("message", finish);
+    w.once("error", (e) =>
+      finish({ refused: e?.code === "ERR_WORKER_OUT_OF_MEMORY" ? "That PDF needs more memory to check than the hub allows. Save it again (for example with Microsoft Print to PDF) and offer it again." : "The hub couldn't check that PDF. Save it again (for example with Microsoft Print to PDF) and offer it again." }),
+    );
+    w.once("exit", () => finish({ refused: "The hub couldn't check that PDF. Save it again (for example with Microsoft Print to PDF) and offer it again." }));
+  });
+}
+
+// The worker side of inspectPdfIsolated.
+if (!isMainThread && workerData?.pdfcheck) {
+  const b = workerData.bytes;
+  parentPort.postMessage(inspectPdf(Buffer.from(b.buffer, b.byteOffset, b.byteLength), workerData.opts));
 }
