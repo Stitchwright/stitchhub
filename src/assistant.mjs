@@ -120,6 +120,7 @@ export function checkKey(text, shopRef, today) {
 
 // ----- request checks -----
 const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+const PHOTO_FEATURES = new Set(["read_plate", "read_label", "tag_fabric"]);
 const MAX_SYSTEM = 40_000;
 const MAX_TEXT = 120_000;
 const MAX_IMAGE = 220_000; // base64 characters: the program shrinks a plate photo to about 150 KB
@@ -145,7 +146,7 @@ function clean(body, fail) {
   const maxTokens = Number.isInteger(body.maxTokens) && body.maxTokens > 0 ? Math.min(body.maxTokens, cap) : Math.min(1000, cap);
   let image = null;
   if (body.image != null) {
-    if (feature !== "read_plate" || (cls !== "read" && cls !== "suggest")) throw fail(400, "Only the plate reader takes a photo.");
+    if (!PHOTO_FEATURES.has(feature) || (cls !== "read" && cls !== "suggest")) throw fail(400, "Only the plate, bolt-label and swatch readers take a photo.");
     if (!IMAGE_TYPES.has(body.image?.mediaType) || typeof body.image.data !== "string" || !/^[A-Za-z0-9+/=]+$/.test(body.image.data) || body.image.data.length > MAX_IMAGE) throw fail(400, "Send the photo as a JPEG, PNG or WebP of at most about 150 KB.");
     image = { mediaType: body.image.mediaType, data: body.image.data };
   }
