@@ -172,7 +172,10 @@ itself (module `base`), signed by the hub; the key, not the words, is what the p
 
 Passwords are hashed with scrypt; links, codes and session ids are stored as SHA-256 hashes; sessions are HttpOnly
 cookies for 30 days; a password reset signs every browser out. Sign-ups are limited to 10 an hour per address and wrong
-sign-ins to 20 an hour per address (and 200 an hour for the whole hub).
+sign-ins to 20 an hour per address and 10 an hour per account (after that only the right password gets in, up to 100
+tries an hour; a stranger can't lock the owner out), 20,000 an hour for the whole hub. A sign-up on an address that has an
+account changes nothing but mails the owner a link to set the password; on an account not yet confirmed it also takes off
+the password and confirm links (a stranger's sign-up may have set them).
 
 For the emails the hub needs three variables: `HUB_URL` (its own public address, for the links; on Railway the public
 domain is used when it is empty), `SMTP_URL` (`smtps://user:pass@host:465`, or `smtp://…:587` for STARTTLS) and

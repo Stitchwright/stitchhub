@@ -35,6 +35,8 @@ const ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"; // no 0/O, 1/I/L: the code i
 // backstop against a flood, high enough that nobody can lock every sign-in by guessing on purpose.
 const WRONG_PASSWORDS = 20_000;
 const WRONG_PER_ACCOUNT = 10;
+// Past WRONG_PER_ACCOUNT the right password still signs in (strangers can't lock the owner out); past this, nothing does.
+const WRONG_PER_ACCOUNT_HARD = 100;
 // The passwords everyone tries first. Refused however long they are.
 const COMMON = new Set(["123456", "password", "12345678", "qwerty", "123456789", "12345", "1234", "111111", "1234567", "dragon", "123123", "baseball", "abc123", "football", "monkey", "letmein", "shadow", "master", "696969", "mustang", "password1", "qwerty123", "iloveyou", "sunshine", "princess", "welcome", "stitchbench", "stitchhub", "stitchshop"]);
 const SCRYPT = { N: 2 ** 15, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
@@ -441,9 +443,20 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
     const existing = await one(`SELECT * FROM accounts WHERE lower(email) = $1`, [email]);
     // An address that has an account already (one the program started, with no password yet, included): the password
     // sent here is never put on it, or a stranger's would work once the owner opened the link we mail. The owner is sent
-    // a link to set the password instead, and the answer is the same as for a new account.
+    // a link to set the password instead, and the answer is the same as for a new account. An account not verified yet
+    // may carry a stranger's password (its sign-up came first): that password and its confirm links go, so the owner's
+    // click on a confirm mail can't make it work; only the set-password link does.
     if (existing) {
-      if (!existing.disabled && allow(`acct-reset:${existing.id}`, 5)) await passwordLinkTo(existing);
+      if (existing.disabled) return c.json({ ok: true });
+      let a = existing;
+      if (!existing.verified_at) {
+        await tx(async (client) => {
+          await client.query(`UPDATE accounts SET password_hash = NULL WHERE id = $1 AND verified_at IS NULL`, [existing.id]);
+          await client.query(`UPDATE account_tokens SET used_at = now() WHERE kind = 'verify' AND account_id = $1 AND used_at IS NULL`, [existing.id]);
+        });
+        a = { ...existing, password_hash: null };
+      }
+      if (allow(`acct-reset:${existing.id}`, 5)) await passwordLinkTo(a);
       return c.json({ ok: true });
     }
     const token = await tx(async (client) => {
@@ -489,18 +502,25 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
     const ip = clientIp(c);
     const wrong = bucket("acct-wrong");
     if (wrong.n >= WRONG_PASSWORDS) throw fail(429, "Too many wrong passwords were tried on this hub lately. Try again in an hour.");
-    if (bucket(`acct-fail:${ip}`).n >= 20) throw fail(429, "Too many wrong sign-ins from this address. Wait an hour.");
+    const byIp = bucket(`acct-fail:${ip}`);
+    if (byIp.n >= 20) throw fail(429, "Too many wrong sign-ins from this address. Wait an hour.");
     const body = await c.req.json();
     const email = emailOf(body.email);
     // Counted per address typed (an account or not, so the answer doesn't say which), apart from the sender's address.
-    if (bucket(`acct-fail-email:${email}`).n >= WRONG_PER_ACCOUNT) throw fail(429, "Too many wrong passwords for this account lately. Wait an hour, or use \"Forgot your password\".");
+    const byEmail = bucket(`acct-fail-email:${email}`);
+    const tooMany = () => fail(429, "Too many wrong passwords for this account lately. Wait an hour, or use \"Forgot your password\".");
+    if (byEmail.n >= WRONG_PER_ACCOUNT_HARD) throw tooMany();
+    // Every try is counted before the awaited lookup and check (so guesses sent at once are all counted) and given back
+    // when the password is right.
+    const over = byEmail.n >= WRONG_PER_ACCOUNT;
+    byIp.n++;
+    byEmail.n++;
+    if (++wrong.n === WRONG_PASSWORDS) console.warn(`accounts: ${WRONG_PASSWORDS} wrong passwords this hour; sign-in is paused until the hour is up`);
     const a = await one(`SELECT * FROM accounts WHERE lower(email) = $1`, [email]);
     if (!a?.password_hash || !(await checkPassword(String(body.password ?? ""), a.password_hash))) {
-      bucket(`acct-fail:${ip}`).n++;
-      bucket(`acct-fail-email:${email}`).n++;
-      if (++wrong.n === WRONG_PASSWORDS) console.warn(`accounts: ${WRONG_PASSWORDS} wrong passwords this hour; sign-in is paused until the hour is up`);
-      throw fail(401, "That email or password isn't right.");
+      throw over ? tooMany() : fail(401, "That email or password isn't right.");
     }
+    for (const b of [byIp, byEmail, wrong]) b.n = Math.max(0, b.n - 1);
     if (a.disabled) throw fail(403, "This account is switched off. Ask the hub admin.");
     if (!a.verified_at) throw fail(403, "Confirm your email first: open the link we sent you, or ask for it again below.");
     await q(`UPDATE accounts SET last_sign_in_at = now() WHERE id = $1`, [a.id]);

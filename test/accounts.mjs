@@ -196,6 +196,7 @@ try {
   assert.notEqual(tokenOf(m2), tokenOf(m1));
   const a = browser();
   await status(await page(a, "/set-password", { token: tokenOf(m1), password: "Good-password-1" }), 410, "cancelled link");
+  await status(await page(a, "/set-password", { token: tokenOf(mS), password: "Good-password-1" }), 410, "the link the sign-up sent is cancelled too");
   await status(await page(a, "/set-password", { token: "nope", password: "Good-password-1" }), 404, "wrong link");
   await status(await page(a, "/set-password", { token: tokenOf(m2), password: "short" }), 400, "short password");
   await status(await page(a, "/set-password", { token: tokenOf(m2), password: "password1" }), 400, "common password");
@@ -272,9 +273,7 @@ try {
   await status(await page(d, "/signup", { email: emailC, password: "Good-password-3", acceptTerms: false }), 400, "terms not ticked");
   await status(await page(d, "/signup", { email: emailC, password: "12345678", acceptTerms: true }), 400, "common password");
   await ok(await page(d, "/signup", { email: emailC, password: "Good-password-3", acceptTerms: true }));
-  assert.deepEqual(await ok(await page(d, "/signup", { email: emailC, password: "Other-password-3", acceptTerms: true })), { ok: true }, "signed up twice: the same answer, so it doesn't say the address has an account");
   const v1 = await mailTo(emailC);
-  assert.match((await mailTo(emailC)).subject, /Reset your Accounts Test Hub password/, "the second sign-up mails a link to set the password, and changes none");
   assert.ok(v1.link.startsWith(`${HUB}/account/verify?t=`), v1.link);
   await status(await page(d, "/signin", { email: emailC, password: "Good-password-3" }), 403, "not verified yet");
   assert.equal((await ok(await page(d, "/resend", { email: emailC }))).message, quiet);
@@ -284,6 +283,23 @@ try {
   me = await ok(await page(d, "/me"));
   assert.deepEqual([me.account.email, me.account.verified, me.shops], [emailC, true, []]);
   assert.equal((await ok(await page(browser(), "/resend", { email: emailC }))).message, quiet, "a verified account is answered the same and mailed nothing");
+  // A sign-up on a verified account: the same answer as a new account, a link to set the password mailed, nothing changed.
+  assert.deepEqual(await ok(await page(browser(), "/signup", { email: emailC, password: "Other-password-3", acceptTerms: true })), { ok: true }, "signed up twice: the same answer, so it doesn't say the address has an account");
+  assert.match((await mailTo(emailC)).subject, /Reset your Accounts Test Hub password/, "the second sign-up mails a link to set the password");
+  await ok(await page(browser(), "/signin", { email: emailC, password: "Good-password-3" }), "and changes no password");
+  // A stranger signed up first with the owner's address: the owner's own sign-up takes the stranger's password and the
+  // confirm link off the account, so the owner's click on that confirm mail can't make the stranger's password work; the
+  // set-password link mailed now is the way in.
+  const emailS = `owner-s-${RUN}@stitchhub.test`;
+  await ok(await page(browser(), "/signup", { email: emailS, password: "Stranger-password-5", acceptTerms: true }));
+  const vS = await mailTo(emailS);
+  assert.deepEqual(await ok(await page(browser(), "/signup", { email: emailS, password: "Owner-password-5", acceptTerms: true })), { ok: true });
+  const sS = await mailTo(emailS);
+  assert.match(sS.subject, /Set your Accounts Test Hub password/);
+  await status(await page(browser(), "/verify", { token: tokenOf(vS) }), 410, "the stranger's confirm link is cancelled");
+  await status(await page(browser(), "/signin", { email: emailS, password: "Stranger-password-5" }), 401, "the stranger's password is gone");
+  await ok(await page(browser(), "/set-password", { token: tokenOf(sS), password: "Owner-password-5" }));
+  await ok(await page(browser(), "/signin", { email: emailS, password: "Owner-password-5" }));
   console.log("door 3 (on the hub first): ok");
 
   // Tenant: C connects a shop of its own; A never sees it, and C never sees A's.
@@ -355,10 +371,13 @@ try {
   assert.ok(!JSON.stringify(rows).includes("Another-password-1"));
   console.log("export: ok");
 
-  // Wrong passwords for one account stop at 10 an hour, wherever they come from (the right one too, until the hour is up);
+  // Wrong passwords for one account stop at 10 an hour, wherever they come from, each counted before it is checked: 12 sent
+  // at once get 10 "wrong" and 2 "too many". The right password still signs in (strangers can't lock the owner out);
   // other accounts sign in as before, and there is no hub-wide lock to trip.
-  for (let i = 1; i <= 10; i++) await status(await page(browser(), "/signin", { email: emailC, password: "Wrong-password-8" }), 401, `wrong password ${i}`);
-  assert.match((await status(await page(browser(), "/signin", { email: emailC, password: "Good-password-3" }), 429, "the account's 11th try")).error, /for this account/);
+  const burst = await Promise.all(Array.from({ length: 12 }, () => page(browser(), "/signin", { email: emailC, password: "Wrong-password-8" })));
+  assert.deepEqual(burst.map((r) => r.status).sort((x, y) => x - y), [...Array(10).fill(401), 429, 429], "guesses sent at once are all counted");
+  assert.match((await status(await page(browser(), "/signin", { email: emailC, password: "Wrong-password-8" }), 429, "a wrong 13th try")).error, /for this account/);
+  await ok(await page(browser(), "/signin", { email: emailC, password: "Good-password-3" }), "the right password past the limit");
   await ok(await page(browser(), "/signin", { email: emailD, password: "Good-password-4" }));
 
   // Limits: wrong sign-ins from one address stop at 20 an hour.
