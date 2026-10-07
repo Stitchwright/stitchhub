@@ -180,6 +180,9 @@ export async function ocrMarkings(bytes, pageNumbers, prior = {}) {
     const timedOut = failed.every((f) => f.why === "timed out");
     return { status: "not-checked", reason: `not checked for markings: OCR ${timedOut ? "timed out" : "failed"} on page${failed.length === 1 ? "" : "s"} ${failed.map((f) => f.page).join(", ")} (${why}); look at the cover yourself`, hits: [], pagesRead: read, ocr };
   }
+  // Pages the check before OCR couldn't read at all (prior.unread): never clean while they stay unread.
+  const unread = prior.unread ?? [];
+  if (unread.length) return { status: "not-checked", reason: `not checked for markings: page${unread.length === 1 ? "" : "s"} ${unread.join(", ")} couldn't be read (look at the cover yourself)`, hits: [], pagesRead: read, ocr };
   return { status: "clean", reason: null, hits: [], pagesRead: read, ocr };
 }
 

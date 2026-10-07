@@ -89,7 +89,11 @@ function inflateCounted(data, budget, cap) {
   try {
     bytes = inflate(data, Math.min(budget.left, cap));
   } catch (e) {
-    if (e.code === "ERR_BUFFER_TOO_LARGE" && budget.left <= cap) budget.left = 0;
+    // Stopped by what the budget had left (not by this stream's own cap): the budget is spent, and the error says so.
+    if (e.code === "ERR_BUFFER_TOO_LARGE" && budget.left <= cap) {
+      budget.left = 0;
+      throw budgetError();
+    }
     throw e;
   }
   budget.left -= bytes.length;
@@ -147,7 +151,8 @@ function readObjects(buf, raw, flags, budget) {
       }
     } catch (e) {
       unreadable++;
-      if (e.code === "ERR_BUFFER_TOO_LARGE") flags.push({ code: "inflate-budget", text: "An object stream inflates past the hub's 64 MB check budget: the file wasn't fully checked for scripts." });
+      // Flagged once: once the budget is spent every later object stream stops at once, with the same error.
+      if (e.budget && !flags.some((f) => f.code === "inflate-budget")) flags.push({ code: "inflate-budget", text: "An object stream inflates past the hub's 64 MB check budget: the file wasn't fully checked for scripts." });
     }
   }
   if (unreadable && !flags.some((f) => f.code === "inflate-budget")) flags.push({ code: "objstm-unreadable", text: `${unreadable} object stream(s) couldn't be read: the file wasn't fully checked for scripts.` });
@@ -275,7 +280,9 @@ function markingsOf(objs, order, ocr, budget) {
   const read = [];
   const ocrPages = [];
   const texts = new Map(); // a content stream named by several pages is read once
-  for (const i of want) {
+  const unread = []; // pages whose content couldn't be read (damaged, past a stream's cap, or the budget spent)
+  let spent = false;
+  for (const [k, i] of want.entries()) {
     const page = objs.get(order.pages[i]);
     const c = /\/Contents\s*(\[[^\]]*\]|\d+\s+\d+\s+R\b)/.exec(page?.dict ?? "")?.[1];
     if (!c) continue;
@@ -296,7 +303,13 @@ function markingsOf(objs, order, ocr, budget) {
         text += texts.get(r);
       }
     } catch (e) {
-      if (e.budget) throw e;
+      unread.push(i + 1);
+      // The budget is spent: no later page can be read either. What was found so far is kept.
+      if (e.budget) {
+        spent = true;
+        unread.push(...want.slice(k + 1).map((j) => j + 1));
+        break;
+      }
       continue;
     }
     if (letters(text) < 20) {
@@ -306,8 +319,12 @@ function markingsOf(objs, order, ocr, budget) {
     read.push(i + 1);
     hits.push(...markingHits(text, i + 1));
   }
+  // A file whose pages couldn't all be read is never "clean": flagged with what was found, else not checked.
+  const missed = unread.length ? `page${unread.length === 1 ? "" : "s"} ${unread.join(", ")} couldn't be read${spent ? " (past the hub's 64 MB check budget)" : ""}` : null;
   // Pages with no text layer (a scan): with OCR on they are read afterwards (src/ocr.mjs), and the answer waits.
-  if (ocr && ocrPages.length) return { status: "checking", reason: "checking for markings (reading the scanned pages)", hits, pagesRead: read, ocrPages };
+  if (ocr && ocrPages.length) return { status: "checking", reason: "checking for markings (reading the scanned pages)", hits, pagesRead: read, ocrPages, ...(unread.length ? { unread } : {}) };
+  if (hits.length) return { status: "flagged", reason: missed, hits, pagesRead: read };
+  if (missed) return { status: "not-checked", reason: `not checked for markings: ${missed} (look at the cover yourself)`, hits: [], pagesRead: read };
   if (!read.length) return { status: "not-checked", reason: "not checked for markings: scan or unreadable text (look at the cover yourself)", hits: [], pagesRead: [] };
   return { status: hits.length ? "flagged" : "clean", reason: null, hits, pagesRead: read };
 }
@@ -361,7 +378,8 @@ export function inspectPdfIsolated(buf, opts = {}) {
     let timer = null;
     const w = new Worker(new URL(import.meta.url), {
       workerData: { pdfcheck: true, bytes: buf, opts },
-      resourceLimits: { maxOldGenerationSizeMb: envNum("REPO_CHECK_HEAP_MB", 1024), maxYoungGenerationSizeMb: 64 },
+      // Never below twice the largest upload (REPO_MAX_MB): a heap smaller than the file can't even hold it.
+      resourceLimits: { maxOldGenerationSizeMb: Math.max(envNum("REPO_CHECK_HEAP_MB", 1024), 2 * envNum("REPO_MAX_MB", 150)), maxYoungGenerationSizeMb: 64 },
     });
     const finish = (answer) => {
       if (done) return;

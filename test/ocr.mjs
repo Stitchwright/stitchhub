@@ -42,6 +42,10 @@ const sha = (b) => crypto.createHash("sha256").update(b).digest("hex");
   const mc = await ocrMarkings(clean, lc.markings.ocrPages, lc.markings);
   assert.equal(mc.status, "clean");
   assert.deepEqual(mc.pagesRead, [1]);
+  // ... unless a page the check before OCR couldn't read at all (unread) is still unread: then it isn't clean
+  const mu = await ocrMarkings(clean, lc.markings.ocrPages, { ...lc.markings, unread: [2] });
+  assert.equal(mu.status, "not-checked");
+  assert.match(mu.reason, /page 2 couldn't be read/);
 
   // the last page of a long scan is read, the middle ones are not
   const long = scannedPdf([["Cover page words"], ["two"], ["three"], ["four"], ["five"], ["Restricted document", "Not for distribution"]]);
