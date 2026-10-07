@@ -892,7 +892,7 @@ registerUsage({ member, fail, writeLimit: usageLimit });
 registerAssistant({ member, admin, fail, allow, newId });
 registerPartners({ app, member, fail, newId, allow, clientIp, sha, hubName: HUB_NAME, createInstall });
 // Shop hop passports: the shops' routes under the install key, and the public sign-up and passport pages (src/hops.mjs).
-registerHops({ app, member, fail, newId, allow, clientIp, sha, hubName: HUB_NAME });
+registerHops({ app, member, fail, newId, allow, bucket, clientIp, sha, hubName: HUB_NAME });
 // Shop owners' accounts, their shops and standing (src/accounts.mjs, the /account pages; mail through src/mail.mjs), and
 // billing (src/billing.mjs: Stripe Checkout and Portal on the account page, the webhook at /v1/stripe, the keys the hub
 // signs for the program, the admin's "Lapse now").

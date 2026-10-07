@@ -136,6 +136,7 @@ try {
   await refused(await call("/v1/hops", { key: X, json: { name: "Fall Hop", startsOn: today, endsOn: later, rule: "all", publicKey: kO.pub } }), 400, /X-Shop-Ref/, "no company named");
   await refused(await call("/v1/hops", { key: X, shop: "org1", json: { name: "Fall Hop", startsOn: today, endsOn: later, rule: "all", publicKey: "nope" } }), 400, /partner key/, "no key");
   await refused(await call("/v1/hops", { key: X, shop: "org1", json: { name: "Fall Hop", startsOn: later, endsOn: today, rule: "all", publicKey: kO.pub } }), 400, /first and last day/, "dates backwards");
+  await refused(await call("/v1/hops", { key: X, shop: "org1", json: { name: "Fall Hop", startsOn: "2026-02-28", endsOn: "2026-02-30", rule: "all", publicKey: kO.pub } }), 400, /first and last day/, "a day that doesn't exist");
   await refused(await call("/v1/hops", { key: X, shop: "org1", json: { name: "Fall Hop", startsOn: today, endsOn: later, rule: "any:0", publicKey: kO.pub } }), 400, /rule/, "any:0");
   const { hop } = await ok(await call("/v1/hops", { key: X, shop: "org1", json: { name: "Fall Hop 2026", startsOn: today, endsOn: later, rule: "all", publicKey: kO.pub } }));
   assert.deepEqual([hop.name, hop.startsOn, hop.endsOn, hop.rule, hop.shops, hop.role, hop.status], ["Fall Hop 2026", today, later, "all", 1, "ORGANIZER", "JOINED"]);
@@ -193,7 +194,15 @@ try {
   assert.match(html, /class="card"/);
   assert.ok(html.includes(words));
   assert.equal((await call(`/p/${ann.toLowerCase()}`)).status, 200, "a code typed in lower case");
+  assert.equal((await call(`/p/${words}`)).status, 200, "the code as printed (HOP-XXXX-XXXX)");
+  assert.equal((await call(`/p/${words.toLowerCase()}`)).status, 200, "as printed, in lower case");
   assert.equal((await call("/p/ZZZZZZZZ")).status, 404);
+  assert.ok(html.includes("Ann Shopper"), "Ann shared: her name is on her passport");
+  for (const q of ["", "?print=1"]) {
+    const bp = await (await call(`/p/${bea}${q}`)).text();
+    assert.ok(!bp.includes("Bea Private"), `Bea didn't share: anyone with her code sees no name${q ? " (the card)" : ""}`);
+  }
+  assert.match(await (await call(`/p/${bea}`)).text(), /Your name isn't shown here/);
   console.log("sign-up and passport pages: ok");
 
   // ----- stamps -----
@@ -236,11 +245,17 @@ try {
   assert.equal(marked.draw.present, false);
   await refused(await call(`/v1/hops/${hop.id}/draws/nope`, { key: X, shop: "org1", method: "PATCH", json: { present: false } }), 404, /No such draw/, "an unknown draw");
   await refused(await call(`/v1/hops/${hop.id}/draws`, { key: Y, shop: "mem1", json: { passport: ann, prize: "x" } }), 403, /organizer/, "a member draws nothing");
+  // Eve: a stamp from the shop that leaves next, then the two still in: "2 of 2", not "3 of 2".
+  const eve = passportOf(await signUp(hop.slug, { name: "Eve", email: "eve@example.com" }));
+  await ok(await stamp(Y, "mem1", kM, hop.id, eve));
   // A shop leaving: "all" now needs the two still in; Bea's stamps from them still complete her.
   await ok(await call(`/v1/hops/${hop.id}/leave`, { key: Y, shop: "mem1", json: {} }));
+  assert.deepEqual(await ok(await stamp(X, "org1", kO, hop.id, eve)), { stampNo: 1, of: 2, complete: false, shopper: null });
+  const eveDone = await ok(await stamp(Z, "z1", kM2, hop.id, eve));
+  assert.deepEqual([eveDone.stampNo, eveDone.of, eveDone.complete], [2, 2, true], "numbered among the stamps that count");
   await refused(await stamp(Y, "mem1", kM, hop.id, ann), 403, /isn't taking part/, "a shop that left stamps nothing");
   comp = await ok(await call(`/v1/hops/${hop.id}/completed`, { key: X, shop: "org1" }));
-  assert.equal(comp.completed.length, 2);
+  assert.equal(comp.completed.length, 3);
   assert.equal(comp.draws.length, 1);
   assert.equal((await ok(await call("/v1/hops", { key: Y, shop: "mem1" }))).hops[0].status, "LEFT");
   console.log("completed and draws: ok");
@@ -263,7 +278,20 @@ try {
   assert.deepEqual((await ok(await call("/v1/hops", { key: W, shop: "mem1" }))).hops.map((h) => h.id).sort(), [hop.id, h2.id].sort(), "the hops went with the company");
   assert.deepEqual((await ok(await call("/v1/hops", { key: Y, shop: "mem1" }))).hops, [], "and left the old install");
   const dora = passportOf(await signUp(h2.slug, { name: "Dora", phone: "555 123 4567" }));
-  assert.equal((await ok(await stamp(W, "mem1", kM, h2.id, dora))).stampNo, 1, "stamps from the new install");
+  // The program makes a new partner key on the install it moved to: the first stamp that checks out with it pins it.
+  assert.equal((await db.query(`SELECT public_key FROM hop_shops WHERE hop_id = $1 AND shop_ref = 'mem1'`, [h2.id])).rows[0].public_key, null, "the move unpins the old key");
+  const kM3 = keyPair();
+  await refused(await stamp(W, "mem1", kM3, h2.id, dora, { fields: { passport: ann } }), 403, /doesn't check out/, "a bad signature pins nothing");
+  assert.equal((await ok(await stamp(W, "mem1", kM3, h2.id, dora))).stampNo, 1, "stamps from the new install, with its new key");
+  assert.equal((await db.query(`SELECT public_key FROM hop_shops WHERE hop_id = $1 AND shop_ref = 'mem1'`, [h2.id])).rows[0].public_key, kM3.pub, "the new key is pinned");
+  await refused(await stamp(W, "mem1", kM, h2.id, dora), 403, /key this hop doesn't know/, "the old key no longer stamps");
+  // An organizer that moved stamps again too (it can't join its own hop with a code).
+  const V = await register("Organizer New Install");
+  const vId = (await db.query(`SELECT id FROM installs WHERE name = 'Organizer New Install'`)).rows[0].id;
+  const orgShop = (await db.query(`SELECT id FROM shops WHERE shop_ref = 'org1'`)).rows[0].id;
+  await ok(await call(`/v1/admin/shops/${orgShop}/move`, { key: ADMIN, json: { toInstallId: vId } }));
+  const kO2 = keyPair();
+  assert.equal((await ok(await stamp(V, "org1", kO2, h2.id, dora))).stampNo, 2, "the organizer stamps from its new install with its new key");
   console.log("company move: ok");
 
   // ----- a partner-only install (a quilt shop on a partner code) may use the hop routes -----
@@ -273,14 +301,39 @@ try {
   await db.query(`UPDATE installs SET scope = 'member' WHERE id = $1`, [P]);
   console.log("partner-only install: ok");
 
-  // ----- sign-ups are rate-limited per address (20 an hour) -----
+  // ----- the organizer takes a shop out -----
+  await refused(await call(`/v1/hops/${h2.id}/shops/org1/remove`, { key: W, shop: "mem1", json: {} }), 403, /organizer/, "a member takes no shop out");
+  await refused(await call(`/v1/hops/${h2.id}/shops/org1/remove`, { key: V, shop: "org1", json: {} }), 400, /your own shop/, "not the organizer's own");
+  await refused(await call(`/v1/hops/${h2.id}/shops/nobody/remove`, { key: V, shop: "org1", json: {} }), 404, /No such shop/, "a shop not in it");
+  await ok(await call(`/v1/hops/${h2.id}/shops/mem1/remove`, { key: V, shop: "org1", json: {} }));
+  await refused(await stamp(W, "mem1", kM3, h2.id, dora), 403, /isn't taking part/, "a shop taken out stamps nothing");
+  console.log("organizer removes a shop: ok");
+
+  // ----- a hop past its last day takes no new shops, and is written as ended -----
+  const { hop: h3 } = await ok(await call("/v1/hops", { key: V, shop: "org1", json: { name: "Winter Hop", startsOn: today, endsOn: later, rule: "all", publicKey: kO2.pub } }));
+  const late = (await ok(await call(`/v1/hops/${h3.id}/invite-code`, { key: V, shop: "org1", json: {} }))).code;
+  await db.query(`UPDATE hops SET starts_on = '2020-01-01', ends_on = '2020-01-02' WHERE id = $1`, [h3.id]);
+  await refused(await call("/v1/hops/join", { key: W, shop: "mem1", json: { code: late, publicKey: kM3.pub } }), 410, /ended/, "joining after the last day");
+  assert.ok((await db.query(`SELECT ended_at FROM hops WHERE id = $1`, [h3.id])).rows[0].ended_at, "ended_at is written");
+  assert.equal((await db.query(`SELECT count(*)::int AS n FROM hop_shops WHERE hop_id = $1`, [h3.id])).rows[0].n, 1, "nobody joined");
+  await refused(await call(`/v1/hops/${h3.id}/invite-code`, { key: V, shop: "org1", json: {} }), 410, /ended/, "no codes for an ended hop");
+  console.log("join after the end: ok");
+
+  // ----- sign-ups: mistakes don't count; 200 that went through an hour from one address -----
   await db.query(`UPDATE hops SET ends_on = $2 WHERE id = $1`, [h2.id, later]);
+  for (let i = 0; i < 30; i++) assert.equal((await call(`/hop/${h2.slug}`, { form: { name: "", email: `x${i}@example.com` } })).status, 400);
+  let made = (await db.query(`SELECT count(*)::int AS n FROM hop_passports`)).rows[0].n; // every sign-up so far came from here
   let limited = 0;
-  for (let i = 0; i < 22; i++) {
+  for (let i = 0; made < 205 && i < 220; i++) {
     const res = await call(`/hop/${h2.slug}`, { form: { name: `N${i}`, email: `n${i}@example.com` } });
-    if (res.status === 429) limited++;
+    if (res.status === 429) {
+      limited++;
+      break;
+    }
+    if (res.status === 303) made++;
   }
-  assert.ok(limited >= 2, `the 21st sign-up from one address is refused (${limited})`);
+  assert.equal(limited, 1, "refused at last");
+  assert.equal(made, 200, `the 201st sign-up from one address is refused, after 30 mistakes (${made})`);
   console.log("sign-up rate limit: ok");
 
   // ----- an ended hop takes no sign-ups -----
@@ -292,7 +345,20 @@ try {
   // ----- the export carries the hop tables -----
   const exp = zlib.gunzipSync(Buffer.from(await (await call("/v1/admin/export", { key: ADMIN })).arrayBuffer())).toString();
   for (const t of ["hop", "hop_shop", "hop_invite", "hop_passport", "hop_stamp", "hop_draw"]) assert.ok(exp.includes(`"t":"${t}"`), `the export has ${t} rows`);
+  // Imported where the company is still on its old install (a hub that missed the move): its place moves, no clash.
+  const yId = (await db.query(`SELECT id FROM installs WHERE name = 'Member Install'`)).rows[0].id;
+  await db.query(`UPDATE hop_shops SET install_id = $1 WHERE shop_ref = 'mem1'`, [yId]);
+  const back = await fetch(`${hub.url}/v1/admin/import`, { method: "POST", headers: { Authorization: `Bearer ${ADMIN}` }, body: zlib.gzipSync(exp) });
+  assert.equal(back.status, 200, `the import: ${back.status} ${await back.clone().text()}`);
+  assert.deepEqual((await db.query(`SELECT DISTINCT install_id FROM hop_shops WHERE shop_ref = 'mem1'`)).rows.map((r) => r.install_id), [wId], "the moved place replaces the old one");
   console.log("export: ok");
+
+  // ----- passport codes guessed all at once still meet the limit (60 misses an hour per address) -----
+  const guesses = await Promise.all(Array.from({ length: 70 }, (_, i) => call(`/p/ZZZZZ${String(100 + i)}`).then((r) => r.status)));
+  // One miss came earlier (ZZZZZZZZ): 59 more, however fast they come.
+  assert.equal(guesses.filter((x) => x === 404).length, 59, "60 misses in all, however fast they come");
+  assert.equal(guesses.filter((x) => x === 429).length, 11);
+  console.log("passport guesses: ok");
   console.log("hops: ok");
 } catch (e) {
   console.error(e);
