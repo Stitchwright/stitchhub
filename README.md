@@ -172,7 +172,10 @@ itself (module `base`), signed by the hub; the key, not the words, is what the p
 
 Passwords are hashed with scrypt; links, codes and session ids are stored as SHA-256 hashes; sessions are HttpOnly
 cookies for 30 days; a password reset signs every browser out. Sign-ups are limited to 10 an hour per address and wrong
-sign-ins to 20 an hour per address (and 200 an hour for the whole hub).
+sign-ins to 20 an hour per address and 10 an hour per account (after that only the right password gets in, up to 100
+tries an hour; a stranger can't lock the owner out), 20,000 an hour for the whole hub. A sign-up on an address that has an
+account changes nothing but mails the owner a link to set the password; on an account not yet confirmed it also takes off
+the password and confirm links (a stranger's sign-up may have set them).
 
 For the emails the hub needs three variables: `HUB_URL` (its own public address, for the links; on Railway the public
 domain is used when it is empty), `SMTP_URL` (`smtps://user:pass@host:465`, or `smtp://…:587` for STARTTLS) and
@@ -351,16 +354,21 @@ Anthropic key exists in one place. Set `ANTHROPIC_API_KEY` on the hub's service 
 the hosted StitchBench / StitchShop services). `POST /v1/assistant` takes `{ shopRef, tz, feature, model: draft | suggest | read
 | manuals, system, messages, maxTokens, image?, key }` with the install key; `key` is the company's `assistant` license key text,
 checked against `ASSISTANT_PUBLIC_KEYS` (JSON, `{"k1":"<x from license:keygen>"}`) and the hub's own signing key. A key holds
-for one company only: one the hub signed must be on record for that company on that install (and not revoked), one of the
-owner's own signer belongs to the first install and company that used it. 300 calls a
+for one company only: one the hub signed (under its current kid or an older one) must be on record for that company on
+that install (and not revoked); one of the owner's own signer belongs to the first install and company that made a real call
+with it from an install that has claimed that company (a look at the usage binds nothing), and the admin clears that with
+`POST /v1/admin/assistant/unbind { keyId, kid }` or `{ installId, shopRef }`. 300 calls a
 month per company (the month turns in `tz`), top-ups of 300 from `POST /v1/admin/assistant/topup { installId, shopRef }`, an
 admin comp from `POST /v1/admin/assistant/comp { installId, shopRef, until }`, and 20 free plate reads a month without the
-module (the read model with a photo and a short prompt, for a company claimed on that install; at most
-`ASSISTANT_FREE_READS_PER_INSTALL`, 100, a month for an install's companies together, and `ASSISTANT_FREE_DAILY`, 500, in 24
-hours on the whole hub). `GET /v1/admin/assistant/usage?month=2026-10` lists calls, tokens and cost per company. Variables:
+module (the read model, or the suggest model the plate reader retries an unsure read with, with a photo and a short
+prompt, for a company claimed on that install; at most `ASSISTANT_FREE_READS_PER_INSTALL`, 100, a month for an install's
+companies that don't pay their own way together (a company with a running subscription or a comp, such as a hosted
+service's paying companies, has only its own 20), and `ASSISTANT_FREE_DAILY`, 500, in 24 hours on the whole hub; reads sent
+at once are all counted). `GET /v1/admin/assistant/usage?month=2026-10` lists calls, tokens and cost per company. Variables:
 `ASSISTANT_MODEL_DRAFT` / `_SUGGEST` (claude-sonnet-5-5), `_READ` (claude-haiku-4-5-20251001), `_MANUALS` (claude-opus-5-5),
-`ASSISTANT_MONTHLY_CALLS`, `ASSISTANT_TOPUP_CALLS`, `ASSISTANT_FREE_READS`, `ASSISTANT_HOURLY_CALLS` (60 per company), and
-`ANTHROPIC_API_BASE` (the mock, for a test hub). The hub keeps counts, tokens and cost, never a prompt or an answer.
+`ASSISTANT_MONTHLY_CALLS`, `ASSISTANT_TOPUP_CALLS`, `ASSISTANT_FREE_READS`, `ASSISTANT_HOURLY_CALLS` (60 per company; an
+empty or unreadable value, such as "1,000", is the default), and `ANTHROPIC_API_BASE` (the mock, for a test hub). A move takes
+the company's Assistant counts, zone, comp and call log to its new install. The hub keeps counts, tokens and cost, never a prompt or an answer.
 `npm run test:assistant` (needs the dev Postgres on 127.0.0.1:5433; it makes and drops its own database).
 
 **Selling the Assistant** (`src/assistant-billing.mjs`). On the account page each shop gets "Add the Assistant" ($15 a month or
@@ -373,13 +381,27 @@ no new key and its last one runs out on its own last day plus 14 days). A top-up
 once by the webhook to the company's month (`assistant_topups`, one row per Checkout session). Variables, each a comma list
 like the plans' (the first id is sold): `STRIPE_PRICE_ASSISTANT_MONTHLY`, `STRIPE_PRICE_ASSISTANT_YEARLY`,
 `STRIPE_PRICE_ASSISTANT_TOPUP` (the Assistant isn't offered while the first two are unset, top-ups while the third is).
-Refunds of an Assistant payment aren't handled by the hub: refund in Stripe and use Lapse or the comp switch by hand.
+A refund or chargeback of a payment for an Assistant period (a renewal, or a switch to yearly, which starts a new year)
+takes the period back and revokes its keys; a full refund also cancels the subscription, while a partial refund or a
+chargeback leaves it running and the account page shows the Assistant on hold (no second Checkout, which would bill twice)
+until a later payment stands. A chargeback is acted on once. A refunded or charged-back top-up takes back its share of the
+calls. A second Assistant Checkout that is paid cancels the older Assistant subscription in Stripe.
 `npm run test:assistant-billing` (the Stripe and Anthropic mocks, a fresh database).
 
 **Duplicate finder.** `node scripts/find-duplicate-xparts.mjs --dry` lists groups of cross-reference entries with the same
 brand, a shared fit and names a letter apart and what asking about them costs; without `--dry` it asks Claude Haiku through the
 Batch API (about $1.30 for the whole cross-reference, `ANTHROPIC_API_KEY` needed) and lists the groups it says are one part
 (every verdict in `duplicate-xparts.json`). It changes nothing: merge by hand in the program. `npm run test:xpart-dups`.
+
+## Off-site backups
+
+`src/backups.mjs` (the routes are listed at its top): the hub hands out short-lived S3 addresses (`BACKUP_S3_ENDPOINT`,
+`_BUCKET`, `_KEY_ID`, `_SECRET`, `_REGION`) for bytes already encrypted with the owner's key. Each company may keep
+`BACKUP_QUOTA_GB` (25); over it new pictures wait and the company file still goes, up to a fifth over. The companies of one
+install that don't pay their own way (no running subscription, no comp) share `BACKUP_INSTALL_QUOTA_GB` (250) besides, since
+a company claim is cheap; a paying company has only its own quota, so a hosted service's paying companies never share one
+install's space. An upload address never confirmed is swept after 6 hours (`BACKUP_SWEEP_MS`, every 30 minutes): the object
+first, then the row, so a failed delete is tried again at the next sweep. `npm run test:backup` (a fresh database).
 
 ## Terms of Service and Privacy Policy
 The hub serves both documents from markdown files in `legal/`: `terms-<version>.md` and `privacy-<version>.md`, one

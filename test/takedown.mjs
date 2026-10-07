@@ -283,6 +283,7 @@ try {
   assert.ok(html.includes(AGENT.COPYRIGHT_AGENT_NAME) && html.includes(AGENT.COPYRIGHT_AGENT_ADDRESS) && html.includes(AGENT.COPYRIGHT_EMAIL), "the designated agent is on the page");
   assert.match(html, /<form id="f"/);
   assert.match(html, /Three strikes within 12 months/);
+  assert.match(html, /is one strike for that account \(however many of its files the notice names\)/, "the policy says strikes are per notice");
   assert.match(await (await call("/")).text(), /href="\/copyright"/, "linked from the home page");
 
   // ===== the people =====
@@ -527,7 +528,10 @@ try {
   const two = await ok(await admin("/repository/notices", { via: "email", raw: "two at once", ...notice({ locations: `references ${many[0].manualId} and ${many[1].manualId}` }) }));
   assert.equal((await ok(await admin(`/repository/notices/${two.id}/action`, {}))).manuals.length, 2);
   assert.equal((await db.query(`SELECT count(*)::int AS n FROM strikes WHERE notice_id = $1`, [two.id])).rows[0].n, 1, "one strike for the notice, not one per manual");
-  assert.equal((await ok(await acct("multi", "/repository"))).strikes, 1);
+  const multiView = await ok(await acct("multi", "/repository"));
+  assert.equal(multiView.strikes, 1);
+  assert.deepEqual(multiView.removals.map((x) => [x.noticeId, x.manuals]), [[two.id, 2]], "one row for the notice's strike");
+  assert.equal(multiView.removals[0].what.split("; ").length, 2, "naming every manual of the account it removed");
   const struckTwo = mailsTo(multi.email).filter((m) => /strike 1/.test(m.text));
   assert.equal(struckTwo.length, 1, "one mail for the notice");
   assert.match(struckTwo[0].text, /Janome .*; Juki .* were removed/);

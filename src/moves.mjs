@@ -96,6 +96,28 @@ export async function rewriteCompany(client, shop, to) {
   await run("xpart_revisions", `UPDATE xpart_revisions SET install_id = $3 WHERE install_id = $1 AND shop_ref = $2`);
   // An Assistant key of the owner's own signer stays the company's (src/assistant.mjs binds it to the first that used it).
   await run("assistant_key_binds", `UPDATE assistant_key_binds SET install_id = $3 WHERE install_id = $1 AND shop_ref = $2`);
+  // The Assistant's counts go with the company: its month (paid top-ups were added to it, and a refund takes them back from
+  // the company's row on its current install), its zone and comp, and its call log. A month the new install already
+  // counted for this company (a call between the claim and the move) is added together.
+  await client.query(
+    `INSERT INTO assistant_usage (install_id, shop_ref, month, calls, bonus, free_reads, input_tokens, output_tokens, cost_millicents, updated_at)
+     SELECT $3, shop_ref, month, calls, bonus, free_reads, input_tokens, output_tokens, cost_millicents, updated_at FROM assistant_usage WHERE install_id = $1 AND shop_ref = $2
+     ON CONFLICT (install_id, shop_ref, month) DO UPDATE
+       SET calls = assistant_usage.calls + EXCLUDED.calls, bonus = assistant_usage.bonus + EXCLUDED.bonus, free_reads = assistant_usage.free_reads + EXCLUDED.free_reads,
+           input_tokens = assistant_usage.input_tokens + EXCLUDED.input_tokens, output_tokens = assistant_usage.output_tokens + EXCLUDED.output_tokens,
+           cost_millicents = assistant_usage.cost_millicents + EXCLUDED.cost_millicents, updated_at = greatest(assistant_usage.updated_at, EXCLUDED.updated_at)`,
+    [from, ref, to],
+  );
+  await run("assistant_usage", `DELETE FROM assistant_usage WHERE install_id = $1 AND shop_ref = $2`, [from, ref]);
+  await client.query(
+    `INSERT INTO assistant_shops (install_id, shop_ref, tz, comp_until, comp_note, updated_at)
+     SELECT $3, shop_ref, tz, comp_until, comp_note, updated_at FROM assistant_shops WHERE install_id = $1 AND shop_ref = $2
+     ON CONFLICT (install_id, shop_ref) DO UPDATE
+       SET comp_until = coalesce(EXCLUDED.comp_until, assistant_shops.comp_until), comp_note = coalesce(EXCLUDED.comp_note, assistant_shops.comp_note), updated_at = now()`,
+    [from, ref, to],
+  );
+  await run("assistant_shops", `DELETE FROM assistant_shops WHERE install_id = $1 AND shop_ref = $2`, [from, ref]);
+  await run("assistant_calls", `UPDATE assistant_calls SET install_id = $3 WHERE install_id = $1 AND shop_ref = $2`);
   // Parts usage: a month the new install already reported for this company (it synced before the move) keeps the
   // newer of the two reports, which counts every ticket of the month since the company's tickets travel with it.
   await client.query(

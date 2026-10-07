@@ -32,6 +32,7 @@ const freePort = () => new Promise((r) => net.createServer().listen(0, "127.0.0.
 // ----- the bucket stand-in: path-style, verifies SigV4 query auth independently of src/s3.mjs -----
 const store = new Map(); // key -> Buffer
 const refused = [];
+const failDeletes = new Set(); // keys whose DELETE the bucket answers with a 500
 const hmac = (k, d) => crypto.createHmac("sha256", k).update(d).digest();
 const enc = (s) => encodeURIComponent(s).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
 function verify(req, url) {
@@ -89,6 +90,7 @@ const s3 = http.createServer((req, res) => {
       if (!b) res.writeHead(404).end();
       else res.writeHead(200, { "Content-Length": b.length }).end();
     } else if (req.method === "DELETE") {
+      if (failDeletes.has(key)) return res.writeHead(500).end("InternalError");
       store.delete(key);
       res.writeHead(204).end();
     } else res.writeHead(405).end();
@@ -204,7 +206,8 @@ try {
   await status(await call("/v1/backup/done", { key: X.installKey, json: { shopRef: "a", name: "photo/MachinePhoto/p1-aaaaaaaaaaaaaaaa" } }), 409, "done before the upload");
   assert.equal((await fetch(a1.url, { method: "PUT", body: Buffer.alloc(77) })).status, 403, "the address is signed for its size: another size is refused");
   refused.length = 0;
-  await status(await call("/v1/backup/done", { key: X.installKey, json: { shopRef: "a", name: "photo/MachinePhoto/p1-aaaaaaaaaaaaaaaa" } }), 409, "done at the wrong size");
+  store.set(`${shopA}/photo/MachinePhoto/p1-aaaaaaaaaaaaaaaa`, Buffer.alloc(77)); // there at another size all the same
+  assert.match((await status(await call("/v1/backup/done", { key: X.installKey, json: { shopRef: "a", name: "photo/MachinePhoto/p1-aaaaaaaaaaaaaaaa" } }), 409, "done at the wrong size")).error, /is 77 bytes, not the 100 announced/);
   assert.ok(!(await okJson(await call("/v1/backup/list?shopRef=a", { key: X.installKey }))).objects.some((o) => o.name.startsWith("photo/")), "an unconfirmed object isn't listed");
   await fetch(a1.url, { method: "PUT", body: Buffer.alloc(100) });
   await okJson(await call("/v1/backup/done", { key: X.installKey, json: { shopRef: "a", name: "photo/MachinePhoto/p1-aaaaaaaaaaaaaaaa" } }));
@@ -228,6 +231,12 @@ try {
   // The install's companies together have a space too (21 KB here; 20,100 bytes used): a new company can't claim more.
   await claim(X.installKey, "c", "C Crafts");
   assert.match((await status(await put(X.installKey, "c", "photo/MachinePhoto/p4-eeeeeeeeeeeeeeee", crypto.randomBytes(2000)), 413, "over the install's space")).error, /install's backup space/);
+  // A company that pays its own way (a running subscription: a hosted service's paying companies) has only its own space:
+  // b's bytes stop counting against the install's, so c fits again.
+  const shopB = (await db.query(`SELECT id FROM shops WHERE shop_ref = 'b' AND install_id = (SELECT install_id FROM shops WHERE id = $1)`, [shopA])).rows[0].id;
+  await db.query(`INSERT INTO subscriptions (shop_id, stripe_subscription_id, status, current_period_end) VALUES ($1, $2, 'active', now() + interval '30 days')`, [shopB, `sub_backup_${RUN}`]);
+  await okJson(await put(X.installKey, "c", "photo/MachinePhoto/p4-eeeeeeeeeeeeeeee", crypto.randomBytes(2000)), "b pays its own way: c fits in the install's space");
+  await okJson(await put(X.installKey, "b", "photo/MachinePhoto/p4-eeeeeeeeeeeeeeee", crypto.randomBytes(900)), "and b isn't held to the install's space, only its own");
   console.log("  ok  over the space new pictures wait and the company file still goes; each company has its own space, within the install's");
 
   // ----- isolation: a second company, a second install -----
@@ -297,7 +306,10 @@ try {
   assert.equal((await fetch(sa.url, { method: "PUT", body: stale })).status, 200);
   const fresh = await okJson(await put(Z.installKey, "a", "photo/MachinePhoto/p6-0000000000000000", stale));
   assert.ok(fresh.url);
-  await db.query(`UPDATE backup_objects SET created_at = now() - interval '7 hours' WHERE name = 'photo/MachinePhoto/p5-ffffffffffffffff'`);
+  // One whose object the bucket won't delete just now: its row stays for the next sweep (no orphaned object).
+  await okJson(await put(Z.installKey, "a", "photo/MachinePhoto/p7-1111111111111111", stale));
+  failDeletes.add(`${shopA}/photo/MachinePhoto/p7-1111111111111111`);
+  await db.query(`UPDATE backup_objects SET created_at = now() - interval '7 hours' WHERE name IN ('photo/MachinePhoto/p5-ffffffffffffffff', 'photo/MachinePhoto/p7-1111111111111111')`);
   hub.kill();
   ({ hub, HUB } = await startHub({ ...s3env, BACKUP_SWEEP_MS: "300" }));
   const swept = async () => (await db.query(`SELECT deleted_at FROM backup_objects WHERE name = 'photo/MachinePhoto/p5-ffffffffffffffff'`)).rows[0].deleted_at;
@@ -305,6 +317,11 @@ try {
   assert.ok(await swept(), "the stale row is marked deleted");
   assert.ok(![...store.keys()].some((k) => k.endsWith("p5-ffffffffffffffff")), "and its object is gone from the bucket");
   assert.equal((await db.query(`SELECT deleted_at FROM backup_objects WHERE name = 'photo/MachinePhoto/p6-0000000000000000'`)).rows[0].deleted_at, null, "a fresh unconfirmed one stays");
+  const p7 = async () => (await db.query(`SELECT deleted_at FROM backup_objects WHERE name = 'photo/MachinePhoto/p7-1111111111111111'`)).rows[0].deleted_at;
+  assert.equal(await p7(), null, "a row whose object couldn't be deleted stays");
+  failDeletes.clear();
+  for (let i = 0; i < 50 && !(await p7()); i++) await new Promise((r) => setTimeout(r, 200));
+  assert.ok(await p7(), "and goes at a later sweep, once the bucket deletes it");
   assert.equal(zl.objects.length, 2);
   assert.equal((await okJson(await call("/v1/backup/list?shopRef=a", { key: Z.installKey }))).objects.length, 2, "confirmed objects are never swept");
   console.log("  ok  upload addresses never confirmed are swept after 6 hours, object and row; confirmed ones stay");

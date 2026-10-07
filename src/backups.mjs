@@ -17,7 +17,7 @@
 //   POST   /account/api/shops/:id/restore-code                the owner, from the account page: a restore code for 24 hours
 import crypto from "node:crypto";
 import { bodyLimit } from "hono/body-limit";
-import { one, q, tx } from "./db.mjs";
+import { one, paysOwnWay, q, tx } from "./db.mjs";
 import { deleteObject, headObject, presign, s3Config } from "./s3.mjs";
 import { refuseIfMoved } from "./moves.mjs";
 
@@ -26,7 +26,11 @@ const SHA = /^[0-9a-f]{64}$/;
 const GB = 1024 ** 3;
 /** What a company may keep there: 25 GB included (design 1.4), BACKUP_QUOTA_GB to change. */
 export const quotaBytes = () => Math.round((Number(process.env.BACKUP_QUOTA_GB) > 0 ? Number(process.env.BACKUP_QUOTA_GB) : 25) * GB);
-/** What all the companies of one install may keep together (a company claim is cheap): BACKUP_INSTALL_QUOTA_GB, 250 GB. */
+/**
+ * What the companies of one install that don't pay their own way (no running subscription, no comp: db.mjs paysOwnWay) may
+ * keep together, since a company claim is cheap: BACKUP_INSTALL_QUOTA_GB, 250 GB. A paying company has only its own quota,
+ * so the many companies of a hosted service never share one install's space.
+ */
 export const installQuotaBytes = () => Math.round((Number(process.env.BACKUP_INSTALL_QUOTA_GB) > 0 ? Number(process.env.BACKUP_INSTALL_QUOTA_GB) : 250) * GB);
 // An upload address handed out and never confirmed is swept (the object, if any, deleted; the row too) after this long.
 const UNCONFIRMED_HOURS = 6;
@@ -68,23 +72,34 @@ export function registerBackups({ app, member, acct, fail, newId, allow, bucket,
 
   const usedBytes = async (shopId) => Number((await one(`SELECT coalesce(sum(size), 0) AS n FROM backup_objects WHERE shop_id = $1 AND deleted_at IS NULL`, [shopId])).n);
   const installBytes = async (installId) =>
-    Number((await one(`SELECT coalesce(sum(b.size), 0) AS n FROM backup_objects b JOIN shops s ON s.id = b.shop_id WHERE s.install_id = $1 AND b.deleted_at IS NULL`, [installId])).n);
+    Number((await one(`SELECT coalesce(sum(b.size), 0) AS n FROM backup_objects b JOIN shops s ON s.id = b.shop_id WHERE s.install_id = $1 AND b.deleted_at IS NULL AND NOT ${paysOwnWay("s")}`, [installId])).n);
 
-  // Addresses handed out and never confirmed (an upload given up, or never meant) are swept: the row is marked deleted
-  // first, so a fresh put of the same name in the meantime brings it back, then the object goes.
+  // Addresses handed out and never confirmed (an upload given up, or never meant) are swept. Each row is looked at again
+  // just before its object goes (a fresh put of the same name, or one confirmed meanwhile, is left alone), and marked
+  // deleted only after the object went, and only while it is still the upload that was swept: a failed delete leaves the
+  // row for the next sweep.
   async function sweep() {
     const s3 = s3Config();
     if (!s3) return;
     const { rows } = await q(
-      `UPDATE backup_objects SET deleted_at = now()
-       WHERE (shop_id, name) IN (SELECT shop_id, name FROM backup_objects WHERE confirmed_at IS NULL AND deleted_at IS NULL AND created_at < now() - make_interval(hours => $1) LIMIT 500)
-       RETURNING shop_id, name`,
+      `SELECT shop_id, name, created_at::text AS created_at FROM backup_objects WHERE confirmed_at IS NULL AND deleted_at IS NULL AND created_at < now() - make_interval(hours => $1) LIMIT 500`,
       [UNCONFIRMED_HOURS],
     );
-    for (const r of rows) await deleteObject(s3, objectKey(r.shop_id, r.name)).catch((e) => console.error(`backup sweep: ${r.shop_id}/${r.name}:`, e.message));
-    if (rows.length) console.log(`backup sweep: ${rows.length} unconfirmed upload(s) older than ${UNCONFIRMED_HOURS} hours removed`);
+    const still = `shop_id = $1 AND name = $2 AND created_at = $3::timestamptz AND confirmed_at IS NULL AND deleted_at IS NULL`;
+    let n = 0;
+    for (const r of rows) {
+      try {
+        if (!(await one(`SELECT 1 AS ok FROM backup_objects WHERE ${still}`, [r.shop_id, r.name, r.created_at]))) continue;
+        await deleteObject(s3, objectKey(r.shop_id, r.name));
+        n += (await q(`UPDATE backup_objects SET deleted_at = now() WHERE ${still}`, [r.shop_id, r.name, r.created_at])).rowCount;
+      } catch (e) {
+        console.error(`backup sweep: ${r.shop_id}/${r.name}:`, e.message);
+      }
+    }
+    if (n) console.log(`backup sweep: ${n} unconfirmed upload(s) older than ${UNCONFIRMED_HOURS} hours removed`);
   }
-  const sweepMs = Number(process.env.BACKUP_SWEEP_MS) > 0 ? Number(process.env.BACKUP_SWEEP_MS) : 1800_000;
+  // At most 2^31-1 ms (about 24 days): a longer timer runs at once, and again every millisecond.
+  const sweepMs = Math.min(Number(process.env.BACKUP_SWEEP_MS) > 0 ? Number(process.env.BACKUP_SWEEP_MS) : 1800_000, 2 ** 31 - 1);
   const sweepSoon = () => sweep().catch((e) => console.error("backup sweep:", e.message));
   setTimeout(sweepSoon, Math.min(sweepMs, 60_000)).unref();
   setInterval(sweepSoon, sweepMs).unref();
@@ -104,8 +119,9 @@ export function registerBackups({ app, member, acct, fail, newId, allow, bucket,
     const after = used - Number(had?.size ?? 0) + size;
     const limit = quotaBytes();
     if (kind === "photo" ? after > limit : after > limit * 1.2) throw fail(413, "This company's backup space is full. Pictures wait until space is freed; the company file is still kept.");
-    // The install's companies together, the same way.
-    const installAfter = (await installBytes(shop.install_id)) - Number(had?.size ?? 0) + size;
+    // The install's companies that don't pay their own way, together, the same way (a paying company has only its own).
+    const paying = await one(`SELECT 1 AS ok FROM shops s WHERE s.id = $1 AND ${paysOwnWay("s")}`, [shop.id]);
+    const installAfter = paying ? 0 : (await installBytes(shop.install_id)) - Number(had?.size ?? 0) + size;
     if (kind === "photo" ? installAfter > installQuotaBytes() : installAfter > installQuotaBytes() * 1.2) throw fail(413, "This install's backup space is full. Pictures wait until space is freed; the company file is still kept.");
     await q(
       `INSERT INTO backup_objects (shop_id, name, kind, size, sha256) VALUES ($1, $2, $3, $4, $5)

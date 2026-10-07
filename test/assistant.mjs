@@ -60,7 +60,7 @@ async function startHub(env = {}) {
       ASSISTANT_TOPUP_CALLS: "5",
       ASSISTANT_FREE_READS: "3",
       ASSISTANT_FREE_READS_PER_INSTALL: "5",
-      ASSISTANT_FREE_DAILY: "7",
+      ASSISTANT_FREE_DAILY: "8",
       ASSISTANT_TEST_CLOCK: "true",
       ...env,
     },
@@ -187,12 +187,21 @@ try {
   // The install's ceiling (5 here) counts all its companies together; then the hub's daily one (7 here) counts every install.
   const SA3 = "shopa0000000000000000003";
   await claim(keyA, SA3);
-  for (let i = 0; i < 2; i++) assert.equal((await ok(await plate({ shopRef: SA3 }))).free, true);
+  assert.equal((await ok(await plate({ shopRef: SA3 }))).free, true);
+  // The plate reader retries an unsure read on the suggest model: allowed the same way, one free read.
+  const retry = await ok(await plate({ shopRef: SA3, model: "suggest", maxTokens: 2000 }));
+  assert.deepEqual([retry.free, retry.freeReads, retry.model], [true, 2, "claude-sonnet-5-5"]);
+  assert.equal(mock.requests.at(-1).maxTokens, 600, "a free read's answer is kept as short as the read model's");
   await refused(await plate({ shopRef: SA3 }), 402, /This install's companies have used this month's 5 free plate reads/, "the install's 6th free read");
+  // A company that pays its own way (a hosted service's paying companies) isn't held to the install's ceiling, only its own 3.
+  const SA3id = (await db.query(`SELECT id FROM shops WHERE install_id = $1 AND shop_ref = $2`, [idA, SA3])).rows[0].id;
+  await db.query(`INSERT INTO subscriptions (shop_id, stripe_subscription_id, status, current_period_end) VALUES ($1, 'sub_assistant_test', 'active', now() + interval '30 days')`, [SA3id]);
+  assert.equal((await ok(await plate({ shopRef: SA3 }))).freeReads, 3, "a paying company's free read past the install's ceiling");
+  await refused(await plate({ shopRef: SA3 }), 402, /used this month's 3 free plate reads/, "and its own 3 still hold");
   await claim(keyB, SB);
   for (let i = 0; i < 2; i++) assert.equal((await ok(await ask(keyB, { shopRef: SB, feature: "read_plate", model: "read", text: "Read the plate.", image: png }))).free, true);
-  await refused(await ask(keyB, { shopRef: SB, feature: "read_plate", model: "read", text: "Read the plate.", image: png }), 503, /paused on this hub for today/, "the hub's 8th free read today");
-  console.log("free reads: ok (claimed company, read model with a photo, the install's and the hub's ceilings)");
+  await refused(await ask(keyB, { shopRef: SB, feature: "read_plate", model: "read", text: "Read the plate.", image: png }), 503, /paused on this hub for today/, "the hub's 9th free read today");
+  console.log("free reads: ok (claimed company, read or suggest model with a photo, the install's and the hub's ceilings, a paying company's own)");
 
   // Keys that don't count.
   await refused(await ask(keyA, { shopRef: SA, key: keyFor(SB) }), 402, /isn't turned on/, "another company's key");
@@ -222,11 +231,13 @@ try {
   assert.ok(mock.requests.at(-1).messages.length === 1);
   await refused(await ask(keyA, { shopRef: SA, key: A }), 402, /used this month's 5 Assistant calls/, "the 6th call");
   // A key belongs to the company that first used it: the same key copied to another install (or another company) counts for nobody else.
+  await claim(keyB, SA);
   await refused(await ask(keyB, { shopRef: SA, key: A }), 402, /isn't turned on/, "the company's key copied to another install");
   assert.equal((await db.query(`SELECT install_id, shop_ref FROM assistant_key_binds`)).rows.every((b) => b.install_id === idA && b.shop_ref === SA), true, "only install A's company holds a key");
   const mockCount = mock.requests.length;
   // The other company on the same install has its own 5; another install its own.
   const A2 = keyFor("shopa0000000000000000002");
+  await claim(keyA, "shopa0000000000000000002");
   assert.equal((await ok(await ask(keyA, { shopRef: "shopa0000000000000000002", key: A2 }))).calls, 1, "a second company on the install counts on its own");
   assert.equal((await ok(await ask(keyB, { shopRef: SB, key: keyFor(SB) }))).calls, 1, "another install counts on its own");
   assert.equal((await ok(await ask(keyA, { shopRef: SA, feature: "ask_manuals", model: "manuals", key: A, now: "2026-11-02T18:00:00Z" }))).model, "claude-opus-5-5", "the manuals class is Opus 5.5 (in November's fresh month)");
@@ -248,6 +259,8 @@ try {
   const SNZ = "shopnz000000000000000001";
   const LA = keyFor(SLA);
   const NZ = keyFor(SNZ);
+  await claim(keyB, SLA);
+  await claim(keyB, SNZ);
   for (let i = 1; i <= 5; i++) {
     await ok(await ask(keyB, { shopRef: SLA, tz: "America/Los_Angeles", key: LA, now: "2026-10-31T20:00:00Z" }));
     await ok(await ask(keyB, { shopRef: SNZ, tz: "Pacific/Auckland", key: NZ, now: "2026-10-31T10:00:00Z" })); // Oct 31 23:00 NZ
@@ -270,6 +283,33 @@ try {
   assert.equal(u2.freeReadsLimit, 3);
   assert.equal((await call(`/v1/assistant/usage?shopRef=${SA}`)).status, 401, "no install key, no answer");
 
+  // A key of the owner's signer is bound only by a real call, from an install that has claimed the company: a look at the
+  // usage binds nothing, an unclaimed company binds nothing, and the admin can clear a binding.
+  const SE = "shope0000000000000000001";
+  const E = keyFor(SE);
+  const binds = async () => (await db.query(`SELECT install_id FROM assistant_key_binds WHERE shop_ref = $1`, [SE])).rows.map((r) => r.install_id);
+  assert.equal((await ok(await call(`/v1/assistant/usage?shopRef=${SE}&tz=UTC`, { key: keyB, headers: { "x-test-now": NOW, "x-assistant-key": E } }))).entitled, true, "a look says the key is good");
+  await refused(await ask(keyA, { shopRef: SE, key: E }), 402, /isn't turned on/, "a company the install never claimed");
+  assert.deepEqual(await binds(), [], "neither bound the key");
+  await claim(keyA, SE);
+  await claim(keyB, SE);
+  assert.equal((await ok(await ask(keyA, { shopRef: SE, key: E }))).free, false, "the first real call from a claimed company binds it");
+  assert.deepEqual(await binds(), [idA]);
+  await refused(await ask(keyB, { shopRef: SE, key: E }), 402, /isn't turned on/, "then it is A's");
+  assert.equal((await ok(await call("/v1/admin/assistant/unbind", { key: ADMIN, json: { installId: idA, shopRef: SE } }))).removed, 1);
+  assert.equal((await ok(await ask(keyB, { shopRef: SE, key: E }))).free, false, "cleared by the admin: the next real call binds it");
+  assert.deepEqual(await binds(), [idB]);
+  await refused(await call("/v1/admin/assistant/unbind", { key: ADMIN, json: {} }), 400, /keyId/, "unbind needs a key or a company");
+  // A key the hub signed under an older kid (now in ASSISTANT_PUBLIC_KEYS after a rotation) is on record: revoked there, refused.
+  const SG = "shopg0000000000000000001";
+  await claim(keyA, SG);
+  const G = keyFor(SG);
+  const gId = JSON.parse(Buffer.from(G.split(".")[1], "base64url").toString()).id;
+  const SGid = (await db.query(`SELECT id FROM shops WHERE install_id = $1 AND shop_ref = $2`, [idA, SG])).rows[0].id;
+  await db.query(`INSERT INTO license_issues (key_id, shop_id, kid, plan, modules, first_day, last_day, key, revoked_at) VALUES ($1, $2, 't1', 'm', '{assistant}', '2026-09-01', '2027-09-30', $3, now())`, [gId, SGid, G]);
+  await refused(await ask(keyA, { shopRef: SG, key: G }), 402, /has ended/, "a revoked key of an older kid");
+  assert.deepEqual((await db.query(`SELECT 1 FROM assistant_key_binds WHERE key_id = $1`, [gId])).rows, [], "and it isn't bound like an owner's key");
+
   // The admin's comp: the Assistant without a key until a day.
   const SC = "shopc0000000000000000001";
   await ok(await call("/v1/admin/assistant/comp", { key: ADMIN, json: { installId: idB, shopRef: SC, until: "2026-12-31", note: "friend" } }));
@@ -280,6 +320,7 @@ try {
   await fetch(`${mock.url}/__next`, { method: "POST", body: JSON.stringify({ text: "slow answer", delayMs: 900 }) });
   const SD = "shopd0000000000000000001";
   const DK = keyFor(SD);
+  await claim(keyB, SD);
   const first = ask(keyB, { shopRef: SD, key: DK });
   await new Promise((r) => setTimeout(r, 250));
   await refused(await ask(keyB, { shopRef: SD, key: DK }), 429, /still answering/, "a second call while one runs");
@@ -346,6 +387,17 @@ try {
   assert.deepEqual([...used].sort(), ["/assistant/comp", "/assistant/errors", "/assistant/topup", "/assistant/usage"], "the page calls exactly these");
   for (const id of ["assistantSection", "aShops", "aErrors", "aMonth", "aForm"]) assert.ok(html.includes(`id="${id}"`), `${id} is on the page`);
   console.log("assistant admin page: ok");
+
+  // Free reads sent at once are all counted against the install's ceiling (2 here: 3 at once, 2 answered); an empty
+  // ASSISTANT_FREE_DAILY is its default (500), not 0, and "1,000" isn't a number: the default too.
+  await stopHub();
+  await startHub({ ASSISTANT_FREE_READS_PER_INSTALL: "2", ASSISTANT_FREE_DAILY: "", ASSISTANT_HOURLY_CALLS: "1,000" });
+  const keyF = await register("Burst Install");
+  const burstRefs = ["shopf0000000000000000001", "shopf0000000000000000002", "shopf0000000000000000003"];
+  for (const ref of burstRefs) await claim(keyF, ref);
+  const burst = await Promise.all(burstRefs.map((ref) => ask(keyF, { shopRef: ref, feature: "read_plate", model: "read", text: "Read the plate.", image: png })));
+  assert.deepEqual(burst.map((r) => r.status).sort(), [200, 200, 402], "three at once against a ceiling of two");
+  console.log("free reads at once, and the variables read safely: ok");
   const exportBody = Buffer.from(await (await call("/v1/admin/export", { key: ADMIN })).arrayBuffer());
   assert.ok(!(await import("node:zlib")).gunzipSync(exportBody).toString().includes(ANTHROPIC_KEY), "the export never holds the Anthropic key");
   console.log("assistant proxy: ok");
