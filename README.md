@@ -381,6 +381,16 @@ brand, a shared fit and names a letter apart and what asking about them costs; w
 Batch API (about $1.30 for the whole cross-reference, `ANTHROPIC_API_KEY` needed) and lists the groups it says are one part
 (every verdict in `duplicate-xparts.json`). It changes nothing: merge by hand in the program. `npm run test:xpart-dups`.
 
+## Off-site backups
+
+`src/backups.mjs` (the routes are listed at its top): the hub hands out short-lived S3 addresses (`BACKUP_S3_ENDPOINT`,
+`_BUCKET`, `_KEY_ID`, `_SECRET`, `_REGION`) for bytes already encrypted with the owner's key. Each company may keep
+`BACKUP_QUOTA_GB` (25); over it new pictures wait and the company file still goes, up to a fifth over. The companies of one
+install that don't pay their own way (no running subscription, no comp) share `BACKUP_INSTALL_QUOTA_GB` (250) besides, since
+a company claim is cheap; a paying company has only its own quota, so a hosted service's paying companies never share one
+install's space. An upload address never confirmed is swept after 6 hours (`BACKUP_SWEEP_MS`, every 30 minutes): the object
+first, then the row, so a failed delete is tried again at the next sweep. `npm run test:backup` (a fresh database).
+
 ## Terms of Service and Privacy Policy
 The hub serves both documents from markdown files in `legal/`: `terms-<version>.md` and `privacy-<version>.md`, one
 version string for the pair. A version is the day it comes into force, `YYYY-MM-DD` (`YYYY-MM-DD.2` for a second one
