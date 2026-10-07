@@ -4,7 +4,10 @@
 // keeps its store. Named in the design: put, list, get, delete; and the restore code (a move token the owner mints from the
 // StitchHub account, good 24 hours) that lets a new install read the store and then take the company over (/v1/shops/move).
 //
-//   POST   /v1/backup/put     { shopRef, name, size, sha256 } -> { url, method: "PUT", expiresIn }   refused over the quota (photos)
+//   POST   /v1/backup/put     { shopRef, name, size, sha256, checksum? } -> { url, method: "PUT", expiresIn, headers }
+//                                                            refused over the quota (photos); the address is signed for
+//                                                            that size (content-length) and, with checksum: "sha256",
+//                                                            for those bytes (send `headers` with the PUT)
 //   POST   /v1/backup/done    { shopRef, name }               the program uploaded it: the hub checks the object is there at its size
 //   GET    /v1/backup/list    ?shopRef                        -> { objects, usedBytes, quotaBytes }
 //   POST   /v1/backup/get     { shopRef, name }               -> { url, expiresIn }
@@ -23,6 +26,10 @@ const SHA = /^[0-9a-f]{64}$/;
 const GB = 1024 ** 3;
 /** What a company may keep there: 25 GB included (design 1.4), BACKUP_QUOTA_GB to change. */
 export const quotaBytes = () => Math.round((Number(process.env.BACKUP_QUOTA_GB) > 0 ? Number(process.env.BACKUP_QUOTA_GB) : 25) * GB);
+/** What all the companies of one install may keep together (a company claim is cheap): BACKUP_INSTALL_QUOTA_GB, 250 GB. */
+export const installQuotaBytes = () => Math.round((Number(process.env.BACKUP_INSTALL_QUOTA_GB) > 0 ? Number(process.env.BACKUP_INSTALL_QUOTA_GB) : 250) * GB);
+// An upload address handed out and never confirmed is swept (the object, if any, deleted; the row too) after this long.
+const UNCONFIRMED_HOURS = 6;
 const RESTORE_HOURS = 24;
 const UP_SECONDS = 3600; // a big file on a slow line
 const DOWN_SECONDS = 900;
@@ -60,6 +67,27 @@ export function registerBackups({ app, member, acct, fail, newId, allow, bucket,
   }
 
   const usedBytes = async (shopId) => Number((await one(`SELECT coalesce(sum(size), 0) AS n FROM backup_objects WHERE shop_id = $1 AND deleted_at IS NULL`, [shopId])).n);
+  const installBytes = async (installId) =>
+    Number((await one(`SELECT coalesce(sum(b.size), 0) AS n FROM backup_objects b JOIN shops s ON s.id = b.shop_id WHERE s.install_id = $1 AND b.deleted_at IS NULL`, [installId])).n);
+
+  // Addresses handed out and never confirmed (an upload given up, or never meant) are swept: the row is marked deleted
+  // first, so a fresh put of the same name in the meantime brings it back, then the object goes.
+  async function sweep() {
+    const s3 = s3Config();
+    if (!s3) return;
+    const { rows } = await q(
+      `UPDATE backup_objects SET deleted_at = now()
+       WHERE (shop_id, name) IN (SELECT shop_id, name FROM backup_objects WHERE confirmed_at IS NULL AND deleted_at IS NULL AND created_at < now() - make_interval(hours => $1) LIMIT 500)
+       RETURNING shop_id, name`,
+      [UNCONFIRMED_HOURS],
+    );
+    for (const r of rows) await deleteObject(s3, objectKey(r.shop_id, r.name)).catch((e) => console.error(`backup sweep: ${r.shop_id}/${r.name}:`, e.message));
+    if (rows.length) console.log(`backup sweep: ${rows.length} unconfirmed upload(s) older than ${UNCONFIRMED_HOURS} hours removed`);
+  }
+  const sweepMs = Number(process.env.BACKUP_SWEEP_MS) > 0 ? Number(process.env.BACKUP_SWEEP_MS) : 1800_000;
+  const sweepSoon = () => sweep().catch((e) => console.error("backup sweep:", e.message));
+  setTimeout(sweepSoon, Math.min(sweepMs, 60_000)).unref();
+  setInterval(sweepSoon, sweepMs).unref();
 
   member.post("/backup/put", small, async (c) => {
     const s3 = cfg();
@@ -76,12 +104,18 @@ export function registerBackups({ app, member, acct, fail, newId, allow, bucket,
     const after = used - Number(had?.size ?? 0) + size;
     const limit = quotaBytes();
     if (kind === "photo" ? after > limit : after > limit * 1.2) throw fail(413, "This company's backup space is full. Pictures wait until space is freed; the company file is still kept.");
+    // The install's companies together, the same way.
+    const installAfter = (await installBytes(shop.install_id)) - Number(had?.size ?? 0) + size;
+    if (kind === "photo" ? installAfter > installQuotaBytes() : installAfter > installQuotaBytes() * 1.2) throw fail(413, "This install's backup space is full. Pictures wait until space is freed; the company file is still kept.");
     await q(
       `INSERT INTO backup_objects (shop_id, name, kind, size, sha256) VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT (shop_id, name) DO UPDATE SET size = EXCLUDED.size, sha256 = EXCLUDED.sha256, created_at = now(), confirmed_at = NULL, deleted_at = NULL`,
       [shop.id, name, kind, size, String(body.sha256)],
     );
-    return c.json({ url: presign(s3, "PUT", objectKey(shop.id, name), { expires: UP_SECONDS }), method: "PUT", expiresIn: UP_SECONDS });
+    // Signed for its size, so the address can't take more than was counted; with checksum: "sha256", for its bytes too.
+    const headers = body.checksum === "sha256" ? { "x-amz-checksum-sha256": Buffer.from(String(body.sha256), "hex").toString("base64") } : {};
+    const url = presign(s3, "PUT", objectKey(shop.id, name), { expires: UP_SECONDS, headers: { "content-length": String(size), ...headers } });
+    return c.json({ url, method: "PUT", expiresIn: UP_SECONDS, headers });
   });
 
   member.post("/backup/done", small, async (c) => {
