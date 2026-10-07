@@ -190,7 +190,8 @@ export const TABLES = [
     table: "hop_shops",
     cols: ["hop_id", "install_id", "shop_ref", "shop_name", "public_key", "role", "status", "joined_at", "left_at"],
     key: "hop_id || '|' || install_id || '|' || shop_ref",
-    conflict: ["hop_id", "install_id", "shop_ref"],
+    // A company is in a hop once (hop_id, shop_ref), whichever install it is on: a row that moved replaces the old one.
+    conflict: ["hop_id", "shop_ref"],
   },
   { t: "hop_invite", table: "hop_invites", cols: ["code_hash", "hop_id", "expires_at", "used_by_install", "used_by_shop_ref", "used_at", "created_at"], key: "code_hash" },
   { t: "hop_passport", table: "hop_passports", cols: ["id", "hop_id", "code", "name", "email", "phone", "share", "created_at"] },
