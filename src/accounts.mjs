@@ -31,7 +31,10 @@ const COOKIE = "hub_session";
 const KINDS = new Set(["repair", "retail", "both"]);
 const PROGRAMS = new Set(["StitchBench", "StitchShop"]);
 const ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"; // no 0/O, 1/I/L: the code is read off one screen and typed on another
-const WRONG_PASSWORDS = 200; // wrong sign-ins from everywhere together in an hour, like WRONG_JOIN_KEYS
+// Wrong sign-ins in an hour: per sender's address (20) and per account (10) do the limiting; everywhere together is only a
+// backstop against a flood, high enough that nobody can lock every sign-in by guessing on purpose.
+const WRONG_PASSWORDS = 20_000;
+const WRONG_PER_ACCOUNT = 10;
 // The passwords everyone tries first. Refused however long they are.
 const COMMON = new Set(["123456", "password", "12345678", "qwerty", "123456789", "12345", "1234", "111111", "1234567", "dragon", "123123", "baseball", "abc123", "football", "monkey", "letmein", "shadow", "master", "696969", "mustang", "password1", "qwerty123", "iloveyou", "sunshine", "princess", "welcome", "stitchbench", "stitchhub", "stitchshop"]);
 const SCRYPT = { N: 2 ** 15, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
@@ -434,16 +437,18 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
     if (body.acceptTerms !== true) throw fail(400, "Tick the box to accept the terms.");
     const terms = currentVersion();
     checkShown(body, fail);
-    const existing = await one(`SELECT id, verified_at, password_hash FROM accounts WHERE lower(email) = $1`, [email]);
-    if (existing && (existing.verified_at || existing.password_hash)) throw fail(409, "That address already has an account. Sign in, or use \"Forgot your password\".");
     const hash = await hashPassword(password);
+    const existing = await one(`SELECT * FROM accounts WHERE lower(email) = $1`, [email]);
+    // An address that has an account already (one the program started, with no password yet, included): the password
+    // sent here is never put on it, or a stranger's would work once the owner opened the link we mail. The owner is sent
+    // a link to set the password instead, and the answer is the same as for a new account.
+    if (existing) {
+      if (!existing.disabled && allow(`acct-reset:${existing.id}`, 5)) await passwordLinkTo(existing);
+      return c.json({ ok: true });
+    }
     const token = await tx(async (client) => {
-      let id = existing?.id;
-      if (id) await client.query(`UPDATE accounts SET password_hash = $2 WHERE id = $1`, [id, hash]);
-      else {
-        id = newId();
-        await client.query(`INSERT INTO accounts (id, email, password_hash) VALUES ($1, $2, $3)`, [id, email, hash]);
-      }
+      const id = newId();
+      await client.query(`INSERT INTO accounts (id, email, password_hash) VALUES ($1, $2, $3)`, [id, email, hash]);
       await recordAcceptance(client, { accountId: id, version: terms, via: "signup" });
       return issueToken(client, "verify", { accountId: id }, SET_PASSWORD_HOURS * 3600_000);
     });
@@ -487,9 +492,12 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
     if (bucket(`acct-fail:${ip}`).n >= 20) throw fail(429, "Too many wrong sign-ins from this address. Wait an hour.");
     const body = await c.req.json();
     const email = emailOf(body.email);
+    // Counted per address typed (an account or not, so the answer doesn't say which), apart from the sender's address.
+    if (bucket(`acct-fail-email:${email}`).n >= WRONG_PER_ACCOUNT) throw fail(429, "Too many wrong passwords for this account lately. Wait an hour, or use \"Forgot your password\".");
     const a = await one(`SELECT * FROM accounts WHERE lower(email) = $1`, [email]);
     if (!a?.password_hash || !(await checkPassword(String(body.password ?? ""), a.password_hash))) {
       bucket(`acct-fail:${ip}`).n++;
+      bucket(`acct-fail-email:${email}`).n++;
       if (++wrong.n === WRONG_PASSWORDS) console.warn(`accounts: ${WRONG_PASSWORDS} wrong passwords this hour; sign-in is paused until the hour is up`);
       throw fail(401, "That email or password isn't right.");
     }
@@ -546,6 +554,13 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
       const token = await tx((client) => issueToken(client, "reset", { accountId: a.id }, SET_PASSWORD_HOURS * 3600_000));
       await setPasswordMail(a.email, { ...shop, token });
     }
+  }
+
+  /** A link to set the password: the program's first set-password email for an account with none, else a reset. */
+  async function passwordLinkTo(a) {
+    if (!a.password_hash) return resendTo(a);
+    const token = await tx((client) => issueToken(client, "reset", { accountId: a.id }, RESET_HOURS * 3600_000));
+    await resetMail(a.email, token);
   }
 
   acct.post("/password", async (c) => {
