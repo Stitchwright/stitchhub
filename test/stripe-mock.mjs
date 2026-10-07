@@ -227,11 +227,14 @@ export async function startStripeMock(o = {}) {
     if (!s) return null;
     if (s.status === "complete") return { session: s, delivered: [] };
     const price = priceOf(s.line_items.data[0].price.id);
-    // A one-time payment (an Assistant top-up): paid at once, no subscription, one event.
+    // A one-time payment (an Assistant top-up): paid at once, no subscription, one event; its charge has no invoice.
     if (s.mode === "payment") {
       s.status = "complete";
       s.payment_status = "paid";
       s.payment_intent = `pi_${hex(12)}`;
+      const ch = { id: `ch_${hex(12)}`, object: "charge", amount: price.unit_amount, amount_refunded: 0, refunded: false, customer: s.customer, invoice: null, payment_intent: s.payment_intent, status: "succeeded", created: now() };
+      charges.set(ch.id, ch);
+      s.charge = ch.id; // not Stripe's: for the tests to find the charge
       return { session: s, delivered: [await emit("checkout.session.completed", s)] };
     }
     const start = now();

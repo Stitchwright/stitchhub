@@ -190,6 +190,11 @@ function keyPayload(text, shopRef, what) {
 }
 const ask = (installKey, shopRef, key, n = 1) =>
   call("/v1/assistant", { key: installKey, json: { shopRef, tz: "UTC", feature: "draft_work_done", model: "draft", system: "You write for a sewing shop.", messages: [{ role: "user", content: `Tidy this ${n}` }], maxTokens: 100, key } });
+const mockApi = async (p, form) => {
+  const out = await fetch(stripeMock.url + p, { method: "POST", headers: { Authorization: "Bearer sk_test_asstbillmock12345678", "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(form).toString() }).then((r) => r.json());
+  await settle(p);
+  return out;
+};
 const usage = async (inst, ref) => (await db.query(`SELECT calls, bonus FROM assistant_usage WHERE install_id = $1 AND shop_ref = $2 ORDER BY month DESC LIMIT 1`, [inst, ref])).rows[0];
 
 try {
@@ -257,6 +262,14 @@ try {
   assert.match((await r.json()).error, /used this month's 5/);
   assert.deepEqual(await usage(instId, "shopA"), { calls: 5, bonus: 0 });
   console.log("the key works at the proxy and the month runs out: ok");
+  // The key copied to another install, for a company of the same id there, gives it nothing: the hub's key is on record
+  // for this install's company only.
+  const otherKey = await register("Assistant Billing Copy Install");
+  await claim(otherKey, { shopRef: "shopA", shopName: "Copy", kind: "repair", program: "StitchBench", version: "1.7.0", sole: true });
+  r = await ask(otherKey, "shopA", st.moduleKeys[0], 1);
+  assert.equal(r.status, 402, "a copied key");
+  assert.match((await r.json()).error, /isn't turned on/);
+  console.log("a copied key: ok");
 
   // ----- 5. buy 300 more: a payment Checkout, credited once by the webhook -----
   const tu = await ok(await page(a, `/shops/${shopA}/assistant/topup`, {}));
@@ -285,7 +298,15 @@ try {
   const sig = `t=${t},v1=${crypto.createHmac("sha256", WEBHOOK_SECRET).update(`${t}.${body}`).digest("hex")}`;
   await status(await fetch(`${HUB}/v1/stripe`, { method: "POST", headers: { "Content-Type": "application/json", "stripe-signature": sig }, body }), 200, "late event");
   assert.deepEqual(await usage(instId, "shopA"), { calls: 6, bonus: 5 }, "an unpaid session is not credited");
-  console.log("top-up: ok");
+  // A refunded top-up takes its calls back: half the money, half the calls (rounded up); the rest, the rest.
+  const topCharge = stripeMock.sessions.get(tu.sessionId).charge;
+  assert.equal((await mockApi("/v1/refunds", { charge: topCharge, amount: "500" })).object, "refund");
+  assert.deepEqual(await usage(instId, "shopA"), { calls: 6, bonus: 2 }, "half refunded: 3 of the 5 calls taken back");
+  assert.equal((await mockApi("/v1/refunds", { charge: topCharge })).object, "refund");
+  assert.deepEqual(await usage(instId, "shopA"), { calls: 6, bonus: 0 }, "refunded in full: all 5 taken back");
+  assert.equal((await db.query(`SELECT calls_taken FROM assistant_topups WHERE stripe_session_id = $1`, [tu.sessionId])).rows[0].calls_taken, 5);
+  assert.equal((await ask(installKey, "shopA", st.moduleKeys[0], 7)).status, 402, "the month is used up again");
+  console.log("top-up: ok (credited once, taken back on a refund)");
 
   // ----- 6. the base plan afterwards: its own subscription and key; the Assistant is not cancelled as "older" -----
   await db.query(`UPDATE shops SET created_at = now() - interval '40 days' WHERE id = $1`, [shopA]);
@@ -332,6 +353,22 @@ try {
   st = await standing(installKey, "shopA");
   assert.equal(keyPayload(st.moduleKeys[0], "shopA", "yearly key").p, "y");
   console.log("buy again, yearly: ok");
+
+  // ----- 8b. the Assistant's own payment refunded in full: its keys revoked, the subscription cancelled, no new key -----
+  const yearlyKey = keyPayload(st.moduleKeys[0], "shopA", "yearly key");
+  await db.query(`UPDATE assistant_usage SET calls = 0`);
+  assert.equal((await ask(installKey, "shopA", st.moduleKeys[0], 1)).status, 200, "the yearly key works before the refund");
+  assert.equal((await mockApi("/v1/refunds", { charge: paidY.invoice.charge })).object, "refund");
+  assert.equal(stripeMock.subscriptions.get(paidY.subscription.id).status, "canceled", "a full refund cancels the Assistant's subscription in Stripe");
+  assert.ok((await db.query(`SELECT unpaid_since FROM assistant_subscriptions WHERE shop_id = $1`, [shopA])).rows[0].unpaid_since, "the period is taken back");
+  r = await ask(installKey, "shopA", st.moduleKeys[0], 2);
+  assert.equal(r.status, 402, "the refunded key is refused at the proxy at once");
+  st = await standing(installKey, "shopA");
+  assert.deepEqual(st.moduleKeys, [], "no Assistant key after the refund");
+  assert.ok(st.revokeKeyIds.includes(yearlyKey.id), "the refunded key is named for removal");
+  me = await ok(await page(a, "/me"));
+  assert.equal(me.shops[0].assistant.status, "ended");
+  console.log("Assistant refund: ok");
 
   // ----- 9. a hub without the Assistant prices -----
   await stopHub();

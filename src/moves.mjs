@@ -94,6 +94,8 @@ export async function rewriteCompany(client, shop, to) {
   await run("posts", `UPDATE posts SET install_id = $3, seq = nextval('change_seq') WHERE install_id = $1 AND shop_ref = $2`);
   await run("link_revisions", `UPDATE link_revisions SET install_id = $3 WHERE install_id = $1 AND shop_ref = $2`);
   await run("xpart_revisions", `UPDATE xpart_revisions SET install_id = $3 WHERE install_id = $1 AND shop_ref = $2`);
+  // An Assistant key of the owner's own signer stays the company's (src/assistant.mjs binds it to the first that used it).
+  await run("assistant_key_binds", `UPDATE assistant_key_binds SET install_id = $3 WHERE install_id = $1 AND shop_ref = $2`);
   // Parts usage: a month the new install already reported for this company (it synced before the move) keeps the
   // newer of the two reports, which counts every ticket of the month since the company's tickets travel with it.
   await client.query(

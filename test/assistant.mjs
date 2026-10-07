@@ -59,6 +59,8 @@ async function startHub(env = {}) {
       ASSISTANT_MONTHLY_CALLS: "5",
       ASSISTANT_TOPUP_CALLS: "5",
       ASSISTANT_FREE_READS: "3",
+      ASSISTANT_FREE_READS_PER_INSTALL: "5",
+      ASSISTANT_FREE_DAILY: "7",
       ASSISTANT_TEST_CLOCK: "true",
       ...env,
     },
@@ -159,6 +161,15 @@ try {
   await refused(await ask(keyA, { shopRef: SA, key: "not a key" }), 402, /isn't turned on/, "a junk key");
   const png = { mediaType: "image/jpeg", data: Buffer.from("not really a photo").toString("base64") };
   const plate = (o = {}) => ask(keyA, { shopRef: SA, feature: "read_plate", model: "read", text: "Read the plate.", image: png, ...o });
+  // A free read is for a company that claimed itself on this install, on the read model, with a photo and a short prompt.
+  await refused(await plate(), 404, /hasn't told the hub/, "a free read for a company the install never claimed");
+  const claim = async (installKey, shopRef) => ok(await call("/v1/shops/claim", { key: installKey, json: { shopRef, shopName: `Shop ${shopRef}`, kind: "repair", program: "StitchBench", version: "1.6.1", sole: false } }));
+  await claim(keyA, SA);
+  await refused(await plate({ model: "manuals", image: undefined }), 400, /free plate read is the read model/, "a free read on the manuals model");
+  await refused(await plate({ image: undefined }), 400, /free plate read is the read model/, "a free read without a photo");
+  await refused(await plate({ text: "x".repeat(5000) }), 400, /free plate read is the read model/, "a free read with a long text");
+  await refused(await plate({ system: "y".repeat(5000) }), 400, /free plate read is the read model/, "a free read with long instructions");
+  assert.equal(mock.requests.length, 0, "none of those reached the model");
   for (let i = 1; i <= 3; i++) {
     const r = await ok(await plate());
     assert.equal(r.free, true, "free read");
@@ -173,6 +184,15 @@ try {
   await refused(await ask(keyA, { shopRef: SA, feature: "draft_work_done", image: png }), 400, /plate, bolt-label and swatch readers/, "a photo on another feature");
   await refused(await ask(keyA, { shopRef: SA, model: "turbo" }), 400, /model must be/, "an unknown model class");
   await refused(await ask(keyA, { shopRef: SA, tz: "Mars/Base" }), 400, /time zone/, "a bad zone");
+  // The install's ceiling (5 here) counts all its companies together; then the hub's daily one (7 here) counts every install.
+  const SA3 = "shopa0000000000000000003";
+  await claim(keyA, SA3);
+  for (let i = 0; i < 2; i++) assert.equal((await ok(await plate({ shopRef: SA3 }))).free, true);
+  await refused(await plate({ shopRef: SA3 }), 402, /This install's companies have used this month's 5 free plate reads/, "the install's 6th free read");
+  await claim(keyB, SB);
+  for (let i = 0; i < 2; i++) assert.equal((await ok(await ask(keyB, { shopRef: SB, feature: "read_plate", model: "read", text: "Read the plate.", image: png }))).free, true);
+  await refused(await ask(keyB, { shopRef: SB, feature: "read_plate", model: "read", text: "Read the plate.", image: png }), 503, /paused on this hub for today/, "the hub's 8th free read today");
+  console.log("free reads: ok (claimed company, read model with a photo, the install's and the hub's ceilings)");
 
   // Keys that don't count.
   await refused(await ask(keyA, { shopRef: SA, key: keyFor(SB) }), 402, /isn't turned on/, "another company's key");
@@ -201,6 +221,9 @@ try {
   assert.ok(mock.requests.every((r) => r.systemCached), "the hub marks the system block for caching");
   assert.ok(mock.requests.at(-1).messages.length === 1);
   await refused(await ask(keyA, { shopRef: SA, key: A }), 402, /used this month's 5 Assistant calls/, "the 6th call");
+  // A key belongs to the company that first used it: the same key copied to another install (or another company) counts for nobody else.
+  await refused(await ask(keyB, { shopRef: SA, key: A }), 402, /isn't turned on/, "the company's key copied to another install");
+  assert.equal((await db.query(`SELECT install_id, shop_ref FROM assistant_key_binds`)).rows.every((b) => b.install_id === idA && b.shop_ref === SA), true, "only install A's company holds a key");
   const mockCount = mock.requests.length;
   // The other company on the same install has its own 5; another install its own.
   const A2 = keyFor("shopa0000000000000000002");
