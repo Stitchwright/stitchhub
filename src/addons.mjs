@@ -30,8 +30,8 @@ export const LABELS = { vac: "Vac Shop", appliance: "Small Appliance Repair", sc
 export const modulesOf = (product) => (product === "bundle" ? [...ADDON_IDS] : [product]);
 // The decided prices (cents a month; a year is ten months), shown until Stripe has been asked for the real amounts.
 const MONTHLY_CENTS = { vac: 1000, appliance: 500, scheduling: 1500, marketing: 1000, maker: 1000, bundle: 3000, store: 2500 };
-// A shop holds at most this many single add-ons (with the Assistant's, the program takes five add-on keys); four cost as
-// much as the bundle or more anyway.
+// A shop holds at most this many single add-ons (four cost as much as the bundle or more anyway); the program takes eight
+// module keys (billing.mjs MAX_MODULE_KEYS), room for the Assistant's, the singles, the bundle and the comp's.
 export const MAX_SINGLES = 4;
 
 const idsOf = (env) => [...new Set((process.env[env] ?? "").split(",").map((s) => s.trim()).filter(Boolean))];
@@ -137,8 +137,16 @@ export async function syncAddonSub(client, s) {
     )
   ).rows[0];
   if (!known) console.warn(`stripe: ${product} subscription ${s.id} is on a price the hub doesn't know (${priceId}); treated as ${plan === "y" ? "yearly" : "monthly"}. Add it to ${addonVar(product, plan)}.`);
+  // Ended unpaid (Stripe's dunning gave up on a past_due one, or marked it unpaid): its key isn't sent again.
+  if (endedUnpaid(stored, s)) {
+    await revokeAddonKeys(client, shopId, product);
+    console.log(`billing: ${product} subscription ${s.id} of shop ${shopId} ended unpaid (${s.status}); its keys are revoked`);
+  }
   return row;
 }
+
+/** A subscription that was past_due (the same one) and now ended, or that Stripe marked unpaid: its period was never paid. */
+export const endedUnpaid = (stored, s) => s.status === "unpaid" || (stored?.stripe_subscription_id === s.id && stored.status === "past_due" && (s.status === "canceled" || s.status === "incomplete_expired"));
 
 /** One add-on row's standing, as the Assistant's: active | ending | past_due | on_hold | ended | none. */
 export function addonStatus(sub, t = day(new Date())) {
@@ -175,7 +183,8 @@ export function modulesOn(standings, shop) {
   if (compCovers(shop)) for (const m of ADDON_IDS) on.add(m);
   return [...on];
 }
-const compCovers = (shop) => Boolean(shop?.comp_addons && shop.comp_until && new Date(shop.comp_until).getTime() > Date.now());
+// A shop the admin lapsed ("Lapse now") has no comp of the add-ons either, until the comp is set again or it pays.
+const compCovers = (shop) => Boolean(shop?.comp_addons && shop.comp_until && new Date(shop.comp_until).getTime() > Date.now() && !shop.lapsed_at);
 
 const storedKey = (shopId, modules, plans) =>
   one(
@@ -188,7 +197,9 @@ const storedKey = (shopId, modules, plans) =>
 /**
  * The add-on keys the program should hold: one per add-on subscription (the stored one while it fits the paid-through
  * day, a new one when it changed), and the comp's when it covers the add-ons; a subscription that ended sends its last
- * key until it runs out. The bundle's and the comp's come first. Written to license_issues.
+ * key until it runs out. A past_due one signs nothing new (Stripe has already moved its period on to the unpaid one):
+ * its key from the last paid period runs out with its grace, and one that ends unpaid has it revoked (syncAddonSub).
+ * Written to license_issues.
  */
 export async function addonKeysFor(shop) {
   const { signer } = hubSigner();
@@ -223,8 +234,9 @@ export async function addonKeysFor(shop) {
     if (!st.row || (bundleRuns && product !== "bundle")) continue;
     const modules = modulesOf(product);
     const stored = await storedKey(shop.id, modules, ["m", "y"]);
-    // A cancelled subscription gets no new key (one cut short, as at the bundle switch, ended when it ended): its last runs out.
-    if (!signer || !runs(st) || !st.paidThrough || st.row.status === "canceled") {
+    // A cancelled subscription gets no new key (one cut short, as at the bundle switch, ended when it ended): its last runs
+    // out. Nor does a past_due one: its paid-through day is the period not paid yet.
+    if (!signer || !runs(st) || !st.paidThrough || st.row.status === "canceled" || st.row.status === "past_due") {
       if (stored) keys.push(stored.key);
       continue;
     }

@@ -288,8 +288,10 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
       const shop = await upsertShop(client, install, body);
       return { shop, listings: sole ? await claimListings(client, install.id, shop.shop_ref) : 0 };
     });
-    // The extra stores billed follow the stores reported (only when they differ from what is billed).
-    await billingHooks.syncStores(shop);
+    // The extra stores billed follow the stores reported (only when they differ from what is billed). After the answer, in
+    // the background: up to three Stripe calls must not hold up a claim (the program gives up on it after 30 seconds and
+    // the install's other companies wait), and a failure there never fails the claim (it is tried at the next one).
+    setImmediate(() => billingHooks.syncStores(shop).catch((e) => console.error(`billing: the extra stores of shop ${shop.id}: ${e.message}`)));
     return c.json({ ok: true, listings, ...(await standingAnswer(shop)) });
   });
 
@@ -708,7 +710,9 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
       if (Number.isNaN(until.getTime())) throw fail(400, "Give the last free day as YYYY-MM-DD, or \"forever\".");
     }
     // { addons: true }: the comp covers the five trade add-ons too ("everything"; the Assistant has its own comp). Left out,
-    // what was chosen before stays. A comp taken away, or no longer covering the add-ons, revokes their comp key.
+    // what was chosen before stays. Any change revokes the add-ons' comp key: a comp taken away, no longer covering the
+    // add-ons, or given a new last day (one in the past, or sooner than the key's) must not leave the old key live; while
+    // the comp still covers them the next claim signs one for the new last day.
     const addons = typeof body.addons === "boolean" ? body.addons : null;
     const r = await tx(async (client) => {
       const res = await client.query(
@@ -716,7 +720,7 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
            comp_addons = CASE WHEN $2::timestamptz IS NULL THEN false ELSE coalesce($4, comp_addons) END WHERE id = $1 RETURNING comp_addons`,
         [c.req.param("id"), until, until ? str(body.note, 300) : null, addons],
       );
-      if (res.rowCount && !res.rows[0].comp_addons) await revokeCompAddonKeys(client, c.req.param("id"));
+      if (res.rowCount) await revokeCompAddonKeys(client, c.req.param("id"));
       return res;
     });
     if (!r.rowCount) throw fail(404, "No such shop.");

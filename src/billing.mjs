@@ -25,10 +25,15 @@ import { sendMail } from "./mail.mjs";
 import * as stripe from "./stripe.mjs";
 import { signer as hubSigner, signKey, NO_END } from "./license.mjs";
 import { checkShown, currentVersion, needsAccept, recordAcceptance } from "./terms.mjs";
-import { assistantKeysFor, assistantOffer, assistantPaidAgain, assistantPriceFor, assistantStanding, assistantTookBack, creditTopupSession, isAssistantSub, syncAssistantSub, topupTookBack, RUNNING as ASSISTANT_RUNNING } from "./assistant-billing.mjs";
+import { assistantKeysFor, assistantPriceBook, assistantOffer, assistantPaidAgain, assistantPriceFor, assistantStanding, assistantTookBack, creditTopupSession, isAssistantSub, syncAssistantSub, topupTookBack, RUNNING as ASSISTANT_RUNNING } from "./assistant-billing.mjs";
 import {
   addonKeysFor,
   addonPaidAgain,
+  addonPriceBook,
+  addonStatus,
+  addonVar,
+  PRODUCTS as ADDON_PRODUCTS,
+  revokeCompAddonKeys,
   addonPriceFor,
   addonProductOf,
   addonRowOf,
@@ -118,8 +123,22 @@ export function billingProblem() {
   }
   const { conflicts } = priceBook();
   if (conflicts.length) return `A Stripe price is configured as two plans: ${conflicts.join("; ")}. Each price id goes in one variable only.`;
+  const overlaps = priceOverlaps();
+  if (overlaps.length) return `A Stripe price is configured for two products: ${overlaps.join("; ")}. Each price id goes in one variable only (the webhooks tell the plans, the Assistant and each add-on apart by price).`;
   if (!process.env.STRIPE_WEBHOOK_SECRET?.trim()) return "STRIPE_WEBHOOK_SECRET isn't set: Stripe's webhooks would be refused, so no payment would ever count.";
   return null;
+}
+/**
+ * Price ids configured for two products (a plan and an add-on, the Assistant and an add-on, two add-ons or an add-on's
+ * monthly and yearly): "<id> is in A and B" for each. A plan's own lists are checked by priceBook.
+ */
+export function priceOverlaps() {
+  const owners = new Map();
+  const add = (id, what) => owners.set(id, [...new Set([...(owners.get(id) ?? []), what])]);
+  for (const v of [...PRICE_VARS, ...LEGACY_VARS]) for (const id of idsOf(v.env)) add(id, "the plans");
+  for (const [id, x] of assistantPriceBook()) add(id, `the Assistant (${x.kind})`);
+  for (const product of [...ADDON_PRODUCTS, "store"]) for (const i of ["m", "y"]) for (const id of idsOf(addonVar(product, i))) add(id, addonVar(product, i));
+  return [...owners].filter(([, o]) => o.length > 1).map(([id, o]) => `${id} is in ${o.join(" and ")}`);
 }
 /** The founding prices not set yet (a founding shop can't subscribe to that plan until they are), for the admin page. */
 export const foundingMissing = () => PRICE_VARS.filter((v) => v.founding && !priceFor(v.tier, v.interval, true)).map((v) => v.env);
@@ -523,6 +542,17 @@ export async function standingOf(shop, { noWaiver = false } = {}) {
 // ----- keys -----
 
 const keyEnd = (last, grace) => addDays(last, grace);
+/** The most module keys a claim answer carries: what the program takes (its applyModuleKeys). */
+export const MAX_MODULE_KEYS = 8;
+/** A key text's payload ({ m, p, u, g, ... }), or null when it isn't one. */
+function keyPayloadOf(text) {
+  try {
+    const p = JSON.parse(Buffer.from(String(text).split(".")[1] ?? "", "base64url").toString("utf8"));
+    return p && typeof p.u === "string" ? p : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * The key the program should hold for this standing: the stored one when it still fits, else a fresh one, written to
@@ -586,7 +616,17 @@ export async function claimAnswer(shop) {
   const { keys: assistantKeys } = await assistantKeysFor(shop);
   // The trade add-ons' keys (src/addons.mjs: each add-on, or the bundle, its own subscription; the comp's for "everything").
   const { keys: addonKeys } = await addonKeysFor(shop);
-  const moduleKeys = [...assistantKeys, ...addonKeys].slice(0, 5);
+  // Only keys that still hold (their last day plus grace not past: a key run out is no use and takes a place), the paid
+  // ones first, then the comp's; at most MAX_MODULE_KEYS, as many as the program takes (it drops a stored hub add-on key
+  // missing from a non-empty list, so a key owed must never be cut off: the Assistant, five singles in their grace, the
+  // bundle and the comp are eight).
+  const t = today();
+  const moduleKeys = [...assistantKeys, ...addonKeys]
+    .map((k) => ({ k, p: keyPayloadOf(k) }))
+    .filter((x) => x.p && addDays(x.p.u, Number(x.p.g) || 0) >= t)
+    .sort((a, b) => Number(a.p.p === "c") - Number(b.p.p === "c"))
+    .slice(0, MAX_MODULE_KEYS)
+    .map((x) => x.k);
   return { standing: st.standing, lastDay: st.lastDay, message: st.message, plan: st.plan, interval: st.interval, founding: st.founding, key, moduleKeys, revokeKeyIds };
 }
 
@@ -793,7 +833,10 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
     const mine = st[product];
     if (mine.status === "on_hold") throw fail(409, `This shop's ${ADDON_LABELS[product]} payment is on hold (refunded or disputed) while its subscription still runs. Use Manage billing, or ask the hub admin.`);
     if (stillBilled(mine.row, mine)) throw fail(409, `This shop already has ${ADDON_LABELS[product]}. Use Manage billing to change it.`);
-    if (product !== "bundle") {
+    if (product === "bundle") {
+      const held = ADDON_IDS.find((p) => st[p].status === "on_hold");
+      if (held) throw fail(409, `This shop's ${ADDON_LABELS[held]} payment is on hold (refunded or disputed). Settle that under Manage billing, or ask the hub admin, before taking all five add-ons.`);
+    } else {
       if (stillBilled(st.bundle.row, st.bundle)) throw fail(409, `This shop has all five add-ons already, ${ADDON_LABELS[product]} among them.`);
       const singles = ADDON_IDS.filter((p) => stillBilled(st[p].row, st[p])).length;
       if (singles >= MAX_SINGLES) throw fail(409, "All five add-ons together cost less than this: choose All five add-ons instead (your single add-ons end with a credit for the unused days).");
@@ -874,7 +917,9 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
    * The extra stores billed on the shop's running base subscription follow the stores the program reported (shops.stores):
    * the store item is added, changed or removed with Stripe's proration (create_prorations: the difference is on the next
    * invoice), and the subscription is read back. Nothing while the store prices aren't set, or with no running
-   * subscription (a Checkout includes them). Logged; a failure is tried again at the next claim.
+   * subscription (a Checkout includes them). Logged; a failure is tried again at the next claim. Stripe's Customer Portal
+   * doesn't change the plan of a subscription with more than one item, so a shop billed for extra stores switches plan
+   * with the account page's Switch (switchSubscriptionPrice moves only the plan item, planItemOf).
    */
   async function syncStores(shop) {
     if (!billingOpen() || !storesForSale()) return;
@@ -1034,8 +1079,15 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
     const productKey = (x) => (isAssistantSub(x) ? "assistant" : isAddonSub(x) ? `addon:${addonProductOf(x)}` : "base");
     const customer = typeof sub.customer === "string" ? sub.customer : sub.customer?.id;
     if (!customer) return;
-    const list = await stripe.listSubscriptions(customer);
-    for (const o of list.data ?? []) {
+    // Every page (one account's customer holds every shop's subscriptions, ended ones too).
+    const all = [];
+    for (let after = null, page = 0; page < 50; page++) {
+      const list = await stripe.listSubscriptions(customer, after);
+      all.push(...(list.data ?? []));
+      if (!list.has_more || !list.data?.length) break;
+      after = list.data.at(-1).id;
+    }
+    for (const o of all) {
       // The same product only: the base plan's Checkout never cancels the Assistant's subscription, nor the other way round.
       if (o.id === sub.id || o.metadata?.hub_shop_id !== shopId || productKey(o) !== productKey(sub) || ENDED.has(o.status) || !((o.created ?? 0) < (sub.created ?? 0))) continue;
       await stripe.cancelSubscription(o.id);
@@ -1045,18 +1097,60 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
 
   /**
    * The bundle switch: a shop that bought the bundle has its single add-on subscriptions cancelled at once with Stripe's
-   * proration (the unused days are a credit on the customer's next invoice), so it isn't billed twice for one module.
+   * proration (the unused days are a credit on the customer's next invoice), so it isn't billed twice for one module. A
+   * single whose period wasn't paid (past_due, or on hold after a refund or chargeback) is cancelled without proration:
+   * no credit for days never paid. Stripe's cancellation can't be undone, so one already cancelled there (this event
+   * handled before and rolled back after it) still has its row synced and its keys revoked.
    */
   async function cancelSinglesFor(client, shopId, bundle) {
-    const rows = (await client.query(`SELECT product, stripe_subscription_id, status FROM addon_subscriptions WHERE shop_id = $1 AND product <> 'bundle'`, [shopId])).rows;
+    const rows = (await client.query(`SELECT product, stripe_subscription_id, status, unpaid_since FROM addon_subscriptions WHERE shop_id = $1 AND product <> 'bundle'`, [shopId])).rows;
     for (const r of rows) {
       if (r.stripe_subscription_id === bundle.id || !ADDON_RUNNING.has(r.status)) continue;
       const s = await stripe.retrieveSubscription(r.stripe_subscription_id);
-      if (ENDED.has(s.status)) continue;
-      await stripe.cancelSubscriptionProrated(r.stripe_subscription_id);
+      const unpaid = Boolean(r.unpaid_since) || s.status === "past_due";
+      if (!ENDED.has(s.status)) await (unpaid ? stripe.cancelSubscription : stripe.cancelSubscriptionProrated)(r.stripe_subscription_id);
       await syncAddonSub(client, await stripe.retrieveSubscription(r.stripe_subscription_id));
       await revokeAddonKeys(client, shopId, r.product);
-      console.log(`billing: shop ${shopId} took the bundle (${bundle.id}), so its ${r.product} subscription ${r.stripe_subscription_id} is cancelled in Stripe with a proration credit`);
+      console.log(`billing: shop ${shopId} took the bundle (${bundle.id}), so its ${r.product} subscription ${r.stripe_subscription_id} is cancelled in Stripe ${unpaid ? "without proration (its period wasn't paid)" : "with a proration credit"}`);
+    }
+  }
+
+  /**
+   * A single add-on's Checkout completed while the shop's bundle already runs (it was started before the bundle, or in
+   * another tab): it would be billed for nothing. It is cancelled at once, its charge refunded in full (the refund's own
+   * webhook takes its period back), its keys revoked, and the owner is told. Safe to run again (Stripe's cancellation and
+   * the refund are only made once).
+   */
+  async function refundSingleUnderBundle(client, shopId, single, mails) {
+    const product = addonProductOf(single);
+    if (!ENDED.has(single.status)) await stripe.cancelSubscription(single.id);
+    const latest = typeof single.latest_invoice === "string" ? single.latest_invoice : single.latest_invoice?.id;
+    const inv = latest ? await stripe.retrieveInvoice(latest) : null;
+    const chargeId = typeof inv?.charge === "string" ? inv.charge : (inv?.charge?.id ?? null);
+    const ch = chargeId ? await stripe.retrieveCharge(chargeId) : null;
+    if (ch && !ch.refunded && ch.amount > (ch.amount_refunded ?? 0)) await stripe.createRefund({ charge: ch.id, idempotencyKey: `single-under-bundle:${single.id}` });
+    await syncAddonSub(client, await stripe.retrieveSubscription(single.id));
+    await revokeAddonKeys(client, shopId, product);
+    console.warn(`billing: shop ${shopId} paid for ${product} (${single.id}) while its bundle runs; cancelled in Stripe${ch ? ` and charge ${ch.id} refunded in full` : ""}`);
+    const owner = (await client.query(`SELECT a.email, s.name FROM shops s JOIN accounts a ON a.id = s.account_id WHERE s.id = $1 AND a.verified_at IS NOT NULL AND NOT a.disabled`, [shopId])).rows[0];
+    if (owner) {
+      mails.push(async () => {
+        try {
+          await sendMail({
+            to: owner.email,
+            subject: `${owner.name}: ${ADDON_LABELS[product]} refunded`,
+            text: `Hello,
+
+${owner.name} already has all five add-ons, ${ADDON_LABELS[product]} among them, so the ${ADDON_LABELS[product]} subscription you just paid for has been cancelled and its payment refunded in full. Nothing changes in the program.
+
+${hubName}
+${hubUrl}`,
+            fromName: hubName,
+          });
+        } catch (e) {
+          console.error(`billing mail (single under bundle) to the owner of ${shopId}: ${e.message}`);
+        }
+      });
     }
   }
 
@@ -1113,6 +1207,14 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
       if (!ad) return console.warn(`stripe: subscription ${subId} isn't on the hub; ignored`);
       if (!disputed && full) await cancelNow(subId, `charge ${chargeId} of ${ad.product} was refunded in full`);
       return;
+    }
+    // A refund of no more than the invoice's extra-stores lines is the stores' money: the plan's period stands.
+    if (!disputed && !full) {
+      const book = addonPriceBook();
+      const storeCents = (inv.lines?.data ?? []).filter((l) => book.get(typeof l.price === "string" ? l.price : l.price?.id)?.product === "store").reduce((n, l) => n + (Number(l.amount) || 0), 0);
+      if (storeCents > 0 && (ch.amount_refunded ?? 0) <= storeCents) {
+        return console.log(`billing: charge ${chargeId} of subscription ${subId} was refunded in part (${ch.amount_refunded} of ${storeCents} for extra stores); shop ${row.shop_id}'s period stands`);
+      }
     }
     const trialEnd = trialEndMs(row);
     const inTrial = !disputed && full && inv.billing_reason === "subscription_create" && Date.now() < trialEnd && (!ch.created || ch.created * 1000 < trialEnd);
@@ -1311,8 +1413,15 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
           if (isAssistantSub(a) && ASSISTANT_RUNNING.has(a.status) && a.metadata?.hub_shop_id) await cancelOlder(a.metadata.hub_shop_id, a);
           // An add-on's (or the bundle's) the same way; the bundle also ends the shop's single add-ons (it covers them).
           if (isAddonSub(a) && ADDON_RUNNING.has(a.status) && a.metadata?.hub_shop_id) {
-            await cancelOlder(a.metadata.hub_shop_id, a);
-            if (addonProductOf(a) === "bundle") await cancelSinglesFor(client, a.metadata.hub_shop_id, a);
+            const shopId = a.metadata.hub_shop_id;
+            await cancelOlder(shopId, a);
+            if (addonProductOf(a) === "bundle") await cancelSinglesFor(client, shopId, a);
+            else {
+              // A single bought while the bundle runs on (not set to end) is refunded: the bundle covers it.
+              const b = (await client.query(`SELECT * FROM addon_subscriptions WHERE shop_id = $1 AND product = 'bundle'`, [shopId])).rows[0];
+              const bs = addonStatus(b);
+              if (b && b.stripe_subscription_id !== a.id && (bs.status === "active" || bs.status === "past_due")) await refundSingleUnderBundle(client, shopId, a, mails);
+            }
           }
         }
         return;
@@ -1422,7 +1531,11 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
     const shop = await tx(async (client) => {
       const r = await client.query(`UPDATE shops SET lapsed_at = CASE WHEN $2 THEN coalesce(lapsed_at, now()) ELSE NULL END WHERE id = $1 RETURNING *`, [c.req.param("id"), lapsed]);
       if (!r.rowCount) throw fail(404, "No such shop.");
-      if (lapsed) await revokeLiveKeys(client, r.rows[0].id);
+      if (lapsed) {
+        await revokeLiveKeys(client, r.rows[0].id);
+        // The comp's add-on key goes too (no new one is signed while the shop is lapsed: addons.mjs compCovers).
+        await revokeCompAddonKeys(client, r.rows[0].id);
+      }
       return r.rows[0];
     });
     return c.json({ ok: true, shop: { id: shop.id, lapsedAt: shop.lapsed_at, ...(await standingOf(shop)) } });
