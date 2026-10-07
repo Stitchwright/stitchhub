@@ -131,7 +131,7 @@
     <section id="repository" hidden>
       <h2>Your files in the repository</h2>
       <p class="muted" id="rpState"></p>
-      <p class="muted">A file you offered is removed when a copyright notice names it. Each removal is a strike; three strikes within 12 months end uploading from your account. If you believe a file was removed by mistake or misidentification you can send a counter-notice. Knowingly false notices and counter-notices make the sender liable for damages (17 U.S.C. 512(f)). See <a href="/copyright">Copyright</a>.</p>
+      <p class="muted">A file you offered is removed when a copyright notice names it. Each notice that removes files of yours is one strike, however many it names; three strikes within 12 months end uploading from your account. If you believe a file was removed by mistake or misidentification you can send a counter-notice. Knowingly false notices and counter-notices make the sender liable for damages (17 U.S.C. 512(f)). See <a href="/copyright">Copyright</a>.</p>
       <div class="scroll"><table id="rpTable" hidden><thead><tr><th>File</th><th>Notice from</th><th>Removed</th><th>State</th><th></th></tr></thead><tbody id="rpRows"></tbody></table></div>
       <form id="rpForm" hidden>
         <h2 style="margin-top:18px">Counter-notice for <span id="rpWhat"></span></h2>
@@ -299,7 +299,7 @@
         if (ap.monthly) box.append(go("/assistant/checkout", { interval: "monthly" }, `Add the Assistant (${ap.monthly})`));
         if (ap.yearly) box.append(go("/assistant/checkout", { interval: "yearly" }, `${ap.yearly}, two months free`));
       } else if (as.status !== "none") {
-        const words = as.status === "ending" ? `Assistant on, cancelled: paid through ${as.paidThrough}.` : as.status === "past_due" ? "Assistant: the last payment didn't go through. Update your card under Manage billing." : as.status === "active" ? `Assistant on, paid through ${as.paidThrough}.` : "Assistant ended.";
+        const words = as.status === "ending" ? `Assistant on, cancelled: paid through ${as.paidThrough}.` : as.status === "past_due" ? "Assistant: the last payment didn't go through. Update your card under Manage billing." : as.status === "active" ? `Assistant on, paid through ${as.paidThrough}.` : as.status === "on_hold" ? "Your Assistant payment is on hold (refunded or disputed). Use Manage billing, or ask the hub admin." : "Assistant ended.";
         box.append(Object.assign(document.createElement("span"), { textContent: words }));
       }
       if (as.canTopUp && ap.topup) box.append(go("/assistant/topup", {}, `Buy ${ap.topUpCalls} more (${ap.topup})`));

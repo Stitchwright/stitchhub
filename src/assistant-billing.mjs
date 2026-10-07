@@ -13,7 +13,7 @@
 //   STRIPE_PRICE_ASSISTANT_MONTHLY   $15 a month, recurring monthly
 //   STRIPE_PRICE_ASSISTANT_YEARLY    $150 a year, recurring yearly
 //   STRIPE_PRICE_ASSISTANT_TOPUP     $10, one time (ASSISTANT_TOPUP_CALLS calls, 300 by default)
-import { one, q } from "./db.mjs";
+import { one, tx } from "./db.mjs";
 import * as stripe from "./stripe.mjs";
 import { signer as hubSigner, signKey } from "./license.mjs";
 import { creditTopup, TOPUP_CALLS } from "./assistant.mjs";
@@ -113,7 +113,8 @@ export async function syncAssistantSub(client, s) {
        ON CONFLICT (shop_id) DO UPDATE SET stripe_subscription_id = EXCLUDED.stripe_subscription_id, stripe_customer_id = EXCLUDED.stripe_customer_id, stripe_created = EXCLUDED.stripe_created,
          plan = EXCLUDED.plan, status = EXCLUDED.status, current_period_end = EXCLUDED.current_period_end, cancel_at_period_end = EXCLUDED.cancel_at_period_end, price_id = EXCLUDED.price_id,
          unpaid_since = CASE WHEN assistant_subscriptions.stripe_subscription_id = EXCLUDED.stripe_subscription_id THEN assistant_subscriptions.unpaid_since END,
-         unpaid_charge_id = CASE WHEN assistant_subscriptions.stripe_subscription_id = EXCLUDED.stripe_subscription_id THEN assistant_subscriptions.unpaid_charge_id END, updated_at = now()
+         unpaid_charge_id = CASE WHEN assistant_subscriptions.stripe_subscription_id = EXCLUDED.stripe_subscription_id THEN assistant_subscriptions.unpaid_charge_id END,
+         chargeback_dispute_ids = CASE WHEN assistant_subscriptions.stripe_subscription_id = EXCLUDED.stripe_subscription_id THEN assistant_subscriptions.chargeback_dispute_ids ELSE '{}' END, updated_at = now()
        RETURNING *`,
       [shopId, s.id, customer ?? null, s.created ?? null, plan, s.status, periodEnd, Boolean(s.cancel_at_period_end), priceId],
     )
@@ -124,14 +125,16 @@ export async function syncAssistantSub(client, s) {
 
 /**
  * The shop's Assistant standing for the account page: "active" (paid through a day), "ending" (cancelled but paid through
- * a day), "past_due" (the last payment failed), "ended" (also: its payment was refunded or charged back), or "none".
+ * a day), "past_due" (the last payment failed), "on_hold" (its payment was refunded in part or charged back while the
+ * subscription still runs at Stripe: no new Checkout, which would bill twice), "ended" (also: refunded and cancelled), or
+ * "none".
  */
 export async function assistantStanding(shopId, t = day(new Date())) {
   const sub = await one(`SELECT * FROM assistant_subscriptions WHERE shop_id = $1`, [shopId]);
   if (!sub) return { status: "none", sub: null, paidThrough: null };
   const paidThrough = sub.current_period_end ? day(sub.current_period_end) : null;
   let status = "ended";
-  if (sub.unpaid_since) status = "ended";
+  if (sub.unpaid_since) status = RUNNING.has(sub.status) ? "on_hold" : "ended";
   else if (RUNNING.has(sub.status) && paidThrough) status = sub.status === "past_due" ? "past_due" : sub.cancel_at_period_end ? "ending" : "active";
   else if (sub.status === "canceled" && paidThrough && paidThrough >= t) status = "ending";
   else if (ENDED.has(sub.status) || sub.status === "paused") status = "ended";
@@ -160,18 +163,26 @@ export async function assistantKeysFor(shop) {
   const plan = st.sub.plan === "y" ? "y" : "m";
   // The key names the company as the program does (its own id, the shop_ref the proxy checks it against in src/assistant.mjs checkKey).
   const made = signKey(signer, { shopId: shop.shop_ref, shopName: shop.name, modules: ["assistant"], plan, firstDay: first, lastDay: until, graceDays: ASSISTANT_GRACE_DAYS });
-  await q(`INSERT INTO license_issues (key_id, shop_id, kid, plan, modules, first_day, last_day, grace_days, key, tier, founding) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULL, false)`, [
-    made.id,
-    shop.id,
-    signer.kid,
-    plan,
-    made.payload.m,
-    first,
-    until,
-    ASSISTANT_GRACE_DAYS,
-    made.key,
-  ]);
-  return { keys: [made.key] };
+  // Written while the subscription row is held and only while no refund or chargeback has taken its period back: a webhook
+  // taking it back at the same moment (assistantTookBack updates that row first) either waits and then revokes this key, or
+  // is seen here and no key is written.
+  const written = await tx(async (client) => {
+    const held = (await client.query(`SELECT unpaid_since FROM assistant_subscriptions WHERE shop_id = $1 FOR SHARE`, [shop.id])).rows[0];
+    if (!held || held.unpaid_since) return false;
+    await client.query(`INSERT INTO license_issues (key_id, shop_id, kid, plan, modules, first_day, last_day, grace_days, key, tier, founding) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULL, false)`, [
+      made.id,
+      shop.id,
+      signer.kid,
+      plan,
+      made.payload.m,
+      first,
+      until,
+      ASSISTANT_GRACE_DAYS,
+      made.key,
+    ]);
+    return true;
+  });
+  return { keys: written ? [made.key] : [] };
 }
 
 /** Every Assistant key of the shop is revoked: the proxy refuses it at once (src/assistant.mjs keyHolds) and the program drops it at its next sync. */
@@ -212,7 +223,7 @@ export async function topupTookBack(client, ch, share) {
     await client.query(`SELECT t.stripe_session_id, t.calls, t.calls_taken, t.month, s.id AS shop_id, s.install_id, s.shop_ref FROM assistant_topups t JOIN shops s ON s.id = t.shop_id WHERE t.stripe_payment_intent = $1 FOR UPDATE OF t`, [pi])
   ).rows[0];
   if (!t) return false;
-  const want = Math.min(t.calls, Math.max(0, Math.ceil(t.calls * share)));
+  const want = Math.min(t.calls, Math.max(0, Math.ceil(t.calls * share - 1e-9))); // less a hair: 0.1 x 300 is 30.000000000000004
   const more = want - t.calls_taken;
   if (more) {
     await client.query(`UPDATE assistant_usage SET bonus = greatest(0, bonus - $4), updated_at = now() WHERE install_id = $1 AND shop_ref = $2 AND month = $3`, [t.install_id, t.shop_ref, t.month, more]);

@@ -7,17 +7,24 @@
 // request and is checked against ASSISTANT_PUBLIC_KEYS and the hub's own signing key), or one the admin comped. Without
 // either, only the plate reader works, 20 times a month. 300 calls a month per company; the admin adds top-ups of 300.
 import crypto from "node:crypto";
-import { one, q, tx } from "./db.mjs";
+import { one, paysOwnWay, q, tx } from "./db.mjs";
 import { signer } from "./license.mjs";
 
-export const MONTHLY_CALLS = Math.max(1, Math.floor(Number(process.env.ASSISTANT_MONTHLY_CALLS)) || 300);
-export const TOPUP_CALLS = Math.max(1, Math.floor(Number(process.env.ASSISTANT_TOPUP_CALLS)) || 300);
-const FREE_READS = Math.max(0, Math.floor(Number(process.env.ASSISTANT_FREE_READS ?? 20)));
-const HOURLY = Math.max(1, Math.floor(Number(process.env.ASSISTANT_HOURLY_CALLS)) || 60);
-// Free reads are a sample, not a service: at most this many a month for all the companies of one install together, and
-// at most this many a day on the whole hub (any install, the last 24 hours).
-const FREE_READS_PER_INSTALL = Math.max(0, Math.floor(Number(process.env.ASSISTANT_FREE_READS_PER_INSTALL ?? 100)));
-const FREE_DAILY = Math.max(0, Math.floor(Number(process.env.ASSISTANT_FREE_DAILY ?? 500)));
+/** A whole number from a variable, at least `min`; the default when it is unset, empty or not a plain number ("1,000"). */
+const envInt = (name, dflt, min = 0) => {
+  const raw = (process.env[name] ?? "").trim();
+  const v = Number(raw);
+  return raw && Number.isFinite(v) && v >= min ? Math.floor(v) : dflt;
+};
+export const MONTHLY_CALLS = envInt("ASSISTANT_MONTHLY_CALLS", 300, 1);
+export const TOPUP_CALLS = envInt("ASSISTANT_TOPUP_CALLS", 300, 1);
+const FREE_READS = envInt("ASSISTANT_FREE_READS", 20);
+const HOURLY = envInt("ASSISTANT_HOURLY_CALLS", 60, 1);
+// Free reads are a sample, not a service: at most this many a month for the companies of one install that don't pay their
+// own way (db.mjs paysOwnWay: a paying company of a hosted service has only its own 20), and at most this many a day on the
+// whole hub (any install, the last 24 hours).
+const FREE_READS_PER_INSTALL = envInt("ASSISTANT_FREE_READS_PER_INSTALL", 100);
+const FREE_DAILY = envInt("ASSISTANT_FREE_DAILY", 500);
 
 /** The model each class of work uses; the owner moves every shop to a newer model by changing a variable. */
 const CLASSES = {
@@ -123,25 +130,32 @@ export function checkKey(text, shopRef, today) {
 }
 
 /**
- * checkKey, then whose the key is, so one key copied to other installs gives them nothing: a key the hub signed must be on
- * record (license_issues, not revoked) for this company on this install; a key of the owner's own signer belongs to the
- * first install and company that used it (assistant_key_binds; a move takes it along).
+ * checkKey, then whose the key is, so one key copied to other installs gives them nothing: a key the hub signed (under its
+ * current kid, or an older one after a rotation) must be on record (license_issues, not revoked) for this company on this
+ * install; a key of the owner's own signer belongs to the first install and company that made a real call with it
+ * (`bind`, not a look at the usage) from an install that has claimed that company (assistant_key_binds; a move takes it
+ * along, the admin can clear it: POST /v1/admin/assistant/unbind).
  */
-export async function keyHolds(text, installId, shopRef, today) {
+export async function keyHolds(text, installId, shopRef, today, { bind = false } = {}) {
   const k = checkKey(text, shopRef, today);
   if (!k.ok) return k;
   const id = k.payload.id;
   if (typeof id !== "string" || !id || id.length > 40) return { ok: false, why: "damaged key" };
   const own = signer().signer;
-  if (own && k.payload.k === own.kid) {
-    const row = await one(`SELECT l.revoked_at FROM license_issues l JOIN shops s ON s.id = l.shop_id WHERE l.key_id = $1 AND s.install_id = $2 AND s.shop_ref = $3`, [id, installId, shopRef]);
-    if (!row) return { ok: false, why: "key for another company" };
-    if (row.revoked_at) return { ok: false, why: "ended" };
+  const issued = await one(`SELECT l.revoked_at, s.install_id, s.shop_ref FROM license_issues l JOIN shops s ON s.id = l.shop_id WHERE l.key_id = $1 AND l.kid = $2`, [id, k.payload.k]);
+  if (issued || (own && k.payload.k === own.kid)) {
+    if (!issued || issued.install_id !== installId || issued.shop_ref !== shopRef) return { ok: false, why: "key for another company" };
+    if (issued.revoked_at) return { ok: false, why: "ended" };
     return k;
   }
-  await q(`INSERT INTO assistant_key_binds (kid, key_id, install_id, shop_ref) VALUES ($1, $2, $3, $4) ON CONFLICT (kid, key_id) DO NOTHING`, [k.payload.k, id, installId, shopRef]);
-  const bind = await one(`SELECT install_id, shop_ref FROM assistant_key_binds WHERE kid = $1 AND key_id = $2`, [k.payload.k, id]);
-  if (bind && (bind.install_id !== installId || bind.shop_ref !== shopRef)) return { ok: false, why: "key in use by another company" };
+  let held = await one(`SELECT install_id, shop_ref FROM assistant_key_binds WHERE kid = $1 AND key_id = $2`, [k.payload.k, id]);
+  if (!held) {
+    if (!bind) return k; // a look: nothing is bound by it
+    if (!(await one(`SELECT 1 AS ok FROM shops WHERE install_id = $1 AND shop_ref = $2`, [installId, shopRef]))) return { ok: false, why: "company not on the hub" };
+    await q(`INSERT INTO assistant_key_binds (kid, key_id, install_id, shop_ref) VALUES ($1, $2, $3, $4) ON CONFLICT (kid, key_id) DO NOTHING`, [k.payload.k, id, installId, shopRef]);
+    held = await one(`SELECT install_id, shop_ref FROM assistant_key_binds WHERE kid = $1 AND key_id = $2`, [k.payload.k, id]);
+  }
+  if (held.install_id !== installId || held.shop_ref !== shopRef) return { ok: false, why: "key in use by another company" };
   return k;
 }
 
@@ -184,7 +198,10 @@ function clean(body, fail) {
 
 export function registerAssistant({ member, admin, fail, allow, newId }) {
   const busy = new Set();
+  // Free reads held before anything is awaited (so reads sent at once are all counted): on the whole hub until the call's
+  // row is written, per install until its count is in assistant_usage.
   let freeInFlight = 0;
+  const freeByInstall = new Map();
 
   // Tests move the clock with a header, only on a hub started with ASSISTANT_TEST_CLOCK=true.
   const testClock = process.env.ASSISTANT_TEST_CLOCK === "true";
@@ -194,12 +211,12 @@ export function registerAssistant({ member, admin, fail, allow, newId }) {
   };
 
   // The month's position for the company: what the Settings page shows.
-  async function position(installId, shopRef, tz, key, now = new Date()) {
+  async function position(installId, shopRef, tz, key, now = new Date(), bind = false) {
     const today = zoneDay(now, tz);
     const month = today.slice(0, 7);
     const shop = await one(`SELECT comp_until::text AS comp_until FROM assistant_shops WHERE install_id = $1 AND shop_ref = $2`, [installId, shopRef]);
     const comp = Boolean(shop?.comp_until && shop.comp_until >= today);
-    const k = key ? await keyHolds(key, installId, shopRef, today) : { ok: false, why: "no key" };
+    const k = key ? await keyHolds(key, installId, shopRef, today, { bind }) : { ok: false, why: "no key" };
     const row = await one(`SELECT calls, bonus, free_reads FROM assistant_usage WHERE install_id = $1 AND shop_ref = $2 AND month = $3`, [installId, shopRef, month]);
     return { month, today, entitled: comp || k.ok, why: comp ? null : k.ok ? null : k.why, calls: row?.calls ?? 0, bonus: row?.bonus ?? 0, freeReads: row?.free_reads ?? 0 };
   }
@@ -223,119 +240,157 @@ export function registerAssistant({ member, admin, fail, allow, newId }) {
     if (busy.has(lock)) throw fail(429, "The Assistant is still answering this company's last question.");
 
     const at = nowOf(c);
-    const p = await position(installId, r.shopRef, r.tz, r.key, at);
+    const p = await position(installId, r.shopRef, r.tz, r.key, at, true);
     // Entitled: the paid allowance. Otherwise only the plate reader, 20 a month: the read model with a photo and a short
-    // prompt, for a company that has claimed itself on this install, within the install's and the hub's free ceilings.
+    // prompt (or the suggest model it retries an unsure read with, the same way, one free read each), for a company that
+    // has claimed itself on this install, within the install's and the hub's free ceilings.
     const free = !p.entitled;
+    let installHeld = false;
+    let dayHeld = false;
+    const dropInstall = () => {
+      if (!installHeld) return;
+      installHeld = false;
+      const n = (freeByInstall.get(installId) ?? 1) - 1;
+      if (n > 0) freeByInstall.set(installId, n);
+      else freeByInstall.delete(installId);
+    };
+    const release = () => {
+      dropInstall();
+      if (dayHeld) freeInFlight--;
+      dayHeld = false;
+    };
     if (free) {
       if (r.feature !== "read_plate") {
         throw fail(402, p.why === "ended" ? "The Assistant subscription for this company has ended. Renew it in Settings → Modules." : "The Assistant isn't turned on for this company. An owner can add it in Settings → Modules.");
       }
       const text = r.messages.reduce((n, m) => n + m.content.length, 0);
-      if (r.cls !== "read" || !r.image || r.system.length > FREE_SYSTEM || text > FREE_TEXT) throw fail(400, "A free plate read is the read model with a photo and a short prompt.");
-      if (!(await one(`SELECT 1 AS ok FROM shops WHERE install_id = $1 AND shop_ref = $2`, [installId, r.shopRef]))) throw fail(404, "That company hasn't told the hub about itself yet (it does at its next sync).");
-      const install = await one(`SELECT coalesce(sum(free_reads), 0)::int AS n FROM assistant_usage WHERE install_id = $1 AND month = $2`, [installId, p.month]);
-      if (install.n >= FREE_READS_PER_INSTALL) throw fail(402, `This install's companies have used this month's ${FREE_READS_PER_INSTALL} free plate reads. The Assistant module adds more.`);
-      const day = await one(`SELECT count(*)::int AS n FROM assistant_calls WHERE free AND error IS NULL AND created_at > now() - interval '1 day'`);
-      if (day.n + freeInFlight >= FREE_DAILY) throw fail(503, "Free plate reads are paused on this hub for today. Try again tomorrow.");
-    }
-    await q(
-      `INSERT INTO assistant_shops (install_id, shop_ref, tz) VALUES ($1, $2, $3) ON CONFLICT (install_id, shop_ref) DO UPDATE SET tz = EXCLUDED.tz, updated_at = now()`,
-      [installId, r.shopRef, r.tz],
-    );
-    // Count the call before making it, so two at once can't both take the last one. Refunded below if the model never answered.
-    const column = free ? "free_reads" : "calls";
-    const limit = free ? FREE_READS : null;
-    const reserved = await one(
-      `INSERT INTO assistant_usage (install_id, shop_ref, month, ${column}) VALUES ($1, $2, $3, 1)
-       ON CONFLICT (install_id, shop_ref, month) DO UPDATE SET ${column} = assistant_usage.${column} + 1, updated_at = now()
-       WHERE assistant_usage.${column} < ${free ? "$4" : "$4 + assistant_usage.bonus"} RETURNING ${column} AS n`,
-      [installId, r.shopRef, p.month, free ? limit : MONTHLY_CALLS],
-    );
-    if (!reserved) {
-      throw fail(402, free ? `You've used this month's ${FREE_READS} free plate reads. The Assistant module adds more.` : `You've used this month's ${MONTHLY_CALLS + p.bonus} Assistant calls. They start again with next month, or an owner can add ${TOPUP_CALLS} more.`);
-    }
-    const refund = () => q(`UPDATE assistant_usage SET ${column} = greatest(0, ${column} - 1) WHERE install_id = $1 AND shop_ref = $2 AND month = $3`, [installId, r.shopRef, p.month]).catch(() => {});
-
-    busy.add(lock);
-    if (free) freeInFlight++;
-    const started = Date.now();
-    const model = modelFor(r.cls);
-    let result = null;
-    let error = null;
-    let status = 502;
-    try {
-      const messages = r.messages.map((m, i) =>
-        i === r.messages.length - 1 && r.image
-          ? { role: "user", content: [{ type: "image", source: { type: "base64", media_type: r.image.mediaType, data: r.image.data } }, { type: "text", text: m.content }] }
-          : m,
-      );
-      const payload = { model, max_tokens: r.maxTokens, messages };
-      if (r.system) payload.system = [{ type: "text", text: r.system, cache_control: { type: "ephemeral" } }];
-      const call = async () => {
-        const res = await fetch(MESSAGES_URL(), {
-          method: "POST",
-          headers: { "content-type": "application/json", "x-api-key": anthropicKey(), "anthropic-version": "2023-06-01" },
-          body: JSON.stringify(payload),
-          signal: AbortSignal.timeout(CLASSES[r.cls].timeoutMs),
-        });
-        return res;
-      };
-      let res = await call().catch((e) => ({ networkError: e }));
-      if (res.networkError || res.status === 429 || res.status >= 500) {
-        await new Promise((ok) => setTimeout(ok, 400));
-        res = await call().catch((e) => ({ networkError: e }));
-      }
-      if (res.networkError) {
-        error = res.networkError?.name === "TimeoutError" ? "timeout" : "unreachable";
-        status = 504;
-      } else if (!res.ok) {
-        error = `anthropic ${res.status}`;
-        status = res.status === 429 ? 503 : 502;
-      } else {
-        result = await res.json().catch(() => null);
-        if (!result || !Array.isArray(result.content)) {
-          error = "bad answer";
-          result = null;
+      if ((r.cls !== "read" && r.cls !== "suggest") || !r.image || r.system.length > FREE_SYSTEM || text > FREE_TEXT) throw fail(400, "A free plate read is the read model with a photo and a short prompt.");
+      r.maxTokens = Math.min(r.maxTokens, CLASSES.read.maxTokens);
+      // Held before the awaits below, given back when the read is counted (or refused).
+      freeInFlight++;
+      dayHeld = true;
+      freeByInstall.set(installId, (freeByInstall.get(installId) ?? 0) + 1);
+      installHeld = true;
+      try {
+        const shop = await one(`SELECT ${paysOwnWay("s")} AS pays FROM shops s WHERE s.install_id = $1 AND s.shop_ref = $2`, [installId, r.shopRef]);
+        if (!shop) throw fail(404, "That company hasn't told the hub about itself yet (it does at its next sync).");
+        if (shop.pays) dropInstall(); // a company that pays its own way isn't held to the install's ceiling
+        else {
+          const install = await one(
+            `SELECT coalesce(sum(u.free_reads), 0)::int AS n FROM assistant_usage u JOIN shops s ON s.install_id = u.install_id AND s.shop_ref = u.shop_ref
+             WHERE u.install_id = $1 AND u.month = $2 AND NOT ${paysOwnWay("s")}`,
+            [installId, p.month],
+          );
+          if (install.n + freeByInstall.get(installId) - 1 >= FREE_READS_PER_INSTALL) throw fail(402, `This install's companies have used this month's ${FREE_READS_PER_INSTALL} free plate reads. The Assistant module adds more.`);
         }
+        const day = await one(`SELECT count(*)::int AS n FROM assistant_calls WHERE free AND error IS NULL AND created_at > now() - interval '1 day'`);
+        if (day.n + freeInFlight - 1 >= FREE_DAILY) throw fail(503, "Free plate reads are paused on this hub for today. Try again tomorrow.");
+      } catch (e) {
+        release();
+        throw e;
       }
-    } finally {
-      busy.delete(lock);
-      if (free) freeInFlight--;
     }
-    const ms = Date.now() - started;
-    const usage = result?.usage ?? {};
-    const tokens = { input: usage.input_tokens ?? 0, cacheRead: usage.cache_read_input_tokens ?? 0, cacheWrite: usage.cache_creation_input_tokens ?? 0, output: usage.output_tokens ?? 0 };
-    const cost = result ? costMillicents(model, tokens) : 0;
-    await tx(async (client) => {
-      await client.query(
-        `INSERT INTO assistant_calls (id, install_id, shop_ref, feature, class, model, free, input_tokens, cache_tokens, output_tokens, cost_millicents, ms, error)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-        [newId(), installId, r.shopRef, r.feature, r.cls, model, free, tokens.input, tokens.cacheRead + tokens.cacheWrite, tokens.output, cost, ms, error],
+    try {
+      await q(
+        `INSERT INTO assistant_shops (install_id, shop_ref, tz) VALUES ($1, $2, $3) ON CONFLICT (install_id, shop_ref) DO UPDATE SET tz = EXCLUDED.tz, updated_at = now()`,
+        [installId, r.shopRef, r.tz],
       );
-      if (result) {
-        await client.query(
-          `UPDATE assistant_usage SET input_tokens = input_tokens + $4, output_tokens = output_tokens + $5, cost_millicents = cost_millicents + $6 WHERE install_id = $1 AND shop_ref = $2 AND month = $3`,
-          [installId, r.shopRef, p.month, tokens.input + tokens.cacheRead + tokens.cacheWrite, tokens.output, cost],
-        );
+      // Count the call before making it, so two at once can't both take the last one. Refunded below if the model never answered.
+      const column = free ? "free_reads" : "calls";
+      const limit = free ? FREE_READS : null;
+      const reserved = await one(
+        `INSERT INTO assistant_usage (install_id, shop_ref, month, ${column}) VALUES ($1, $2, $3, 1)
+         ON CONFLICT (install_id, shop_ref, month) DO UPDATE SET ${column} = assistant_usage.${column} + 1, updated_at = now()
+         WHERE assistant_usage.${column} < ${free ? "$4" : "$4 + assistant_usage.bonus"} RETURNING ${column} AS n`,
+        [installId, r.shopRef, p.month, free ? limit : MONTHLY_CALLS],
+      );
+      dropInstall(); // counted in assistant_usage now (or refused)
+      if (!reserved) {
+        throw fail(402, free ? `You've used this month's ${FREE_READS} free plate reads. The Assistant module adds more.` : `You've used this month's ${MONTHLY_CALLS + p.bonus} Assistant calls. They start again with next month, or an owner can add ${TOPUP_CALLS} more.`);
       }
-    }).catch((e) => console.error("assistant log:", e.message));
-    if (!result) {
-      console.error(`assistant: ${r.feature} for ${r.shopRef} failed (${error})`);
-      await refund();
-      throw fail(status, error === "timeout" ? "The Assistant took too long to answer. Try again." : "The Assistant couldn't answer just now. Try again in a minute.");
+      const refund = () => q(`UPDATE assistant_usage SET ${column} = greatest(0, ${column} - 1) WHERE install_id = $1 AND shop_ref = $2 AND month = $3`, [installId, r.shopRef, p.month]).catch(() => {});
+
+      busy.add(lock);
+      const started = Date.now();
+      const model = modelFor(r.cls);
+      let result = null;
+      let error = null;
+      let status = 502;
+      try {
+        const messages = r.messages.map((m, i) =>
+          i === r.messages.length - 1 && r.image
+            ? { role: "user", content: [{ type: "image", source: { type: "base64", media_type: r.image.mediaType, data: r.image.data } }, { type: "text", text: m.content }] }
+            : m,
+        );
+        const payload = { model, max_tokens: r.maxTokens, messages };
+        if (r.system) payload.system = [{ type: "text", text: r.system, cache_control: { type: "ephemeral" } }];
+        const call = async () => {
+          const res = await fetch(MESSAGES_URL(), {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-api-key": anthropicKey(), "anthropic-version": "2023-06-01" },
+            body: JSON.stringify(payload),
+            signal: AbortSignal.timeout(CLASSES[r.cls].timeoutMs),
+          });
+          return res;
+        };
+        let res = await call().catch((e) => ({ networkError: e }));
+        if (res.networkError || res.status === 429 || res.status >= 500) {
+          await new Promise((ok) => setTimeout(ok, 400));
+          res = await call().catch((e) => ({ networkError: e }));
+        }
+        if (res.networkError) {
+          error = res.networkError?.name === "TimeoutError" ? "timeout" : "unreachable";
+          status = 504;
+        } else if (!res.ok) {
+          error = `anthropic ${res.status}`;
+          status = res.status === 429 ? 503 : 502;
+        } else {
+          result = await res.json().catch(() => null);
+          if (!result || !Array.isArray(result.content)) {
+            error = "bad answer";
+            result = null;
+          }
+        }
+      } finally {
+        busy.delete(lock);
+      }
+      const ms = Date.now() - started;
+      const usage = result?.usage ?? {};
+      const tokens = { input: usage.input_tokens ?? 0, cacheRead: usage.cache_read_input_tokens ?? 0, cacheWrite: usage.cache_creation_input_tokens ?? 0, output: usage.output_tokens ?? 0 };
+      const cost = result ? costMillicents(model, tokens) : 0;
+      await tx(async (client) => {
+        await client.query(
+          `INSERT INTO assistant_calls (id, install_id, shop_ref, feature, class, model, free, input_tokens, cache_tokens, output_tokens, cost_millicents, ms, error)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+          [newId(), installId, r.shopRef, r.feature, r.cls, model, free, tokens.input, tokens.cacheRead + tokens.cacheWrite, tokens.output, cost, ms, error],
+        );
+        if (result) {
+          await client.query(
+            `UPDATE assistant_usage SET input_tokens = input_tokens + $4, output_tokens = output_tokens + $5, cost_millicents = cost_millicents + $6 WHERE install_id = $1 AND shop_ref = $2 AND month = $3`,
+            [installId, r.shopRef, p.month, tokens.input + tokens.cacheRead + tokens.cacheWrite, tokens.output, cost],
+          );
+        }
+      }).catch((e) => console.error("assistant log:", e.message));
+      release(); // the call's row is written: the hub's daily count has it
+      if (!result) {
+        console.error(`assistant: ${r.feature} for ${r.shopRef} failed (${error})`);
+        await refund();
+        throw fail(status, error === "timeout" ? "The Assistant took too long to answer. Try again." : "The Assistant couldn't answer just now. Try again in a minute.");
+      }
+      const text = result.content.filter((b) => b?.type === "text").map((b) => b.text).join("");
+      const now = await position(installId, r.shopRef, r.tz, r.key, at);
+      return c.json({
+        text,
+        stopReason: result.stop_reason ?? null,
+        usage: { input: tokens.input, cacheRead: tokens.cacheRead, output: tokens.output },
+        costMillicents: cost,
+        model,
+        free,
+        ...out(now),
+      });
+    } finally {
+      release();
     }
-    const text = result.content.filter((b) => b?.type === "text").map((b) => b.text).join("");
-    const now = await position(installId, r.shopRef, r.tz, r.key, at);
-    return c.json({
-      text,
-      stopReason: result.stop_reason ?? null,
-      usage: { input: tokens.input, cacheRead: tokens.cacheRead, output: tokens.output },
-      costMillicents: cost,
-      model,
-      free,
-      ...out(now),
-    });
   });
 
   // ----- the owner's view and top-ups -----
@@ -398,6 +453,21 @@ export function registerAssistant({ member, admin, fail, allow, newId }) {
     if (!inst) throw fail(404, "No such install.");
     const r = await creditTopup(q, installId, shopRef, calls, nowOf(c));
     return c.json({ ok: true, ...r });
+  });
+
+  // A key of the owner's own signer is bound to the first company that used it: the admin clears that binding (a key used
+  // by mistake on the wrong install or company) by `keyId` (and `kid`), or every binding of one company by installId and
+  // shopRef. The next real call binds it again.
+  admin.post("/assistant/unbind", async (c) => {
+    const b = await c.req.json().catch(() => ({}));
+    const keyId = str(b.keyId, 40);
+    const installId = str(b.installId, 64);
+    const shopRef = str(b.shopRef, 64);
+    let r;
+    if (keyId) r = await q(`DELETE FROM assistant_key_binds WHERE key_id = $1 AND ($2::text IS NULL OR kid = $2)`, [keyId, str(b.kid, 40)]);
+    else if (installId && shopRef) r = await q(`DELETE FROM assistant_key_binds WHERE install_id = $1 AND shop_ref = $2`, [installId, shopRef]);
+    else throw fail(400, "Send keyId (and kid), or installId and shopRef.");
+    return c.json({ ok: true, removed: r.rowCount });
   });
 
   // "Assistant free until <day>" (the admin's comp: the Assistant without a key); an empty `until` takes it away.

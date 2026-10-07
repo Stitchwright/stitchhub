@@ -370,6 +370,49 @@ try {
   assert.equal(me.shops[0].assistant.status, "ended");
   console.log("Assistant refund: ok");
 
+  // ----- 8c. two Checkouts paid: the older Assistant subscription is cancelled (never the base plan's) -----
+  const baseSubId = (await db.query(`SELECT stripe_subscription_id FROM subscriptions WHERE shop_id = $1`, [shopA])).rows[0].stripe_subscription_id;
+  const co1 = await ok(await page(a, `/shops/${shopA}/assistant/checkout`, { interval: "monthly" }));
+  const co2 = await ok(await page(a, `/shops/${shopA}/assistant/checkout`, { interval: "monthly" }));
+  const sub1 = (await mockPost(`/__pay/${co1.sessionId}`)).subscription.id;
+  const sub2 = (await mockPost(`/__pay/${co2.sessionId}`)).subscription.id;
+  assert.equal(stripeMock.subscriptions.get(sub1).status, "canceled", "the older Assistant subscription is cancelled, so it can't bill again");
+  assert.equal(stripeMock.subscriptions.get(baseSubId).status, "active", "the base plan's is left alone");
+  const aRow = async () => (await db.query(`SELECT stripe_subscription_id, unpaid_since, chargeback_dispute_ids FROM assistant_subscriptions WHERE shop_id = $1`, [shopA])).rows[0];
+  assert.equal((await aRow()).stripe_subscription_id, sub2);
+  console.log("a second Checkout cancels the older Assistant subscription: ok");
+
+  // ----- 8d. monthly to yearly in the Customer Portal: its subscription_update invoice paid for a new year, so refunding it
+  // takes the period back; a partial refund leaves the subscription running, so the Assistant is on hold, not "ended" -----
+  const item2 = stripeMock.subscriptions.get(sub2).items.data[0].id;
+  await mockApi(`/v1/subscriptions/${sub2}`, { "items[0][id]": item2, "items[0][price]": P.aYearly, proration_behavior: "always_invoice" });
+  const yearUp = [...stripeMock.invoices.values()].filter((i) => i.subscription === sub2 && i.billing_reason === "subscription_update").at(-1);
+  assert.ok(yearUp?.charge, "the switch charged for the new year");
+  assert.equal((await mockApi("/v1/refunds", { charge: yearUp.charge, amount: "100" })).object, "refund");
+  assert.ok((await aRow()).unpaid_since, "refunding the switch to yearly takes the period back");
+  assert.equal(stripeMock.subscriptions.get(sub2).status, "active", "a partial refund leaves the subscription running");
+  me = await ok(await page(a, "/me"));
+  assert.deepEqual([me.shops[0].assistant.status, me.shops[0].assistant.canAdd, me.shops[0].assistant.canTopUp], ["on_hold", false, false]);
+  assert.match((await status(await page(a, `/shops/${shopA}/assistant/checkout`, { interval: "monthly" }), 409, "no second subscription while one is on hold")).error, /on hold/);
+  const renew1 = await mockPost(`/__subscriptions/${sub2}/renew`, { paid: true });
+  assert.equal((await aRow()).unpaid_since, null, "a later period's payment makes it good");
+  console.log("a refunded switch to yearly, on hold: ok");
+
+  // ----- 8e. a chargeback on the Assistant is acted on once: a later update for it doesn't take back a period paid since -----
+  const dp = (await mockPost(`/__charges/${renew1.invoice.charge}/dispute`, { status: "needs_response" })).dispute;
+  let ar = await aRow();
+  assert.ok(ar.unpaid_since, "the chargeback takes the period back");
+  assert.deepEqual(ar.chargeback_dispute_ids, [dp.id], "and is written down as acted on");
+  await mockPost(`/__subscriptions/${sub2}/renew`, { paid: true });
+  assert.equal((await aRow()).unpaid_since, null, "paid again");
+  await mockPost(`/__disputes/${dp.id}/update`, { status: "under_review" });
+  assert.equal((await aRow()).unpaid_since, null, "the dispute's update takes nothing back again");
+  await mockPost(`/__disputes/${dp.id}/close`, { status: "lost" });
+  ar = await aRow();
+  assert.equal(ar.unpaid_since, null, "nor does its loss");
+  assert.equal(stripeMock.subscriptions.get(sub2).status, "canceled", "lost: the subscription is cancelled");
+  console.log("an Assistant chargeback acted on once: ok");
+
   // ----- 9. a hub without the Assistant prices -----
   await stopHub();
   const closed = Object.fromEntries(Object.entries(ENV).filter(([name]) => !/^STRIPE_PRICE_ASSISTANT_/.test(name)));

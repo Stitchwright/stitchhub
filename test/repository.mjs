@@ -103,6 +103,33 @@ function makePdf({ pages = ["Service manual for the machine, page one"], flate =
     Buffer.from("\nendstream\nendobj\ntrailer\n<< /Root 1 0 R /Size 5 >>\n%%EOF\n", "latin1"),
   ]);
   assert.equal(inspectPdf(repeated).markings.status, "clean", "the repeated stream is read once, within the budget");
+  // The budget spent part way: an object stream takes 60 of the 64 MB, page 1 reads, page 2 (5 MB) stops on the budget. What
+  // page 1 said is kept; with nothing found the file is "not checked", never "clean".
+  const flateObj = (n, dict, data) => Buffer.concat([Buffer.from(`${n} 0 obj\n<< ${dict} /Filter /FlateDecode /Length ${data.length} >>\nstream\n`, "latin1"), data, Buffer.from("\nendstream\nendobj\n", "latin1")]);
+  const budgetPdf = (cover) =>
+    Buffer.concat([
+      Buffer.from(`%PDF-1.7\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>\nendobj\n`, "latin1"),
+      flateObj(7, "/Type /ObjStm /N 0 /First 0", zlib.deflateSync(Buffer.alloc(60 * 1024 * 1024))),
+      Buffer.from(`3 0 obj\n<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>\nendobj\n5 0 obj\n<< /Type /Page /Parent 2 0 R /Contents 6 0 R >>\nendobj\n`, "latin1"),
+      flateObj(4, "", zlib.deflateSync(Buffer.from(`BT /F1 12 Tf (${cover} service manual cover page words) Tj ET\n`, "latin1"))),
+      flateObj(6, "", zlib.deflateSync(Buffer.from("BT /F1 12 Tf (Second page words) Tj ET\n".repeat(130_000), "latin1"))),
+      Buffer.from("trailer\n<< /Root 1 0 R /Size 8 >>\n%%EOF\n", "latin1"),
+    ]);
+  r = inspectPdf(budgetPdf("CONFIDENTIAL"));
+  assert.equal(r.markings.status, "flagged", "page 1's hit is kept when the budget stops page 2");
+  assert.deepEqual([r.markings.pagesRead, r.markings.hits.map((h) => h.label)], [[1], ["confidential"]]);
+  assert.match(r.markings.reason, /page 2 couldn't be read \(past the hub's 64 MB check budget\)/);
+  r = inspectPdf(budgetPdf("Brother"));
+  assert.equal(r.markings.status, "not-checked", "a page the budget stopped: not clean");
+  assert.match(r.markings.reason, /page 2 couldn't be read/);
+  // Once the budget is spent every later object stream stops at once, and the flag is given once (not once per stream).
+  const spentPdf = Buffer.concat([
+    Buffer.from("%PDF-1.7\n", "latin1"),
+    flateObj(10, "/Type /ObjStm /N 1 /First 4", zlib.deflateSync(Buffer.alloc(70 * 1024 * 1024))),
+    ...Array.from({ length: 2000 }, (_, i) => flateObj(i + 11, "/Type /ObjStm /N 1 /First 4", zlib.deflateSync(Buffer.from("1 0 << /K 1 >>", "latin1")))),
+    Buffer.from("trailer\n<< /Size 3000 >>\n%%EOF\n", "latin1"),
+  ]);
+  assert.deepEqual(inspectPdf(spentPdf).flags.map((f) => f.code), ["inflate-budget", "no-page-tree"], "one budget flag for 2,001 object streams");
   // The upload path's check runs in a worker thread: the same answer, and a refusal past its time limit.
   assert.deepEqual(await inspectPdfIsolated(makePdf({ pages: ten({ 0: "CONFIDENTIAL" }) })), inspectPdf(makePdf({ pages: ten({ 0: "CONFIDENTIAL" }) })));
   assert.match((await inspectPdfIsolated(makePdf({ js: true }))).refused, /\/JavaScript/);

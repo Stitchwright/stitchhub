@@ -24,6 +24,14 @@ export async function one(text, params) {
   return (await pool.query(text, params)).rows[0] ?? null;
 }
 
+/**
+ * SQL that is true for a hub shop (the shops row aliased `s`) that pays its own way: a subscription running and not taken
+ * back, or the admin's comp. The per-install limits (backup space, free plate reads) count only the other companies, so a
+ * hosted service's paying companies never share one install's allowance.
+ */
+export const paysOwnWay = (s) =>
+  `(coalesce(${s}.comp_until > now(), false) OR EXISTS (SELECT 1 FROM subscriptions sub WHERE sub.shop_id = ${s}.id AND sub.status IN ('active', 'trialing', 'past_due') AND sub.unpaid_since IS NULL))`;
+
 export async function tx(fn) {
   // Noted before a connection is taken: a hub still waiting for the writer lock refuses here, with nothing to give back.
   const release = holdFeeds();
