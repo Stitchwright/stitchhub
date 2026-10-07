@@ -354,16 +354,21 @@ Anthropic key exists in one place. Set `ANTHROPIC_API_KEY` on the hub's service 
 the hosted StitchBench / StitchShop services). `POST /v1/assistant` takes `{ shopRef, tz, feature, model: draft | suggest | read
 | manuals, system, messages, maxTokens, image?, key }` with the install key; `key` is the company's `assistant` license key text,
 checked against `ASSISTANT_PUBLIC_KEYS` (JSON, `{"k1":"<x from license:keygen>"}`) and the hub's own signing key. A key holds
-for one company only: one the hub signed must be on record for that company on that install (and not revoked), one of the
-owner's own signer belongs to the first install and company that used it. 300 calls a
+for one company only: one the hub signed (under its current kid or an older one) must be on record for that company on
+that install (and not revoked); one of the owner's own signer belongs to the first install and company that made a real call
+with it from an install that has claimed that company (a look at the usage binds nothing), and the admin clears that with
+`POST /v1/admin/assistant/unbind { keyId, kid }` or `{ installId, shopRef }`. 300 calls a
 month per company (the month turns in `tz`), top-ups of 300 from `POST /v1/admin/assistant/topup { installId, shopRef }`, an
 admin comp from `POST /v1/admin/assistant/comp { installId, shopRef, until }`, and 20 free plate reads a month without the
-module (the read model with a photo and a short prompt, for a company claimed on that install; at most
-`ASSISTANT_FREE_READS_PER_INSTALL`, 100, a month for an install's companies together, and `ASSISTANT_FREE_DAILY`, 500, in 24
-hours on the whole hub). `GET /v1/admin/assistant/usage?month=2026-10` lists calls, tokens and cost per company. Variables:
+module (the read model, or the suggest model the plate reader retries an unsure read with, with a photo and a short
+prompt, for a company claimed on that install; at most `ASSISTANT_FREE_READS_PER_INSTALL`, 100, a month for an install's
+companies that don't pay their own way together (a company with a running subscription or a comp, such as a hosted
+service's paying companies, has only its own 20), and `ASSISTANT_FREE_DAILY`, 500, in 24 hours on the whole hub; reads sent
+at once are all counted). `GET /v1/admin/assistant/usage?month=2026-10` lists calls, tokens and cost per company. Variables:
 `ASSISTANT_MODEL_DRAFT` / `_SUGGEST` (claude-sonnet-5-5), `_READ` (claude-haiku-4-5-20251001), `_MANUALS` (claude-opus-5-5),
-`ASSISTANT_MONTHLY_CALLS`, `ASSISTANT_TOPUP_CALLS`, `ASSISTANT_FREE_READS`, `ASSISTANT_HOURLY_CALLS` (60 per company), and
-`ANTHROPIC_API_BASE` (the mock, for a test hub). The hub keeps counts, tokens and cost, never a prompt or an answer.
+`ASSISTANT_MONTHLY_CALLS`, `ASSISTANT_TOPUP_CALLS`, `ASSISTANT_FREE_READS`, `ASSISTANT_HOURLY_CALLS` (60 per company; an
+empty or unreadable value, such as "1,000", is the default), and `ANTHROPIC_API_BASE` (the mock, for a test hub). A move takes
+the company's Assistant counts, zone, comp and call log to its new install. The hub keeps counts, tokens and cost, never a prompt or an answer.
 `npm run test:assistant` (needs the dev Postgres on 127.0.0.1:5433; it makes and drops its own database).
 
 **Selling the Assistant** (`src/assistant-billing.mjs`). On the account page each shop gets "Add the Assistant" ($15 a month or
