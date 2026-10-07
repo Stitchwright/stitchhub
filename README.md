@@ -479,11 +479,11 @@ lawyer's review, a takedown and a restore run on a test hub). With it unset, `PO
     (signature; the work; the material and where it is; name, address, telephone, email; the good-faith and the accuracy
     statements); an incomplete one is refused with what is missing (nothing stored); 5 an hour per address, a honeypot
     field (`website`), 16 KB. A complete notice that names a manual's reference (its id, shown on the Manuals page) or a
-    file's sha256 is acted on at once; any other waits for the owner (**Action** with the manual's reference, within one
+    file's sha256 is acted on at once if it names 5 or fewer; any other waits for the owner (**Action** with the manual's reference, within one
     business day; the list shows each notice's age in business days).
   - **Acting on a notice**: the manual is `removed` (why: copyright) in the feed and gone from the free page; the object
     moves to `held/<sha256>.pdf`; the hash goes into `blocked_hashes` (the notice's id on it); the account whose upload was
-    published gets a strike and an email (what, who complained: name or organisation only, how to counter-notify); anyone
+    published gets a strike (one per notice, however many of its manuals the notice names) and an email (what, who complained: name or organisation only, how to counter-notify); anyone
     else who offered the same bytes is told, with no strike; the owner is mailed. Three strikes in 12 months set
     `accounts.repo_uploads_off` and reject that account's waiting offers. A notice logged from an email or letter
     (`POST /v1/admin/repository/notices`, "Log a notice" on the admin page) is checked the same way; an incomplete one is
