@@ -33,6 +33,9 @@ const CLASSES = {
   read: { env: "ASSISTANT_MODEL_READ", fallback: "claude-haiku-4-5-20251001", maxTokens: 600, timeoutMs: 30_000 },
   manuals: { env: "ASSISTANT_MODEL_MANUALS", fallback: "claude-opus-5-5", maxTokens: 2500, timeoutMs: 60_000 },
 };
+// A read feature whose answer is longer than the read class's: the invoice and packing-slip reader answers JSON for each
+// line of the slip (the program asks 1500). The other read features keep the class's cap.
+const READ_CAPS = { read_invoice: 2000 };
 const modelFor = (cls) => (process.env[CLASSES[cls].env] ?? "").trim() || CLASSES[cls].fallback;
 
 // Dollars per million tokens: input, cache read, output (a 5-minute cache write is 1.25 x input). Unknown ids cost as Sonnet.
@@ -188,7 +191,7 @@ function clean(body, fail) {
     return { role: m.role, content: m.content };
   });
   if (messages[messages.length - 1].role !== "user") throw fail(400, "The last message must be the user's.");
-  const cap = CLASSES[cls].maxTokens;
+  const cap = cls === "read" && READ_CAPS[feature] ? READ_CAPS[feature] : CLASSES[cls].maxTokens;
   const maxTokens = Number.isInteger(body.maxTokens) && body.maxTokens > 0 ? Math.min(body.maxTokens, cap) : Math.min(1000, cap);
   let image = null;
   if (body.image != null) {
