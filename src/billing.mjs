@@ -166,6 +166,12 @@ const CHARGEBACK = new Set(["needs_response", "under_review"]); // a dispute tha
 // The invoices that pay for a period: a refund or chargeback of one takes the period back. Any other (the difference for a
 // plan switch, subscription_update) leaves the period as it is.
 const PERIOD_CHARGES = new Set(["subscription_create", "subscription_cycle"]);
+/**
+ * Whether an invoice paid for a period: a create or cycle invoice, or any other with a line for a whole new period (a
+ * subscription line that isn't a proration: a switch from monthly to yearly in the Customer Portal starts a new year on a
+ * subscription_update invoice). Only a switch's proration-only difference is not.
+ */
+const periodCharge = (inv) => PERIOD_CHARGES.has(inv?.billing_reason) || (inv?.lines?.data ?? []).some((l) => l?.type === "subscription" && l.proration === false);
 
 /**
  * Brings an account's founding mark up to date (in `client`'s transaction, or on its own): while any of its shops'
@@ -710,6 +716,7 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
     if (!assistantOffer().subscribe) throw fail(503, "The Assistant isn't for sale on this hub yet. Ask the hub admin.");
     const shop = await ownShop(c, a);
     const st = await assistantStanding(shop.id);
+    if (st.status === "on_hold") throw fail(409, "This shop's Assistant payment is on hold (refunded or disputed) while its subscription still runs. Use Manage billing, or ask the hub admin.");
     if (st.status === "active" || st.status === "past_due" || (st.status === "ending" && ASSISTANT_RUNNING.has(st.sub?.status))) throw fail(409, "This shop already has the Assistant. Use Manage billing to change it.");
     const price = assistantPriceFor(interval === "y" ? "yearly" : "monthly");
     const terms = currentVersion();
@@ -908,7 +915,8 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
     if (!customer) return;
     const list = await stripe.listSubscriptions(customer);
     for (const o of list.data ?? []) {
-      if (o.id === sub.id || o.metadata?.hub_shop_id !== shopId || o.metadata?.hub_product === "assistant" || ENDED.has(o.status) || !((o.created ?? 0) < (sub.created ?? 0))) continue;
+      // The same product only: the base plan's Checkout never cancels the Assistant's subscription, nor the other way round.
+      if (o.id === sub.id || o.metadata?.hub_shop_id !== shopId || isAssistantSub(o) !== isAssistantSub(sub) || ENDED.has(o.status) || !((o.created ?? 0) < (sub.created ?? 0))) continue;
       await stripe.cancelSubscription(o.id);
       console.warn(`billing: shop ${shopId} subscribed again (${sub.id}), so its older subscription ${o.id} (${o.status}) is cancelled in Stripe; if both were paid for the same days, refund the older one by hand`);
     }
@@ -916,10 +924,12 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
 
   /**
    * Whether a paid invoice makes a taken-back period good again: its own payment stands (not refunded, not disputed) and
-   * it is newer than the invoice whose charge was refunded or disputed. A late or retried invoice.paid for that period
-   * (or an older one) changes nothing.
+   * it is newer than the invoice whose charge was refunded or disputed, and it paid for a period (periodCharge: a small
+   * plan-switch difference doesn't make a taken-back period good). A late or retried invoice.paid for that period (or an
+   * older one) changes nothing.
    */
   async function paidAgain(inv, takenChargeId) {
+    if (!periodCharge(inv)) return false;
     const chargeId = typeof inv.charge === "string" ? inv.charge : (inv.charge?.id ?? null);
     if (chargeId) {
       if (chargeId === takenChargeId) return false;
@@ -938,7 +948,7 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
    * A full refund of the subscription's first payment, made while the shop's trial still runs, sends the shop back to its
    * trial instead (standingOf: refunded_in_trial); a partial refund, a later payment or a chargeback lapses it. A full
    * refund also cancels the subscription in Stripe at once, so it can't charge the shop again (a chargeback cancels it
-   * when it is lost: disputeEvent). Only a period's own charge takes the period back (PERIOD_CHARGES). The Assistant's own
+   * when it is lost: disputeEvent). Only a period's own charge takes the period back (periodCharge). The Assistant's own
    * subscription is handled the same way (its keys revoked, cancelled on a full refund), and a top-up's charge takes its
    * calls back.
    */
@@ -951,7 +961,7 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
       if (!(await topupTookBack(client, ch, disputed ? 1 : refundedShare(ch)))) console.warn(`stripe: charge ${chargeId} isn't for an invoice or an Assistant top-up; ignored`);
       return;
     }
-    if (!PERIOD_CHARGES.has(inv.billing_reason)) {
+    if (!periodCharge(inv)) {
       return console.log(`billing: charge ${chargeId} (invoice ${inv.id}, ${inv.billing_reason ?? "no reason"}) of subscription ${subId} was ${disputed ? "disputed" : "refunded"}; it didn't pay for a period, so the period stands`);
     }
     const row = (await client.query(`SELECT sub.shop_id, s.account_id, s.created_at FROM subscriptions sub JOIN shops s ON s.id = sub.shop_id WHERE sub.stripe_subscription_id = $1`, [subId])).rows[0];
@@ -1048,12 +1058,17 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
     }
     const row = (await client.query(`SELECT shop_id, inquiry_dispute_ids, chargeback_dispute_ids FROM subscriptions WHERE stripe_subscription_id = $1 FOR UPDATE`, [found.subId])).rows[0];
     if (!row) {
-      const a = (await client.query(`SELECT shop_id, unpaid_charge_id FROM assistant_subscriptions WHERE stripe_subscription_id = $1 FOR UPDATE`, [found.subId])).rows[0];
+      const a = (await client.query(`SELECT shop_id, unpaid_charge_id, chargeback_dispute_ids FROM assistant_subscriptions WHERE stripe_subscription_id = $1 FOR UPDATE`, [found.subId])).rows[0];
       if (!a) return console.warn(`stripe: dispute ${dp.id} is on subscription ${found.subId}, which isn't on the hub; ignored`);
-      // The Assistant's own subscription: a chargeback takes the period back (its keys revoked) and, lost, cancels it; won,
-      // the period counts again unless a refund also took it back.
+      // The Assistant's own subscription: a chargeback takes the period back (its keys revoked) once, written down as acted
+      // on like the base plan's, so a later event for it (evidence, review, lost) doesn't take back a period a later payment
+      // made good; lost, it cancels the subscription; won, the period counts again unless a refund also took it back.
       if (tookMoney) {
-        await tookBack(client, chargeId, true);
+        if (a.chargeback_dispute_ids.includes(dp.id)) console.log(`billing: dispute ${dp.id} (${type}, ${status}) on the Assistant was acted on already`);
+        else {
+          await client.query(`UPDATE assistant_subscriptions SET chargeback_dispute_ids = array_append(chargeback_dispute_ids, $2) WHERE stripe_subscription_id = $1`, [found.subId, dp.id]);
+          await tookBack(client, chargeId, true);
+        }
         if (status === "lost") await cancelNow(found.subId, `chargeback ${dp.id} on the Assistant was lost`);
       } else if (won && a.unpaid_charge_id === chargeId && !(found.ch.amount_refunded > 0)) {
         await assistantPaidAgain(client, found.subId);
@@ -1141,6 +1156,11 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
         const r = await syncSubscription(client, subId);
         // The new subscription runs: an older one for the same shop that hasn't ended is cancelled, so it can't charge again.
         if (r && RUNNING.has(r.sub.status)) await cancelOlder(r.shop.id, r.sub);
+        if (!r) {
+          // The Assistant's own subscription, the same way (an older one on hold after a partial refund would charge again).
+          const a = await stripe.retrieveSubscription(subId);
+          if (isAssistantSub(a) && ASSISTANT_RUNNING.has(a.status) && a.metadata?.hub_shop_id) await cancelOlder(a.metadata.hub_shop_id, a);
+        }
         return;
       }
       case "customer.subscription.created":

@@ -299,7 +299,7 @@
         if (ap.monthly) box.append(go("/assistant/checkout", { interval: "monthly" }, `Add the Assistant (${ap.monthly})`));
         if (ap.yearly) box.append(go("/assistant/checkout", { interval: "yearly" }, `${ap.yearly}, two months free`));
       } else if (as.status !== "none") {
-        const words = as.status === "ending" ? `Assistant on, cancelled: paid through ${as.paidThrough}.` : as.status === "past_due" ? "Assistant: the last payment didn't go through. Update your card under Manage billing." : as.status === "active" ? `Assistant on, paid through ${as.paidThrough}.` : "Assistant ended.";
+        const words = as.status === "ending" ? `Assistant on, cancelled: paid through ${as.paidThrough}.` : as.status === "past_due" ? "Assistant: the last payment didn't go through. Update your card under Manage billing." : as.status === "active" ? `Assistant on, paid through ${as.paidThrough}.` : as.status === "on_hold" ? "Your Assistant payment is on hold (refunded or disputed). Use Manage billing, or ask the hub admin." : "Assistant ended.";
         box.append(Object.assign(document.createElement("span"), { textContent: words }));
       }
       if (as.canTopUp && ap.topup) box.append(go("/assistant/topup", {}, `Buy ${ap.topUpCalls} more (${ap.topup})`));
