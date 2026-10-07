@@ -250,6 +250,13 @@ try {
   assert.equal((await ok(await ask(keyA, { shopRef: "shopa0000000000000000002", key: A2 }))).calls, 1, "a second company on the install counts on its own");
   assert.equal((await ok(await ask(keyB, { shopRef: SB, key: keyFor(SB) }))).calls, 1, "another install counts on its own");
   assert.equal((await ok(await ask(keyA, { shopRef: SA, feature: "ask_manuals", model: "manuals", key: A, now: "2026-11-02T18:00:00Z" }))).model, "claude-opus-5-5", "the manuals class is Opus 5.5 (in November's fresh month)");
+  // The invoice reader answers JSON for every line of a slip: the read class with its own cap (2000); other reads keep 600.
+  await ok(await ask(keyA, { shopRef: SA, feature: "read_invoice", model: "read", key: A, maxTokens: 1500, image: png, text: "Read the slip.", now: "2026-11-02T18:00:00Z" }));
+  assert.equal(mock.requests.at(-1).maxTokens, 1500, "read_invoice gets the 1500 the program asks");
+  await ok(await ask(keyA, { shopRef: SA, feature: "read_invoice", model: "read", key: A, maxTokens: 5000, image: png, text: "Read the slip.", now: "2026-11-02T18:00:00Z" }));
+  assert.equal(mock.requests.at(-1).maxTokens, 2000, "and no more than 2000");
+  await ok(await ask(keyA, { shopRef: SA, feature: "read_label", model: "read", key: A, maxTokens: 1500, image: png, text: "Read the label.", now: "2026-11-02T18:00:00Z" }));
+  assert.equal(mock.requests.at(-1).maxTokens, 600, "another read feature keeps the read class's 600");
 
   // A top-up of 5 for this month: the admin's.
   await ok(await call("/v1/admin/assistant/topup", { key: ADMIN, json: { installId: idA, shopRef: SA }, headers: { "x-test-now": NOW } }));
