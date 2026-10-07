@@ -172,6 +172,20 @@ export const TABLES = [
   },
   { t: "assistant_key_bind", table: "assistant_key_binds", cols: ["kid", "key_id", "install_id", "shop_ref", "created_at"], key: "kid || '|' || key_id", conflict: ["kid", "key_id"] },
   { t: "assistant_call", table: "assistant_calls", cols: ["id", "install_id", "shop_ref", "feature", "class", "model", "free", "input_tokens", "cache_tokens", "output_tokens", "cost_millicents", "ms", "error", "created_at"] },
+  // Shop hop passports (src/hops.mjs): the hops, the shops in them with their pinned keys, the organizers' open codes
+  // (hashed), the shoppers' passports (only what each typed), the signed stamps and the draws.
+  { t: "hop", table: "hops", cols: ["id", "slug", "name", "starts_on", "ends_on", "rule", "organizer_install", "organizer_shop_ref", "created_at", "ended_at"] },
+  {
+    t: "hop_shop",
+    table: "hop_shops",
+    cols: ["hop_id", "install_id", "shop_ref", "shop_name", "public_key", "role", "status", "joined_at", "left_at"],
+    key: "hop_id || '|' || install_id || '|' || shop_ref",
+    conflict: ["hop_id", "install_id", "shop_ref"],
+  },
+  { t: "hop_invite", table: "hop_invites", cols: ["code_hash", "hop_id", "expires_at", "used_by_install", "used_by_shop_ref", "used_at", "created_at"], key: "code_hash" },
+  { t: "hop_passport", table: "hop_passports", cols: ["id", "hop_id", "code", "name", "email", "phone", "share", "created_at"] },
+  { t: "hop_stamp", table: "hop_stamps", cols: ["id", "hop_id", "passport_id", "shop_ref", "stamp_id", "at", "sig", "received_at"], json: ["sig"] },
+  { t: "hop_draw", table: "hop_draws", cols: ["id", "hop_id", "passport_id", "prize", "present", "drawn_at"] },
   // The 30-day grace of the real-partnership rule (billing.mjs): after the links it hangs on.
   { t: "waiver_grace", table: "waiver_grace", cols: ["link_id", "since", "reason", "created_at"], key: "link_id" },
   {

@@ -153,6 +153,36 @@ and sales, and settlements. Customer phone numbers and addresses stay in the sew
 year so a shop that was offline catches up. They are not encrypted or signed: the hub admin can read them in the
 database, like everything else on the hub, and could send one as either shop.
 
+## Shop hops
+Paper passports stamped at each shop, on the hub (`src/hops.mjs`, migration 031; StitchBench's
+`shop-features-round-2-design.md` 4.6). An **organizing shop** starts a hop in the program (name, first and last day,
+the prize rule: stamps from **all** the shops, or from **any N**) and hands each other shop a one-use **hop code** (12
+letters and digits, 14 days); a shop takes part only by entering one (its choice). Starting or joining pins the
+company's partner key (Ed25519). **Shoppers** sign up on the hub's public page `/hop/<slug>` (the hop, its dates and
+shops; name, email or phone, and a tick "share my name, email and phone with each shop I visit", **off by default**) and
+land on their **passport**, `/p/<code>`: the code `HOP-XXXX-XXXX` in big type, a QR code of it (made on the hub,
+`src/qr.mjs`), the stamps so far, and a printable card (`?print=1`). One passport per email or phone per hop; 20
+sign-ups an hour from one address; 60 unknown passport codes an hour from one address. Large plain text, no scripts.
+
+At the counter the program stamps the passport and sends the stamp signed with the company's key over
+`SBHS1 \n hop \n company \n stamp id \n passport \n time \n sha256 of the canonical JSON of those five` (the program's
+`src/lib/hops/hop-math.ts` is the other copy); the hub refuses a key other than the pinned one or a signature that
+doesn't check out, keeps one stamp per passport per shop (the same one again answers with its first numbers), and
+answers "stamp 4 of 10". A shop gets the shopper's name and contact with the stamp **only if she ticked share**; the
+organizer's list of completed passports names only those who shared (the rest by their code), and its drawing records
+each draw ("she's not here" marks one not present). What a shopper typed is all the hub keeps of her. The hop tables
+go with a company's move and in the hub's export.
+
+Routes (install key, the company in `X-Shop-Ref`; a partner-only install may use them): `GET /v1/hops` → `{ hops: [{ id,
+name, startsOn, endsOn, rule, shops, role, status, slug }] }`; `POST /v1/hops { name, startsOn, endsOn, rule: "all" |
+"any:N", publicKey }` → `{ hop }`; `POST /v1/hops/:id/invite-code` (organizer) → `{ code, expiresAt }`; `POST
+/v1/hops/join { code, publicKey }` → `{ hop }`; `POST /v1/hops/:id/leave` → `{ ok }` (not the organizer); `POST
+/v1/hops/:id/stamps { stampId, passport, at, sig: { v: 1, pub, sig } }` → `{ stampNo, of, complete, shopper: { name,
+email, phone } | null }` (404 `{ error, code: "no_passport" }` for a passport not in the hop); `GET
+/v1/hops/:id/completed` (organizer) → `{ passports, stamps, completed: [{ passport, name }], draws }`; `POST
+/v1/hops/:id/draws { passport, prize }` (organizer, a completed passport) → `{ draw }`; `PATCH /v1/hops/:id/draws/:drawId
+{ present }` → `{ draw }`. Test: `node test/hops.mjs` (`npm run test:hops`, a scratch database of its own).
+
 ## Shop owner accounts
 A shop owner can have an **account** on the hub: an email address and a password, confirmed by email, with a password
 reset by email. The account owns one or more **hub shops** (a company on an install; a hosted StitchBench holds several).
