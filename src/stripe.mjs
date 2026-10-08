@@ -81,7 +81,8 @@ export const createSubscriptionCheckout = (a) =>
     {
       mode: "subscription",
       customer: a.customer,
-      line_items: [{ price: a.price, quantity: 1 }],
+      // The plan, and any extra items on the same interval (the extra stores: a quantity of the store price).
+      line_items: [{ price: a.price, quantity: 1 }, ...(a.extraItems ?? []).map((x) => ({ price: x.price, quantity: x.quantity }))],
       success_url: a.successUrl,
       cancel_url: a.cancelUrl,
       client_reference_id: a.reference,
@@ -95,10 +96,21 @@ export const retrieveSession = (id) => call("GET", `/v1/checkout/sessions/${enc(
 /** The Customer Portal (change the card or plan, cancel, invoices), back to `returnUrl` afterwards. */
 export const createPortalSession = (a) => call("POST", "/v1/billing/portal/sessions", { customer: a.customer, return_url: a.returnUrl });
 export const retrieveSubscription = (id) => call("GET", `/v1/subscriptions/${enc(id)}`);
-/** A customer's subscriptions, ended ones too (one account's customer holds every shop's). */
-export const listSubscriptions = (customer) => call("GET", `/v1/subscriptions?customer=${enc(customer)}&status=all&limit=100`);
+/** A customer's subscriptions, ended ones too (one account's customer holds every shop's): a page of 100, after `startingAfter`. */
+export const listSubscriptions = (customer, startingAfter = null) =>
+  call("GET", `/v1/subscriptions?customer=${enc(customer)}&status=all&limit=100${startingAfter ? `&starting_after=${enc(startingAfter)}` : ""}`);
 /** Cancels a subscription at once: no proration credit and no refund (Stripe's defaults for DELETE). */
 export const cancelSubscription = (id) => call("DELETE", `/v1/subscriptions/${enc(id)}`);
+/**
+ * Cancels a subscription at once with proration: the unused part of the period is credited to the customer's balance (a
+ * final invoice is made now), which Stripe takes off the next invoice. The bundle switch (src/addons.mjs) uses it.
+ */
+export const cancelSubscriptionProrated = (id) => call("DELETE", `/v1/subscriptions/${enc(id)}?prorate=true&invoice_now=true`);
+/**
+ * Changes a subscription's items: { id, quantity } changes one, { id, deleted: true } removes it, { price, quantity } adds
+ * one. With proration on the next invoice (create_prorations). The extra stores on the base plan use it.
+ */
+export const updateSubscriptionItems = (a) => call("POST", `/v1/subscriptions/${enc(a.id)}`, { items: a.items, proration_behavior: "create_prorations" }, a.idempotencyKey);
 /**
  * Moves a subscription's item to another price (Switch to Shop / Solo), with Stripe's proration. `chargeNow` (moving up to
  * Shop): the difference for the rest of the period is invoiced and charged at once (always_invoice), and the change
@@ -121,6 +133,10 @@ export const switchSubscriptionPrice = (a) =>
 export const retrievePrice = (id) => call("GET", `/v1/prices/${enc(id)}`);
 export const retrieveInvoice = (id) => call("GET", `/v1/invoices/${enc(id)}`);
 export const retrieveCharge = (id) => call("GET", `/v1/charges/${enc(id)}`);
+/** A payment's metadata (a top-up's Checkout puts hub_product on it). */
+export const retrievePaymentIntent = (id) => call("GET", `/v1/payment_intents/${enc(id)}`);
+/** Refunds a charge in full (a single add-on paid for while the bundle already covered it). */
+export const createRefund = (a) => call("POST", "/v1/refunds", { charge: a.charge }, a.idempotencyKey);
 /** A dispute (chargeback), re-read before the hub acts on charge.dispute.closed: its status (won | lost | ...) and charge. */
 export const retrieveDispute = (id) => call("GET", `/v1/disputes/${enc(id)}`);
 

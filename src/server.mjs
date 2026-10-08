@@ -18,6 +18,7 @@ import { registerParts, partsByIds, partSizes } from "./parts.mjs";
 import { registerMarket, listingsByIds, sellerBlocked, claimListings, actingShop, sameCompany } from "./market.mjs";
 import { registerUsage } from "./usage.mjs";
 import { registerPartners } from "./partners.mjs";
+import { registerHops } from "./hops.mjs";
 import { registerAccounts } from "./accounts.mjs";
 import { registerBilling } from "./billing.mjs";
 import { registerMoves } from "./moves.mjs";
@@ -286,7 +287,8 @@ member.use("*", async (c, next) => {
   const h = c.req.header("authorization") ?? "";
   const inst = await installByKey(h.startsWith("Bearer ") ? h.slice(7) : "");
   // Joined with a partner code only: the partner channel and its own account and shops, nothing of the community's.
-  if (inst.scope === "partner" && !/^\/v1\/(partners\/|shops\/|accounts\/|assistant(\/usage)?$|me$|upgrade$)/.test(c.req.path)) throw fail(403, "This shop is connected to its partner shops only. Join the community with a join key to use this.");
+  // (Shop hops too: a quilt shop on a partner code is the kind of shop that runs or joins one.)
+  if (inst.scope === "partner" && !/^\/v1\/(partners\/|hops(\/|$)|shops\/|accounts\/|assistant(\/usage)?$|me$|upgrade$)/.test(c.req.path)) throw fail(403, "This shop is connected to its partner shops only. Join the community with a join key to use this.");
   // Joined by starting a StitchHub account (no join key): a member once the account's email is verified.
   if (inst.scope === "pending" && !/^\/v1\/(shops\/|accounts\/|me$|upgrade$)/.test(c.req.path)) throw fail(403, "Finish setting up your StitchHub account first: open the link in the email we sent (Settings → Account).");
   c.set("install", inst);
@@ -889,6 +891,8 @@ registerUsage({ member, fail, writeLimit: usageLimit });
 // The Assistant proxy: the Anthropic key lives here only (src/assistant.mjs).
 registerAssistant({ member, admin, fail, allow, newId });
 registerPartners({ app, member, fail, newId, allow, clientIp, sha, hubName: HUB_NAME, createInstall });
+// Shop hop passports: the shops' routes under the install key, and the public sign-up and passport pages (src/hops.mjs).
+registerHops({ app, member, fail, newId, allow, bucket, clientIp, sha, hubName: HUB_NAME });
 // Shop owners' accounts, their shops and standing (src/accounts.mjs, the /account pages; mail through src/mail.mjs), and
 // billing (src/billing.mjs: Stripe Checkout and Portal on the account page, the webhook at /v1/stripe, the keys the hub
 // signs for the program, the admin's "Lapse now").

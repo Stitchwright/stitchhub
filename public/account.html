@@ -227,6 +227,12 @@
     if (f?.on) lines.push(f.losesOn ? `This account is a founding shop: subscribe again by ${f.losesOn} to keep the founding prices (they stay while a subscription runs without a gap of more than 60 days).` : "This account is a founding shop: these are the founding prices, locked while a subscription runs without a gap of more than 60 days.");
     const ap = billing.assistantPrices;
     if (ap) lines.push(`The Assistant (drafts, likely causes, plate reads, parts and manuals help; 300 calls a month) is a separate add-on for any shop: ${[ap.monthly, ap.yearly].filter(Boolean).join(" or ")}${ap.topup ? `; ${ap.topUpCalls} more calls this month for ${ap.topup}` : ""}.`);
+    const xp = billing.addonPrices;
+    if (xp) {
+      const names = ["vac", "appliance", "scheduling", "marketing", "maker"].filter((k) => xp[k]).map((k) => `${xp[k].label} ${xp[k].monthly}`);
+      if (names.length) lines.push(`Add-ons, each for any shop: ${names.join(", ")}${xp.bundle ? `, or all five for ${xp.bundle.monthly} (${xp.bundle.yearly})` : ""}; yearly is ten times monthly.`);
+      if (xp.store) lines.push(`Each store after the first: ${xp.store.monthly} (${xp.store.yearly}), added to the shop's plan from the stores the program reports.`);
+    }
     lines.push("Cards, cancelling and invoices are handled on Stripe's pages; the hub never sees your card.");
     return lines.join(" ");
   }
@@ -241,7 +247,7 @@
       const b = document.createElement("button"); b.className = "plain"; b.style.marginTop = "0"; b.textContent = label;
       b.onclick = async () => {
         let send = body;
-        if (path === "/checkout" || path === "/assistant/checkout") {
+        if (path === "/checkout" || path === "/assistant/checkout" || path === "/addons/checkout") {
           if (terms?.needsAccept && !$("tpTick").checked) { say("Tick the box at the top to accept the updated terms first.", true); $("tpTick").focus(); return; }
           send = { ...body, ...(terms?.current ? { termsVersion: terms.current } : {}), ...(terms?.needsAccept ? { acceptTerms: true } : {}) };
         }
@@ -305,6 +311,27 @@
       if (as.canTopUp && ap.topup) box.append(go("/assistant/topup", {}, `Buy ${ap.topUpCalls} more (${ap.topup})`));
       if (box.childNodes.length) c.append(box);
     }
+    // The trade add-ons (each its own subscription) and all five together.
+    const xp = billing.addonPrices;
+    const ad = s.addons;
+    if (xp && ad) {
+      const box = Object.assign(document.createElement("div"), { className: "muted" }); box.style.marginTop = "8px";
+      const order = ["bundle", "vac", "appliance", "scheduling", "marketing", "maker"];
+      const words = { active: "on", ending: "on, cancelled", past_due: "on, the last payment didn't go through (Manage billing)", on_hold: "payment on hold (refunded or disputed)" };
+      const on = order.filter((p) => ad.items[p] && words[ad.items[p].status]).map((p) => `${xp[p]?.label || p} ${words[ad.items[p].status]}${ad.items[p].paidThrough ? `, paid through ${ad.items[p].paidThrough}` : ""}`);
+      if (ad.comped) on.unshift("All five add-ons free (comped)");
+      if (on.length) box.append(Object.assign(document.createElement("div"), { textContent: `Add-ons: ${on.join("; ")}.` }));
+      for (const p of order) {
+        if (!ad.items[p]?.canAdd || !xp[p]) continue;
+        const row = Object.assign(document.createElement("div"), { className: "row" }); row.style.marginTop = "4px";
+        row.append(Object.assign(document.createElement("span"), { textContent: p === "bundle" ? "All five add-ons:" : `${xp[p].label}:` }));
+        row.append(go("/addons/checkout", { addon: p, interval: "yearly" }, `${xp[p].yearly}, two months free`));
+        row.append(go("/addons/checkout", { addon: p, interval: "monthly" }, xp[p].monthly));
+        box.append(row);
+      }
+      if (box.childNodes.length) c.append(box);
+    }
+    if (s.stores?.extra > 0) c.append(Object.assign(document.createElement("div"), { className: "muted", textContent: `${s.stores.reported} stores: ${s.stores.extra} extra on the plan${s.stores.billed != null && s.stores.billed !== s.stores.extra ? ` (billed now: ${s.stores.billed}; it follows at the next sync)` : ""}.` }));
     if (s.canManage) c.append(go("/portal", {}, "Manage billing"));
     if (!c.childNodes.length) { c.textContent = s.standing === "comped" ? "free" : ""; c.className = "muted"; }
     return c;
