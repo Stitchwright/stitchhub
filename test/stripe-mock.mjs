@@ -30,7 +30,10 @@
 // POST /__disputes/{id}/update { status } (charge.dispute.updated: an inquiry escalating to needs_response, a review);
 // POST /__disputes/{id}/close { status: "won" | "lost" | "warning_closed" } (charge.dispute.closed); POST
 // /__customers/{id}/decline_next (the customer's next charge is declined); POST /__invoices/{id}/pay (an open invoice
-// paid, a pending update applied); POST /__replay/{eventId}; GET /__events, /__webhooks, /__state; DELETE /__state.
+// paid, a pending update applied); POST /__charges { amount } (a charge with no invoice, not a Checkout's); POST /__slow
+// { ms } (every API call waits that long); POST /__replay/{eventId}; GET /__events, /__webhooks, /__state; DELETE
+// /__state. Also GET /v1/payment_intents/{id} (a Checkout payment's metadata), DELETE /v1/subscriptions/{id}?prorate=true
+// (the query string, as Stripe reads it) and the subscription list in pages (limit, starting_after, has_more).
 // Every hook waits for its webhooks to be answered and reports each delivery's status, so a test can check the hub
 // right after.
 import crypto from "node:crypto";
@@ -154,6 +157,7 @@ export async function startStripeMock(o = {}) {
     return { id, object: "price", active: true, recurring: p?.interval === "once" ? null : { interval: p?.interval ?? "month" }, unit_amount: p?.amount ?? 0, currency: "usd" };
   };
   let port = o.port ?? Number(process.env.STRIPE_MOCK_PORT ?? 3403);
+  let slowMs = 0;
 
   async function deliver(ev) {
     if (!webhookUrl) return null;
@@ -189,6 +193,9 @@ export async function startStripeMock(o = {}) {
     while (inflight.size) await Promise.allSettled([...inflight]);
   }
 
+  /** A period's amount: each item's price times its quantity (the plan, and an extra-stores quantity beside it). */
+  const periodAmount = (sub) => sub.items.data.reduce((n, it) => n + it.price.unit_amount * Number(it.quantity ?? 1), 0);
+
   function charge(sub, inv, amount) {
     const ch = { id: `ch_${hex(12)}`, object: "charge", amount, amount_refunded: 0, refunded: false, customer: sub.customer, invoice: inv.id, payment_intent: `pi_${hex(12)}`, status: "succeeded", created: now() };
     charges.set(ch.id, ch);
@@ -201,7 +208,7 @@ export async function startStripeMock(o = {}) {
    * A subscription's invoice: the price's amount (0 for the first invoice of a trial: nothing is charged). Its lines as
    * Stripe's: one for the period (proration false), or for a switch's difference only proration lines; `lines` overrides.
    */
-  function invoiceFor(sub, paid, reason = "subscription_cycle", amount = sub.items.data[0].price.unit_amount, lines = null) {
+  function invoiceFor(sub, paid, reason = "subscription_cycle", amount = periodAmount(sub), lines = null) {
     const inv = {
       id: `in_${hex(12)}`,
       object: "invoice",
@@ -216,7 +223,13 @@ export async function startStripeMock(o = {}) {
       period_end: sub.current_period_end,
       lines: {
         object: "list",
-        data: (lines ?? [{ amount, proration: reason === "subscription_update" }]).map((l) => ({ object: "line_item", type: "subscription", period: { start: sub.current_period_start, end: sub.current_period_end }, ...l })),
+        // A period's invoice has a line per item (the plan, the extra stores), each with its price, as Stripe's.
+        data: (lines ?? (amount === periodAmount(sub) && amount > 0 ? sub.items.data.map((it) => ({ amount: it.price.unit_amount * Number(it.quantity ?? 1), price: it.price, quantity: Number(it.quantity ?? 1), proration: reason === "subscription_update" })) : [{ amount, proration: reason === "subscription_update" }])).map((l) => ({
+          object: "line_item",
+          type: "subscription",
+          period: { start: sub.current_period_start, end: sub.current_period_end },
+          ...l,
+        })),
         has_more: false,
       },
       charge: null,
@@ -259,13 +272,13 @@ export async function startStripeMock(o = {}) {
       trial_end: trialEnd,
       current_period_start: start,
       current_period_end: trialEnd ?? addInterval(start, price.recurring.interval),
-      items: { object: "list", data: [{ id: `si_${hex(8)}`, object: "subscription_item", price, quantity: 1 }] },
+      items: { object: "list", data: s.line_items.data.map((l) => ({ id: `si_${hex(8)}`, object: "subscription_item", price: priceOf(l.price.id), quantity: Number(l.quantity ?? 1) })) },
       metadata: s.subscription_data?.metadata ?? {},
       latest_invoice: null,
       created: stamp(),
     };
     subscriptions.set(sub.id, sub);
-    const inv = invoiceFor(sub, true, "subscription_create", trialEnd ? 0 : price.unit_amount);
+    const inv = invoiceFor(sub, true, "subscription_create", trialEnd ? 0 : periodAmount(sub));
     s.status = "complete";
     s.payment_status = "paid";
     s.subscription = sub.id;
@@ -400,6 +413,18 @@ export async function startStripeMock(o = {}) {
         const ev = events.find((e) => e.id === m[1]);
         return ev ? json(res, 200, { delivered: [await deliver(ev)] }) : json(res, 404, { error: "no such event" });
       }
+      if (p === "/__charges" && req.method === "POST") {
+        // A charge with no invoice and a payment that isn't a Checkout's (one made in the dashboard, another app's).
+        const b = parseJson(await readBody(req));
+        const ch = { id: `ch_${hex(12)}`, object: "charge", amount: Number(b.amount ?? 1000), amount_refunded: 0, refunded: false, customer: b.customer ?? null, invoice: null, payment_intent: `pi_${hex(12)}`, status: "succeeded", created: now() };
+        charges.set(ch.id, ch);
+        return json(res, 200, { charge: ch });
+      }
+      if (p === "/__slow" && req.method === "POST") {
+        // Every API call waits this long before answering (0: none), to see what the hub does while Stripe is slow.
+        slowMs = Number(parseJson(await readBody(req)).ms ?? 0) || 0;
+        return json(res, 200, { ok: true, slowMs });
+      }
       if (p === "/__events" && req.method === "GET") return json(res, 200, events);
       if (p === "/__webhooks" && req.method === "GET") return json(res, 200, webhooks);
       if (p === "/__state" && req.method === "GET") {
@@ -412,6 +437,7 @@ export async function startStripeMock(o = {}) {
       }
       // ---- the API
       if (!authOk(req)) return stripeError(res, 401, "Invalid API Key provided", "authentication_error");
+      if (slowMs) await new Promise((r) => setTimeout(r, slowMs));
       if (p === "/v1/customers" && req.method === "POST") {
         const f = parseForm(await readBody(req));
         const c = { id: `cus_${hex(12)}`, object: "customer", email: f.email ?? null, name: f.name ?? null, metadata: f.metadata ?? {}, created: now() };
@@ -449,6 +475,7 @@ export async function startStripeMock(o = {}) {
           client_reference_id: f.client_reference_id ?? null,
           metadata: f.metadata ?? {},
           subscription_data: f.subscription_data ?? {},
+          payment_intent_data: f.payment_intent_data ?? {},
           allow_promotion_codes: f.allow_promotion_codes === "true",
           success_url: f.success_url,
           cancel_url: f.cancel_url,
@@ -464,8 +491,13 @@ export async function startStripeMock(o = {}) {
       if (p === "/v1/subscriptions" && req.method === "GET") {
         const customer = url.searchParams.get("customer");
         const all = url.searchParams.get("status") === "all";
-        const data = [...subscriptions.values()].filter((x) => (!customer || x.customer === customer) && (all || x.status !== "canceled"));
-        return json(res, 200, { object: "list", data, has_more: false });
+        const every = [...subscriptions.values()].filter((x) => (!customer || x.customer === customer) && (all || x.status !== "canceled"));
+        // Pages of `limit` (100 at most), after `starting_after`.
+        const limit = Math.min(100, Number(url.searchParams.get("limit") ?? 10) || 10);
+        const after = url.searchParams.get("starting_after");
+        const from = after ? every.findIndex((x) => x.id === after) + 1 : 0;
+        const data = every.slice(from, from + limit);
+        return json(res, 200, { object: "list", data, has_more: from + limit < every.length });
       }
       m = /^\/v1\/subscriptions\/(sub_[A-Za-z0-9_]+)$/.exec(p);
       if (m && req.method === "GET") return subscriptions.has(m[1]) ? json(res, 200, subscriptions.get(m[1])) : stripeError(res, 404, `No such subscription: '${m[1]}'`);
@@ -474,6 +506,10 @@ export async function startStripeMock(o = {}) {
         const sub = subscriptions.get(m[1]);
         if (!sub) return stripeError(res, 404, `No such subscription: '${m[1]}'`);
         if (sub.status === "canceled") return stripeError(res, 400, `This subscription is already canceled: '${m[1]}'`);
+        // Stripe reads a DELETE's parameters from the query string (a body is ignored).
+        sub.cancel_prorate = url.searchParams.get("prorate") === "true"; // not Stripe's: for the tests (prorate=true credits the unused days)
+        sub.cancel_invoice_now = url.searchParams.get("invoice_now") === "true";
+        sub.ended_at = now();
         sub.status = "canceled";
         sub.canceled_at = now();
         sub.cancel_at_period_end = false;
@@ -490,11 +526,31 @@ export async function startStripeMock(o = {}) {
         const f = parseForm(await readBody(req));
         const items = Array.isArray(f.items) ? f.items : [];
         const moves = [];
+        const quantities = [];
         for (const it of items) {
+          if (!it.id) {
+            // A new item (the extra stores): a price and a quantity.
+            if (!it.price || !catalog.has(it.price)) return stripeError(res, 400, `No such price: '${it.price ?? ""}'`);
+            quantities.push({ add: { id: `si_${hex(8)}`, object: "subscription_item", price: priceOf(it.price), quantity: Number(it.quantity ?? 1) } });
+            continue;
+          }
           const item = sub.items.data.find((x) => x.id === it.id);
           if (!item) return stripeError(res, 400, `No such subscription item: '${it.id ?? ""}'`);
+          if (it.deleted === "true") {
+            quantities.push({ remove: item });
+            continue;
+          }
+          if (it.quantity != null && !it.price) {
+            quantities.push({ item, quantity: Number(it.quantity) });
+            continue;
+          }
           if (!it.price || !catalog.has(it.price)) return stripeError(res, 400, `No such price: '${it.price ?? ""}'`);
           moves.push({ item, price: it.price });
+        }
+        for (const x of quantities) {
+          if (x.add) sub.items.data.push(x.add);
+          else if (x.remove) sub.items.data = sub.items.data.filter((i) => i !== x.remove);
+          else x.item.quantity = x.quantity;
         }
         sub.last_proration_behavior = f.proration_behavior ?? null;
         sub.last_payment_behavior = f.payment_behavior ?? null;
@@ -533,6 +589,13 @@ export async function startStripeMock(o = {}) {
       if (m && req.method === "GET") return invoices.has(m[1]) ? json(res, 200, invoices.get(m[1])) : stripeError(res, 404, `No such invoice: '${m[1]}'`);
       m = /^\/v1\/charges\/(ch_[A-Za-z0-9_]+)$/.exec(p);
       if (m && req.method === "GET") return charges.has(m[1]) ? json(res, 200, charges.get(m[1])) : stripeError(res, 404, `No such charge: '${m[1]}'`);
+      m = /^\/v1\/payment_intents\/(pi_[A-Za-z0-9_]+)$/.exec(p);
+      if (m && req.method === "GET") {
+        // A Checkout payment's metadata (payment_intent_data[metadata]); any other payment's is empty.
+        const s = [...sessions.values()].find((x) => x.payment_intent === m[1]);
+        if (!s && ![...charges.values()].some((x) => x.payment_intent === m[1])) return stripeError(res, 404, `No such payment_intent: '${m[1]}'`);
+        return json(res, 200, { id: m[1], object: "payment_intent", metadata: s?.payment_intent_data?.metadata ?? {}, status: "succeeded" });
+      }
       m = /^\/v1\/disputes\/(dp_[A-Za-z0-9_]+)$/.exec(p);
       if (m && req.method === "GET") {
         const dp = disputes.find((x) => x.id === m[1]);
@@ -553,7 +616,8 @@ export async function startStripeMock(o = {}) {
         refunds.push(r);
         ch.amount_refunded += amount;
         ch.refunded = ch.amount_refunded >= ch.amount;
-        await emit("charge.refunded", ch);
+        // After the answer, as Stripe's (the hub may make a refund inside a webhook's transaction).
+        emitLater("charge.refunded", ch);
         return json(res, 200, r);
       }
       return stripeError(res, 404, `Unrecognized request URL (${req.method}: ${p}).`);

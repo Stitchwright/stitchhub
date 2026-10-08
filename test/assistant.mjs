@@ -13,7 +13,11 @@ import { spawn } from "node:child_process";
 import pg from "pg";
 import { startAnthropicMock } from "./anthropic-mock.mjs";
 import { encodeLicense } from "../src/license.mjs";
-import { zoneDay, costMillicents } from "../src/assistant.mjs";
+import { zoneDay, costMillicents, PHOTO_FEATURES } from "../src/assistant.mjs";
+
+// The photo features the program uses (src/lib/assistant/features.ts and its prompts on the round-2 branches; read_invoice
+// and thread_photo/thread_match are named in shop-features-round-2-design.md 1.10 and 9.10, not built yet).
+const PROGRAM_PHOTO_FEATURES = ["read_plate", "read_label", "tag_fabric", "trade_in_note", "read_invoice", "thread_photo", "thread_match"];
 
 const ADMIN = "assistant-test-admin-token";
 const JOIN = "join-assistant-test";
@@ -181,7 +185,12 @@ try {
   assert.equal(lastReq.hasImage, true, "the photo reached the model as an image block");
   assert.equal(lastReq.headers["x-api-key"], ANTHROPIC_KEY, "the hub called with its own key");
   assert.equal(mock.requests.length, 3, "the refused 4th made no model call");
-  await refused(await ask(keyA, { shopRef: SA, feature: "draft_work_done", image: png }), 400, /plate, bolt-label and swatch readers/, "a photo on another feature");
+  await refused(await ask(keyA, { shopRef: SA, feature: "draft_work_done", image: png }), 400, /Only the photo readers take a photo/, "a photo on another feature");
+  // Every photo feature the program sends passes the photo gate (a GIF is then refused for its type, so no model call is made).
+  for (const feature of PROGRAM_PHOTO_FEATURES) {
+    assert.ok(PHOTO_FEATURES.has(feature), `${feature} is a photo feature`);
+    await refused(await ask(keyA, { shopRef: SA, feature, model: "read", text: "Read it.", image: { ...png, mediaType: "image/gif" } }), 400, /JPEG, PNG or WebP/, `a photo for ${feature}`);
+  }
   await refused(await ask(keyA, { shopRef: SA, model: "turbo" }), 400, /model must be/, "an unknown model class");
   await refused(await ask(keyA, { shopRef: SA, tz: "Mars/Base" }), 400, /time zone/, "a bad zone");
   // The install's ceiling (5 here) counts all its companies together; then the hub's daily one (7 here) counts every install.
@@ -241,6 +250,13 @@ try {
   assert.equal((await ok(await ask(keyA, { shopRef: "shopa0000000000000000002", key: A2 }))).calls, 1, "a second company on the install counts on its own");
   assert.equal((await ok(await ask(keyB, { shopRef: SB, key: keyFor(SB) }))).calls, 1, "another install counts on its own");
   assert.equal((await ok(await ask(keyA, { shopRef: SA, feature: "ask_manuals", model: "manuals", key: A, now: "2026-11-02T18:00:00Z" }))).model, "claude-opus-5-5", "the manuals class is Opus 5.5 (in November's fresh month)");
+  // The invoice reader answers JSON for every line of a slip: the read class with its own cap (2000); other reads keep 600.
+  await ok(await ask(keyA, { shopRef: SA, feature: "read_invoice", model: "read", key: A, maxTokens: 1500, image: png, text: "Read the slip.", now: "2026-11-02T18:00:00Z" }));
+  assert.equal(mock.requests.at(-1).maxTokens, 1500, "read_invoice gets the 1500 the program asks");
+  await ok(await ask(keyA, { shopRef: SA, feature: "read_invoice", model: "read", key: A, maxTokens: 5000, image: png, text: "Read the slip.", now: "2026-11-02T18:00:00Z" }));
+  assert.equal(mock.requests.at(-1).maxTokens, 2000, "and no more than 2000");
+  await ok(await ask(keyA, { shopRef: SA, feature: "read_label", model: "read", key: A, maxTokens: 1500, image: png, text: "Read the label.", now: "2026-11-02T18:00:00Z" }));
+  assert.equal(mock.requests.at(-1).maxTokens, 600, "another read feature keeps the read class's 600");
 
   // A top-up of 5 for this month: the admin's.
   await ok(await call("/v1/admin/assistant/topup", { key: ADMIN, json: { installId: idA, shopRef: SA }, headers: { "x-test-now": NOW } }));

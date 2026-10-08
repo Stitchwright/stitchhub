@@ -19,7 +19,7 @@ export const TABLES = [
   {
     t: "shop",
     table: "shops",
-    cols: ["id", "install_id", "shop_ref", "name", "kind", "program", "version", "account_id", "comp_until", "comp_note", "lapsed_at", "reset_opt_in", "created_at", "last_seen_at"],
+    cols: ["id", "install_id", "shop_ref", "name", "kind", "program", "version", "account_id", "comp_until", "comp_note", "lapsed_at", "reset_opt_in", "created_at", "last_seen_at", "comp_addons", "stores"],
   },
   // Companies moving between installs: the move tokens out (hashed) and the record of each move, so a company's old
   // install still hears where it went after the hub itself moved (src/moves.mjs).
@@ -46,7 +46,7 @@ export const TABLES = [
   {
     t: "subscription",
     table: "subscriptions",
-    cols: ["shop_id", "stripe_subscription_id", "stripe_customer_id", "plan", "status", "current_period_end", "cancel_at_period_end", "unpaid_since", "disputed_at", "mailed", "created_at", "updated_at", "tier", "founding", "price_id", "unpaid_charge_id", "refunded_in_trial", "inquiry_at", "inquiry_dispute_ids", "chargeback_dispute_ids"],
+    cols: ["shop_id", "stripe_subscription_id", "stripe_customer_id", "plan", "status", "current_period_end", "cancel_at_period_end", "unpaid_since", "disputed_at", "mailed", "created_at", "updated_at", "tier", "founding", "price_id", "unpaid_charge_id", "refunded_in_trial", "inquiry_at", "inquiry_dispute_ids", "chargeback_dispute_ids", "store_quantity", "store_item_id"],
     key: "shop_id",
     json: ["mailed"],
   },
@@ -56,6 +56,16 @@ export const TABLES = [
     table: "assistant_subscriptions",
     cols: ["shop_id", "stripe_subscription_id", "stripe_customer_id", "stripe_created", "plan", "status", "current_period_end", "cancel_at_period_end", "price_id", "created_at", "updated_at", "unpaid_since", "unpaid_charge_id", "chargeback_dispute_ids"],
     key: "shop_id",
+  },
+  // A top-up refunded before its credit landed: the share waiting for it.
+  { t: "assistant_topup_pending", table: "assistant_topup_pending", cols: ["stripe_payment_intent", "share", "charge_id", "created_at"], key: "stripe_payment_intent" },
+  // The trade add-ons' own subscriptions per shop and product (src/addons.mjs).
+  {
+    t: "addon_subscription",
+    table: "addon_subscriptions",
+    cols: ["shop_id", "product", "stripe_subscription_id", "stripe_customer_id", "stripe_created", "plan", "status", "current_period_end", "cancel_at_period_end", "price_id", "unpaid_since", "unpaid_charge_id", "chargeback_dispute_ids", "created_at", "updated_at"],
+    key: "shop_id || '|' || product",
+    conflict: ["shop_id", "product"],
   },
   { t: "assistant_topup", table: "assistant_topups", cols: ["stripe_session_id", "shop_id", "calls", "month", "created_at", "stripe_payment_intent", "calls_taken"], key: "stripe_session_id" },
   { t: "stripe_event", table: "stripe_events", cols: ["id", "type", "received_at"] },
@@ -172,6 +182,21 @@ export const TABLES = [
   },
   { t: "assistant_key_bind", table: "assistant_key_binds", cols: ["kid", "key_id", "install_id", "shop_ref", "created_at"], key: "kid || '|' || key_id", conflict: ["kid", "key_id"] },
   { t: "assistant_call", table: "assistant_calls", cols: ["id", "install_id", "shop_ref", "feature", "class", "model", "free", "input_tokens", "cache_tokens", "output_tokens", "cost_millicents", "ms", "error", "created_at"] },
+  // Shop hop passports (src/hops.mjs): the hops, the shops in them with their pinned keys, the organizers' open codes
+  // (hashed), the shoppers' passports (only what each typed), the signed stamps and the draws.
+  { t: "hop", table: "hops", cols: ["id", "slug", "name", "starts_on", "ends_on", "rule", "organizer_install", "organizer_shop_ref", "created_at", "ended_at"] },
+  {
+    t: "hop_shop",
+    table: "hop_shops",
+    cols: ["hop_id", "install_id", "shop_ref", "shop_name", "public_key", "role", "status", "joined_at", "left_at"],
+    key: "hop_id || '|' || install_id || '|' || shop_ref",
+    // A company is in a hop once (hop_id, shop_ref), whichever install it is on: a row that moved replaces the old one.
+    conflict: ["hop_id", "shop_ref"],
+  },
+  { t: "hop_invite", table: "hop_invites", cols: ["code_hash", "hop_id", "expires_at", "used_by_install", "used_by_shop_ref", "used_at", "created_at"], key: "code_hash" },
+  { t: "hop_passport", table: "hop_passports", cols: ["id", "hop_id", "code", "name", "email", "phone", "share", "created_at"] },
+  { t: "hop_stamp", table: "hop_stamps", cols: ["id", "hop_id", "passport_id", "shop_ref", "stamp_id", "at", "sig", "received_at"], json: ["sig"] },
+  { t: "hop_draw", table: "hop_draws", cols: ["id", "hop_id", "passport_id", "prize", "present", "drawn_at"] },
   // The 30-day grace of the real-partnership rule (billing.mjs): after the links it hangs on.
   { t: "waiver_grace", table: "waiver_grace", cols: ["link_id", "since", "reason", "created_at"], key: "link_id" },
   {

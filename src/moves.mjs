@@ -94,6 +94,12 @@ export async function rewriteCompany(client, shop, to) {
   await run("posts", `UPDATE posts SET install_id = $3, seq = nextval('change_seq') WHERE install_id = $1 AND shop_ref = $2`);
   await run("link_revisions", `UPDATE link_revisions SET install_id = $3 WHERE install_id = $1 AND shop_ref = $2`);
   await run("xpart_revisions", `UPDATE xpart_revisions SET install_id = $3 WHERE install_id = $1 AND shop_ref = $2`);
+  // Its shop hops: its place in each, the hops it organizes, and the codes it used to join. The pinned partner key is
+  // cleared: the program makes a new one on the install it moved to, and its first stamp there that checks out pins it
+  // (src/hops.mjs), so an organizer (who can't join its own hop again) isn't locked out of stamping.
+  await run("hop_shops", `UPDATE hop_shops SET install_id = $3, public_key = NULL WHERE install_id = $1 AND shop_ref = $2`);
+  await run("hops", `UPDATE hops SET organizer_install = $3 WHERE organizer_install = $1 AND organizer_shop_ref = $2`);
+  await run("hop_invites", `UPDATE hop_invites SET used_by_install = $3 WHERE used_by_install = $1 AND used_by_shop_ref = $2`);
   // An Assistant key of the owner's own signer stays the company's (src/assistant.mjs binds it to the first that used it).
   await run("assistant_key_binds", `UPDATE assistant_key_binds SET install_id = $3 WHERE install_id = $1 AND shop_ref = $2`);
   // The Assistant's counts go with the company: its month (paid top-ups were added to it, and a refund takes them back from

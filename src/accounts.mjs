@@ -16,7 +16,8 @@ import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { one, q, tx } from "./db.mjs";
 import { sendMail, mailProblem } from "./mail.mjs";
 import { assistantOffer, assistantPriceList, assistantStanding } from "./assistant-billing.mjs";
-import { standingOf, claimAnswer, billingOpen, billingProblem, FOREVER, FOUNDING_LIMIT, foundingMissing, foundingUsed, priceList, refreshFounding, SOLO_LOGINS, trialChargeStart } from "./billing.mjs";
+import { addonPriceList, addonProblem, addonsForSale, addonStandings, ADDON_IDS, extraStores, MAX_SINGLES, modulesOn, revokeCompAddonKeys, stillBilled, storesForSale } from "./addons.mjs";
+import { registered as billingHooks, standingOf, claimAnswer, billingOpen, billingProblem, FOREVER, FOUNDING_LIMIT, foundingMissing, foundingUsed, priceList, refreshFounding, SOLO_LOGINS, trialChargeStart } from "./billing.mjs";
 import { signer as hubSigner } from "./license.mjs";
 import { stripeMode } from "./stripe.mjs";
 import { refuseIfMoved } from "./moves.mjs";
@@ -215,6 +216,8 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
         : null,
       subscription: st.subscription,
       lapsedAt: s.lapsed_at ?? null,
+      // The stores the program reported, and the extra ones billed on the base subscription (each after the first).
+      stores: { reported: s.stores ?? 1, extra: extraStores(s.stores), billed: (await one(`SELECT store_quantity FROM subscriptions WHERE shop_id = $1`, [s.id]))?.store_quantity ?? null },
       // A subscription started now is first charged on this day, when the trial ends (null: at once).
       firstChargeOn: trialChargeStart(s, st.subscription ? { unpaid_since: st.subscription.unpaidSince, disputed_at: st.subscription.disputedAt } : null)?.day ?? null,
     };
@@ -244,12 +247,15 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
     // Whether the program allows a password reset from the account (the Windows program's opt-in; src/provisioning.mjs).
     // An older program says nothing, and what was stored stays.
     const resetOptIn = typeof body.resetOptIn === "boolean" ? body.resetOptIn : null;
+    // The stores the company has (a program with more than one store says so; an older one says nothing and what was
+    // stored stays). Each store after the first is billed on the base subscription (billing.mjs syncStores).
+    const stores = Number.isInteger(body.stores) && body.stores >= 1 && body.stores <= 100 ? body.stores : null;
     const r = await client.query(
-      `INSERT INTO shops (id, install_id, shop_ref, name, kind, program, version, reset_opt_in) VALUES ($1, $2, $3, coalesce($4, $8), coalesce($5, 'repair'), $6, $7, coalesce($9, false))
+      `INSERT INTO shops (id, install_id, shop_ref, name, kind, program, version, reset_opt_in, stores) VALUES ($1, $2, $3, coalesce($4, $8), coalesce($5, 'repair'), $6, $7, coalesce($9, false), coalesce($10, 1))
        ON CONFLICT (install_id, shop_ref) DO UPDATE SET name = coalesce($4, shops.name), kind = coalesce($5, shops.kind), program = coalesce($6, shops.program),
-         version = coalesce($7, shops.version), reset_opt_in = coalesce($9, shops.reset_opt_in), last_seen_at = now()
+         version = coalesce($7, shops.version), reset_opt_in = coalesce($9, shops.reset_opt_in), stores = coalesce($10, shops.stores), last_seen_at = now()
        RETURNING *`,
-      [newId(), install.id, shopRef, str(body.shopName, 120), kind, program, str(body.version, 40), install.name, resetOptIn],
+      [newId(), install.id, shopRef, str(body.shopName, 120), kind, program, str(body.version, 40), install.name, resetOptIn, stores],
     );
     if (resetOptIn === false) await withdrawGrants(client, r.rows[0].id);
     return r.rows[0];
@@ -282,6 +288,10 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
       const shop = await upsertShop(client, install, body);
       return { shop, listings: sole ? await claimListings(client, install.id, shop.shop_ref) : 0 };
     });
+    // The extra stores billed follow the stores reported (only when they differ from what is billed). After the answer, in
+    // the background: up to three Stripe calls must not hold up a claim (the program gives up on it after 30 seconds and
+    // the install's other companies wait), and a failure there never fails the claim (it is tried at the next one).
+    setImmediate(() => billingHooks.syncStores(shop).catch((e) => console.error(`billing: the extra stores of shop ${shop.id}: ${e.message}`)));
     return c.json({ ok: true, listings, ...(await standingAnswer(shop)) });
   });
 
@@ -384,6 +394,31 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
     // The Assistant is its own subscription per shop (src/assistant-billing.mjs): its standing and what the page may offer.
     const offer = assistantOffer();
     const assist = new Map(await Promise.all(shops.map(async (s) => [s.id, await assistantStanding(s.id)])));
+    // The trade add-ons, each its own subscription (src/addons.mjs), and the bundle.
+    const forSale = addonsForSale();
+    const addonSt = new Map(await Promise.all(shops.map(async (s) => [s.id, await addonStandings(s.id)])));
+    const rawShop = new Map(shops.map((r) => [r.id, r]));
+    const addonsOut = (shown) => {
+      const s = rawShop.get(shown.id);
+      const st = addonSt.get(s.id);
+      const bundleBilled = stillBilled(st.bundle.row, st.bundle);
+      const singles = ADDON_IDS.filter((p) => stillBilled(st[p].row, st[p])).length;
+      return {
+        on: modulesOn(st, s),
+        comped: Boolean(s.comp_addons && s.comp_until && s.comp_until.getTime() > Date.now()),
+        items: Object.fromEntries(
+          Object.entries(st).map(([p, x]) => [
+            p,
+            {
+              status: x.status,
+              paidThrough: x.paidThrough,
+              plan: x.plan,
+              canAdd: open && forSale.includes(p) && !stillBilled(x.row, x) && (p === "bundle" || (!bundleBilled && singles < MAX_SINGLES)),
+            },
+          ]),
+        ),
+      };
+    };
     return c.json({
       account: { id: a.id, email: a.email, verified: Boolean(a.verified_at), termsVersion: a.terms_version, createdAt: a.created_at, lastSignInAt: a.last_sign_in_at, hasBilling: Boolean(a.stripe_customer_id) },
       shops: (await Promise.all(shops.map(withStanding))).map((s) => ({
@@ -400,6 +435,7 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
           canAdd: open && offer.subscribe && ["none", "ended"].includes(assist.get(s.id).status),
           canTopUp: open && offer.topup && ["active", "ending", "past_due"].includes(assist.get(s.id).status),
         },
+        addons: addonsOut(s),
         // The program on that shop's PC allows a reset of its owner's password from here (src/provisioning.mjs).
         resetOptIn: optIn.get(s.id) ?? false,
         resetRequest: resets.get(s.id) ?? null,
@@ -407,7 +443,7 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
       hubName,
       // What each plan costs for this account (the founding prices for a founding shop), Solo's login limit, and the
       // founding mark: while a gap runs, the day it would go.
-      billing: { open, prices: open ? await priceList(founding.founding) : null, assistantPrices: open && (offer.subscribe || offer.topup) ? await assistantPriceList() : null, soloLogins: SOLO_LOGINS, founding: { on: founding.founding, gapSince: founding.gapSince, losesOn: founding.losesOn } },
+      billing: { open, prices: open ? await priceList(founding.founding) : null, assistantPrices: open && (offer.subscribe || offer.topup) ? await assistantPriceList() : null, addonPrices: open && (forSale.length || storesForSale()) ? await addonPriceList() : null, soloLogins: SOLO_LOGINS, founding: { on: founding.founding, gapSince: founding.gapSince, losesOn: founding.losesOn } },
       // "Start a hosted StitchShop / StitchBench" (src/provisioning.mjs): which this hub offers, and whether it can sign resets.
       hosted: hostedOffer(),
       canSignResets: Boolean(hubSigner().signer),
@@ -613,7 +649,22 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
 
   const shopRows = (where, params) =>
     q(`SELECT s.*, i.name AS install_name, a.email AS account_email, a.stripe_customer_id FROM shops s JOIN installs i ON i.id = s.install_id LEFT JOIN accounts a ON a.id = s.account_id ${where} ORDER BY s.created_at`, params).then((r) => r.rows);
-  const adminShop = async (s) => ({ ...(await withStanding(s)), installId: s.install_id, installName: s.install_name, accountId: s.account_id, accountEmail: s.account_email ?? null, stripeCustomerId: s.stripe_customer_id ?? null, compUntil: s.comp_until, compNote: s.comp_note });
+  const adminShop = async (s) => {
+    const st = await addonStandings(s.id);
+    return {
+      ...(await withStanding(s)),
+      installId: s.install_id,
+      installName: s.install_name,
+      accountId: s.account_id,
+      accountEmail: s.account_email ?? null,
+      stripeCustomerId: s.stripe_customer_id ?? null,
+      compUntil: s.comp_until,
+      compNote: s.comp_note,
+      compAddons: Boolean(s.comp_addons),
+      // The add-ons it has now, and each add-on subscription the hub holds (product, standing, paid through).
+      addons: { on: modulesOn(st, s), subs: Object.entries(st).filter(([, x]) => x.row).map(([p, x]) => ({ product: p, status: x.status, paidThrough: x.paidThrough, plan: x.plan, id: x.row.stripe_subscription_id })) },
+    };
+  };
 
   admin.get("/accounts", async (c) => {
     for (const r of (await q(`SELECT id FROM accounts WHERE founding_at IS NOT NULL`)).rows) await refreshFounding(null, r.id);
@@ -629,6 +680,7 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
         signing: signing.signer ? { kid: signing.signer.kid, x: signing.signer.x } : null,
         signingProblem: signing.problem,
         foundingMissing: foundingMissing(),
+        addonProblem: addonProblem(),
       },
       foundingPlaces: { used: await foundingUsed(), limit: FOUNDING_LIMIT },
       accounts: accounts.map((a) => ({
@@ -657,7 +709,20 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
       until = /^\d{4}-\d{2}-\d{2}$/.test(String(body.until)) ? new Date(`${body.until}T23:59:59Z`) : new Date(NaN);
       if (Number.isNaN(until.getTime())) throw fail(400, "Give the last free day as YYYY-MM-DD, or \"forever\".");
     }
-    const r = await q(`UPDATE shops SET comp_until = $2, comp_note = $3, lapsed_at = CASE WHEN $2::timestamptz IS NULL THEN lapsed_at ELSE NULL END WHERE id = $1`, [c.req.param("id"), until, until ? str(body.note, 300) : null]);
+    // { addons: true }: the comp covers the five trade add-ons too ("everything"; the Assistant has its own comp). Left out,
+    // what was chosen before stays. Any change revokes the add-ons' comp key: a comp taken away, no longer covering the
+    // add-ons, or given a new last day (one in the past, or sooner than the key's) must not leave the old key live; while
+    // the comp still covers them the next claim signs one for the new last day.
+    const addons = typeof body.addons === "boolean" ? body.addons : null;
+    const r = await tx(async (client) => {
+      const res = await client.query(
+        `UPDATE shops SET comp_until = $2, comp_note = $3, lapsed_at = CASE WHEN $2::timestamptz IS NULL THEN lapsed_at ELSE NULL END,
+           comp_addons = CASE WHEN $2::timestamptz IS NULL THEN false ELSE coalesce($4, comp_addons) END WHERE id = $1 RETURNING comp_addons`,
+        [c.req.param("id"), until, until ? str(body.note, 300) : null, addons],
+      );
+      if (res.rowCount) await revokeCompAddonKeys(client, c.req.param("id"));
+      return res;
+    });
     if (!r.rowCount) throw fail(404, "No such shop.");
     return c.json({ ok: true, shop: await adminShop((await shopRows("WHERE s.id = $1", [c.req.param("id")]))[0]) });
   });

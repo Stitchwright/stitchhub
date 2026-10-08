@@ -120,6 +120,11 @@ export async function syncAssistantSub(client, s) {
     )
   ).rows[0];
   if (!known) console.warn(`stripe: Assistant subscription ${s.id} is on a price the hub doesn't know (${priceId}); treated as ${plan === "y" ? "yearly" : "monthly"}. Add it to STRIPE_PRICE_ASSISTANT_MONTHLY or _YEARLY.`);
+  // Ended unpaid (Stripe's dunning gave up on a past_due one, or marked it unpaid): its key isn't sent again.
+  if (s.status === "unpaid" || (stored?.stripe_subscription_id === s.id && stored.status === "past_due" && (s.status === "canceled" || s.status === "incomplete_expired"))) {
+    await revokeAssistantKeys(client, shopId);
+    console.log(`billing: Assistant subscription ${s.id} of shop ${shopId} ended unpaid (${s.status}); its keys are revoked`);
+  }
   return row;
 }
 
@@ -144,8 +149,8 @@ export async function assistantStanding(shopId, t = day(new Date())) {
 
 /**
  * The Assistant key the program should hold: the stored one when it still fits the subscription's paid-through day, a new
- * one signed when the day changed (a renewal), nothing new for a subscription that ended (the stored key runs out on its own
- * last day plus grace). Written to license_issues with modules = {assistant}. Returns { keys: [text] or [] }.
+ * one signed when the day changed (a renewal), nothing new for a subscription that ended or is past_due (the stored key runs
+ * out on its own last day plus grace). Written to license_issues with modules = {assistant}. Returns { keys: [text] or [] }.
  */
 export async function assistantKeysFor(shop) {
   const { signer } = hubSigner();
@@ -155,7 +160,10 @@ export async function assistantKeysFor(shop) {
   );
   const st = await assistantStanding(shop.id);
   const t = day(new Date());
-  const running = st.paidThrough && (st.status === "active" || st.status === "ending" || st.status === "past_due");
+  // past_due signs nothing new: Stripe has already moved the period on to the one not paid yet, so the key from the last
+  // paid period runs out with its grace (and is revoked if the subscription ends unpaid: syncAssistantSub). Nor does a
+  // cancelled one (its period may be the unpaid one, or cut short): its last key runs out.
+  const running = st.paidThrough && (st.status === "active" || st.status === "ending") && st.sub.status !== "canceled";
   if (!signer || !running) return { keys: stored?.key ? [stored.key] : [] };
   const until = st.paidThrough;
   if (stored && stored.last_day === until && stored.grace_days === ASSISTANT_GRACE_DAYS) return { keys: [stored.key] };
@@ -212,6 +220,9 @@ export async function assistantTookBack(client, subId, chargeId) {
 export const assistantPaidAgain = (client, subId) =>
   client.query(`UPDATE assistant_subscriptions SET unpaid_since = NULL, unpaid_charge_id = NULL, updated_at = now() WHERE stripe_subscription_id = $1 AND unpaid_since IS NOT NULL`, [subId]);
 
+/** One top-up payment is handled by one transaction at a time (its credit, its refund or chargeback). */
+const lockTopup = (client, pi) => client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`assistant-topup:${pi}`]);
+
 /**
  * A refund or chargeback of a top-up's payment: `share` (0 to 1) of its calls is taken back from the month it was added to;
  * a smaller share than before (a chargeback won) gives the difference back. Returns false when the charge isn't a top-up's.
@@ -219,10 +230,25 @@ export const assistantPaidAgain = (client, subId) =>
 export async function topupTookBack(client, ch, share) {
   const pi = typeof ch.payment_intent === "string" ? ch.payment_intent : ch.payment_intent?.id;
   if (!pi) return false;
+  await lockTopup(client, pi);
   const t = (
     await client.query(`SELECT t.stripe_session_id, t.calls, t.calls_taken, t.month, s.id AS shop_id, s.install_id, s.shop_ref FROM assistant_topups t JOIN shops s ON s.id = t.shop_id WHERE t.stripe_payment_intent = $1 FOR UPDATE OF t`, [pi])
   ).rows[0];
-  if (!t) return false;
+  if (!t) {
+    // Refunded (or charged back) before its checkout.session.completed was handled: the share waits for the credit
+    // (creditTopupSession applies it when the calls land). Only a top-up's payment (its metadata says so: the Checkout put
+    // it there) is held; any other charge without an invoice isn't the hub's. A pending row that never meets a credit
+    // takes nothing.
+    const intent = await stripe.retrievePaymentIntent(pi);
+    if (intent?.metadata?.hub_product !== "assistant_topup") return false;
+    await client.query(
+      `INSERT INTO assistant_topup_pending (stripe_payment_intent, share, charge_id) VALUES ($1, $2, $3)
+       ON CONFLICT (stripe_payment_intent) DO UPDATE SET share = EXCLUDED.share, charge_id = EXCLUDED.charge_id`,
+      [pi, share, ch.id ?? null],
+    );
+    console.log(`billing: charge ${ch.id} (payment ${pi}) was taken back before its top-up was credited; ${Math.round(share * 100)}% of the calls come off when it is`);
+    return true;
+  }
   const want = Math.min(t.calls, Math.max(0, Math.ceil(t.calls * share - 1e-9))); // less a hair: 0.1 x 300 is 30.000000000000004
   const more = want - t.calls_taken;
   if (more) {
@@ -246,12 +272,18 @@ export async function creditTopupSession(client, session) {
   const customer = typeof session.customer === "string" ? session.customer : session.customer?.id;
   if (shop.account_customer && customer !== shop.account_customer) return console.warn(`stripe: top-up session ${session.id} isn't the shop's account's customer; not credited`) ?? false;
   const run = (sql, params) => client.query(sql, params);
+  const pi = typeof session.payment_intent === "string" ? session.payment_intent : (session.payment_intent?.id ?? null);
+  // Held against a refund of the same payment handled at the same moment (topupTookBack): one waits for the other, so a
+  // refund is either seen as a top-up here or parked where this credit finds it.
+  if (pi) await lockTopup(client, pi);
   // The month is worked out first so the record names it; the primary key makes a second delivery a no-op.
   const credited = await creditTopup(run, shop.install_id, shop.shop_ref, 0);
-  const pi = typeof session.payment_intent === "string" ? session.payment_intent : (session.payment_intent?.id ?? null);
   const made = await client.query(`INSERT INTO assistant_topups (stripe_session_id, shop_id, calls, month, stripe_payment_intent) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (stripe_session_id) DO NOTHING`, [session.id, shop.id, TOPUP_CALLS, credited.month, pi]);
   if (!made.rowCount) return false;
   await creditTopup(run, shop.install_id, shop.shop_ref, TOPUP_CALLS);
   console.log(`billing: ${TOPUP_CALLS} Assistant calls added to shop ${shop.id} for ${credited.month} (session ${session.id})`);
+  // A refund or chargeback that came first: its share is taken back now.
+  const pending = pi ? (await client.query(`DELETE FROM assistant_topup_pending WHERE stripe_payment_intent = $1 RETURNING share, charge_id`, [pi])).rows[0] : null;
+  if (pending) await topupTookBack(client, { id: pending.charge_id, payment_intent: pi }, Number(pending.share));
   return true;
 }

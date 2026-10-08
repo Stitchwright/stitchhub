@@ -25,7 +25,34 @@ import { sendMail } from "./mail.mjs";
 import * as stripe from "./stripe.mjs";
 import { signer as hubSigner, signKey, NO_END } from "./license.mjs";
 import { checkShown, currentVersion, needsAccept, recordAcceptance } from "./terms.mjs";
-import { assistantKeysFor, assistantOffer, assistantPaidAgain, assistantPriceFor, assistantStanding, assistantTookBack, creditTopupSession, isAssistantSub, syncAssistantSub, topupTookBack, RUNNING as ASSISTANT_RUNNING } from "./assistant-billing.mjs";
+import { assistantKeysFor, assistantPriceBook, assistantOffer, assistantPaidAgain, assistantPriceFor, assistantStanding, assistantTookBack, creditTopupSession, isAssistantSub, syncAssistantSub, topupTookBack, RUNNING as ASSISTANT_RUNNING } from "./assistant-billing.mjs";
+import {
+  addonKeysFor,
+  addonPaidAgain,
+  addonPriceBook,
+  addonStatus,
+  addonVar,
+  PRODUCTS as ADDON_PRODUCTS,
+  revokeCompAddonKeys,
+  addonPriceFor,
+  addonProductOf,
+  addonRowOf,
+  addonsForSale,
+  addonStandings,
+  addonTookBack,
+  extraStores,
+  revokeAddonKeys,
+  isAddonSub,
+  LABELS as ADDON_LABELS,
+  MAX_SINGLES,
+  ADDON_IDS,
+  planItemOf,
+  RUNNING as ADDON_RUNNING,
+  stillBilled,
+  storeItemOf,
+  storesForSale,
+  syncAddonSub,
+} from "./addons.mjs";
 
 export const TRIAL_DAYS = 30;
 export const GRACE_DAYS = 14;
@@ -96,8 +123,22 @@ export function billingProblem() {
   }
   const { conflicts } = priceBook();
   if (conflicts.length) return `A Stripe price is configured as two plans: ${conflicts.join("; ")}. Each price id goes in one variable only.`;
+  const overlaps = priceOverlaps();
+  if (overlaps.length) return `A Stripe price is configured for two products: ${overlaps.join("; ")}. Each price id goes in one variable only (the webhooks tell the plans, the Assistant and each add-on apart by price).`;
   if (!process.env.STRIPE_WEBHOOK_SECRET?.trim()) return "STRIPE_WEBHOOK_SECRET isn't set: Stripe's webhooks would be refused, so no payment would ever count.";
   return null;
+}
+/**
+ * Price ids configured for two products (a plan and an add-on, the Assistant and an add-on, two add-ons or an add-on's
+ * monthly and yearly): "<id> is in A and B" for each. A plan's own lists are checked by priceBook.
+ */
+export function priceOverlaps() {
+  const owners = new Map();
+  const add = (id, what) => owners.set(id, [...new Set([...(owners.get(id) ?? []), what])]);
+  for (const v of [...PRICE_VARS, ...LEGACY_VARS]) for (const id of idsOf(v.env)) add(id, "the plans");
+  for (const [id, x] of assistantPriceBook()) add(id, `the Assistant (${x.kind})`);
+  for (const product of [...ADDON_PRODUCTS, "store"]) for (const i of ["m", "y"]) for (const id of idsOf(addonVar(product, i))) add(id, addonVar(product, i));
+  return [...owners].filter(([, o]) => o.length > 1).map(([id, o]) => `${id} is in ${o.join(" and ")}`);
 }
 /** The founding prices not set yet (a founding shop can't subscribe to that plan until they are), for the admin page. */
 export const foundingMissing = () => PRICE_VARS.filter((v) => v.founding && !priceFor(v.tier, v.interval, true)).map((v) => v.env);
@@ -501,6 +542,17 @@ export async function standingOf(shop, { noWaiver = false } = {}) {
 // ----- keys -----
 
 const keyEnd = (last, grace) => addDays(last, grace);
+/** The most module keys a claim answer carries: what the program takes (its applyModuleKeys). */
+export const MAX_MODULE_KEYS = 8;
+/** A key text's payload ({ m, p, u, g, ... }), or null when it isn't one. */
+function keyPayloadOf(text) {
+  try {
+    const p = JSON.parse(Buffer.from(String(text).split(".")[1] ?? "", "base64url").toString("utf8"));
+    return p && typeof p.u === "string" ? p : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * The key the program should hold for this standing: the stored one when it still fits, else a fresh one, written to
@@ -561,7 +613,20 @@ export async function claimAnswer(shop) {
   const st = await standingOf(shop);
   const { key, revokeKeyIds } = await keyFor(shop, st);
   // The Assistant's keys (module "assistant", its own subscription: src/assistant-billing.mjs), apart from the program's.
-  const { keys: moduleKeys } = await assistantKeysFor(shop);
+  const { keys: assistantKeys } = await assistantKeysFor(shop);
+  // The trade add-ons' keys (src/addons.mjs: each add-on, or the bundle, its own subscription; the comp's for "everything").
+  const { keys: addonKeys } = await addonKeysFor(shop);
+  // Only keys that still hold (their last day plus grace not past: a key run out is no use and takes a place), the paid
+  // ones first, then the comp's; at most MAX_MODULE_KEYS, as many as the program takes (it drops a stored hub add-on key
+  // missing from a non-empty list, so a key owed must never be cut off: the Assistant, five singles in their grace, the
+  // bundle and the comp are eight).
+  const t = today();
+  const moduleKeys = [...assistantKeys, ...addonKeys]
+    .map((k) => ({ k, p: keyPayloadOf(k) }))
+    .filter((x) => x.p && addDays(x.p.u, Number(x.p.g) || 0) >= t)
+    .sort((a, b) => Number(a.p.p === "c") - Number(b.p.p === "c"))
+    .slice(0, MAX_MODULE_KEYS)
+    .map((x) => x.k);
   return { standing: st.standing, lastDay: st.lastDay, message: st.message, plan: st.plan, interval: st.interval, founding: st.founding, key, moduleKeys, revokeKeyIds };
 }
 
@@ -574,6 +639,9 @@ export async function revokeLiveKeys(client, shopId, plans = null) {
 }
 
 // ----- routes -----
+
+/** Filled when billing is registered: what the claim calls after it answers (the extra stores, src/accounts.mjs). */
+export const registered = { syncStores: async () => {} };
 
 export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubName, hubUrl, requireAccount, ready }) {
   const { signer, problem: signingProblem } = hubSigner();
@@ -636,9 +704,13 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
     let session;
     try {
       const customer = await customerFor(a);
+      // Each store after the first: a quantity of the store price, the same interval (when the store prices are set).
+      const extra = extraStores(shop.stores);
+      const storePrice = extra > 0 && storesForSale() ? addonPriceFor("store", interval) : "";
       session = await stripe.createSubscriptionCheckout({
         customer,
         price,
+        extraItems: storePrice ? [{ price: storePrice, quantity: extra }] : [],
         successUrl: `${hubUrl}/account/shops?done=1`,
         cancelUrl: `${hubUrl}/account/shops?cancelled=1`,
         reference: shop.id,
@@ -679,7 +751,7 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
     let updated;
     try {
       const s = await stripe.retrieveSubscription(sub.stripe_subscription_id);
-      const item = s.items?.data?.[0];
+      const item = planItemOf(s);
       if (!item?.id) throw fail(502, "Stripe didn't name the subscription's item. Use Manage billing instead.");
       const itemPrice = typeof item.price === "string" ? { id: item.price } : (item.price ?? {});
       const interval = planOfPrice(itemPrice.id)?.interval ?? (itemPrice.recurring?.interval === "year" ? "y" : "m");
@@ -743,6 +815,57 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
     return c.json({ ok: true, url: session.url, sessionId: session.id });
   });
 
+  // Add a trade add-on (Vac Shop, Small Appliance Repair, Scheduling, Marketing, Maker Shop) or all five: its own
+  // subscription Checkout for one shop (src/addons.mjs). A single add-on isn't sold while the bundle runs (it covers it);
+  // the bundle can be bought over singles (they are cancelled with a proration credit when it is paid).
+  acct.post("/shops/:id/addons/checkout", async (c) => {
+    ready();
+    open();
+    const a = await requireAccount(c);
+    if (!allow(`checkout:${a.id}`, 20)) throw fail(429, "Too many tries. Wait an hour.");
+    const body = await c.req.json().catch(() => ({}));
+    const interval = intervalOf(body.interval);
+    const product = String(body.addon ?? "");
+    if (!interval || !Object.hasOwn(ADDON_LABELS, product)) throw fail(400, "Pick an add-on (vac, appliance, scheduling, marketing, maker or bundle), monthly or yearly.");
+    if (!addonsForSale().includes(product)) throw fail(503, `${ADDON_LABELS[product]} isn't for sale on this hub yet. Ask the hub admin.`);
+    const shop = await ownShop(c, a);
+    const st = await addonStandings(shop.id);
+    const mine = st[product];
+    if (mine.status === "on_hold") throw fail(409, `This shop's ${ADDON_LABELS[product]} payment is on hold (refunded or disputed) while its subscription still runs. Use Manage billing, or ask the hub admin.`);
+    if (stillBilled(mine.row, mine)) throw fail(409, `This shop already has ${ADDON_LABELS[product]}. Use Manage billing to change it.`);
+    if (product === "bundle") {
+      const held = ADDON_IDS.find((p) => st[p].status === "on_hold");
+      if (held) throw fail(409, `This shop's ${ADDON_LABELS[held]} payment is on hold (refunded or disputed). Settle that under Manage billing, or ask the hub admin, before taking all five add-ons.`);
+    } else {
+      if (stillBilled(st.bundle.row, st.bundle)) throw fail(409, `This shop has all five add-ons already, ${ADDON_LABELS[product]} among them.`);
+      const singles = ADDON_IDS.filter((p) => stillBilled(st[p].row, st[p])).length;
+      if (singles >= MAX_SINGLES) throw fail(409, "All five add-ons together cost less than this: choose All five add-ons instead (your single add-ons end with a credit for the unused days).");
+    }
+    const price = addonPriceFor(product, interval);
+    const terms = currentVersion();
+    checkShown(body, fail);
+    if (needsAccept(a.terms_version) && body.acceptTerms !== true) throw fail(400, "Tick the box to accept the updated terms and privacy policy first.");
+    let session;
+    try {
+      const customer = await customerFor(a);
+      const metadata = { hub_shop_id: shop.id, hub_account_id: a.id, hub_product: "addon", hub_addon: product, ...(terms ? { hub_terms_version: terms } : {}) };
+      session = await stripe.createSubscriptionCheckout({
+        customer,
+        price,
+        successUrl: `${hubUrl}/account/shops?done=1`,
+        cancelUrl: `${hubUrl}/account/shops?cancelled=1`,
+        reference: shop.id,
+        trialEnd: null,
+        metadata,
+        idempotencyKey: `addon:${product}:${shop.id}:${crypto.randomBytes(8).toString("hex")}`,
+      });
+    } catch (e) {
+      throw stripeFail(e);
+    }
+    await tx((client) => recordAcceptance(client, { accountId: a.id, version: terms, via: "checkout", shopId: shop.id, checkoutId: session.id ?? null }));
+    return c.json({ ok: true, url: session.url, sessionId: session.id });
+  });
+
   // Buy 300 more calls ($10, one time) for this month: a payment Checkout, credited by the webhook to the company's month.
   // Only for a shop that has the Assistant (a top-up adds to a subscription's allowance; without one it would buy nothing).
   acct.post("/shops/:id/assistant/topup", async (c) => {
@@ -788,6 +911,39 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
     }
   });
 
+  // ----- extra stores -----
+
+  /**
+   * The extra stores billed on the shop's running base subscription follow the stores the program reported (shops.stores):
+   * the store item is added, changed or removed with Stripe's proration (create_prorations: the difference is on the next
+   * invoice), and the subscription is read back. Nothing while the store prices aren't set, or with no running
+   * subscription (a Checkout includes them). Logged; a failure is tried again at the next claim. Stripe's Customer Portal
+   * doesn't change the plan of a subscription with more than one item, so a shop billed for extra stores switches plan
+   * with the account page's Switch (switchSubscriptionPrice moves only the plan item, planItemOf).
+   */
+  async function syncStores(shop) {
+    if (!billingOpen() || !storesForSale()) return;
+    const sub = await one(`SELECT * FROM subscriptions WHERE shop_id = $1`, [shop.id]);
+    if (!sub?.stripe_subscription_id || !RUNNING.has(sub.status) || sub.unpaid_since) return;
+    const want = extraStores(shop.stores);
+    if (want === (sub.store_quantity ?? 0)) return;
+    if (!allow(`stores:${shop.id}`, 6)) return;
+    try {
+      const s = await stripe.retrieveSubscription(sub.stripe_subscription_id);
+      const item = storeItemOf(s);
+      const have = item ? Number(item.quantity ?? 1) : 0;
+      if (have !== want) {
+        const interval = planOfPrice(planItemOf(s)?.price?.id ?? planItemOf(s)?.price)?.interval ?? (planItemOf(s)?.price?.recurring?.interval === "year" ? "y" : "m");
+        const items = item ? [want > 0 ? { id: item.id, quantity: want } : { id: item.id, deleted: true }] : [{ price: addonPriceFor("store", interval), quantity: want }];
+        await stripe.updateSubscriptionItems({ id: s.id, items, idempotencyKey: `stores:${shop.id}:${crypto.randomBytes(8).toString("hex")}` });
+        console.log(`billing: shop ${shop.id} reports ${shop.stores} stores: ${want} extra billed on subscription ${s.id} (was ${have})`);
+      }
+      await tx((client) => syncSubscription(client, s.id));
+    } catch (e) {
+      console.error(`billing: the extra stores of shop ${shop.id} couldn't be updated in Stripe: ${e.message}`);
+    }
+  }
+
   // ----- webhooks -----
 
   /**
@@ -821,6 +977,11 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
       await syncAssistantSub(client, s);
       return null;
     }
+    // So is each trade add-on's, and the bundle's (src/addons.mjs).
+    if (isAddonSub(s)) {
+      await syncAddonSub(client, s);
+      return null;
+    }
     const shopId = s.metadata?.hub_shop_id;
     if (!shopId) return console.warn(`stripe: subscription ${subId} names no hub shop; ignored`);
     const shop = (await client.query(`SELECT s.*, a.stripe_customer_id AS account_customer FROM shops s LEFT JOIN accounts a ON a.id = s.account_id WHERE s.id = $1`, [shopId])).rows[0];
@@ -835,8 +996,10 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
         return null;
       }
     }
-    const price = s.items?.data?.[0]?.price;
+    // The plan item (an extra-stores item, a quantity of the store price, may sit beside it).
+    const price = planItemOf(s)?.price;
     const priceId = typeof price === "string" ? price : (price?.id ?? null);
+    const storeItem = storeItemOf(s);
     // The plan from the price. A price the hub doesn't know (one made in the dashboard and not added to the variables)
     // counts as Shop, so a paying shop is never held to two logins by a missing variable; the interval is Stripe's own.
     const known = planOfPrice(priceId);
@@ -863,6 +1026,7 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
          updated_at = now()`,
       [shop.id, s.id, customer ?? null, plan, s.status, periodEnd, Boolean(s.cancel_at_period_end), tier, founding, priceId],
     );
+    await client.query(`UPDATE subscriptions SET store_quantity = $2, store_item_id = $3 WHERE shop_id = $1`, [shop.id, storeItem ? Number(storeItem.quantity ?? 1) : 0, storeItem?.id ?? null]);
     if (!known) console.warn(`stripe: subscription ${subId} is on a price the hub doesn't know (${priceId}); treated as Shop${plan ? "" : ", monthly"}. Add it to the STRIPE_PRICE_* variable it belongs to.`);
     // A founding account's gap starts when its last subscription stops, and ends when one runs again.
     if (shop.account_id) await refreshFounding(client, shop.account_id);
@@ -911,14 +1075,82 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
    * same days, the hub admin refunds the older one by hand (the log says so).
    */
   async function cancelOlder(shopId, sub) {
+    // Which product a subscription is: the base plan, the Assistant, or one add-on (each its own).
+    const productKey = (x) => (isAssistantSub(x) ? "assistant" : isAddonSub(x) ? `addon:${addonProductOf(x)}` : "base");
     const customer = typeof sub.customer === "string" ? sub.customer : sub.customer?.id;
     if (!customer) return;
-    const list = await stripe.listSubscriptions(customer);
-    for (const o of list.data ?? []) {
+    // Every page (one account's customer holds every shop's subscriptions, ended ones too).
+    const all = [];
+    for (let after = null, page = 0; page < 50; page++) {
+      const list = await stripe.listSubscriptions(customer, after);
+      all.push(...(list.data ?? []));
+      if (!list.has_more || !list.data?.length) break;
+      after = list.data.at(-1).id;
+    }
+    for (const o of all) {
       // The same product only: the base plan's Checkout never cancels the Assistant's subscription, nor the other way round.
-      if (o.id === sub.id || o.metadata?.hub_shop_id !== shopId || isAssistantSub(o) !== isAssistantSub(sub) || ENDED.has(o.status) || !((o.created ?? 0) < (sub.created ?? 0))) continue;
+      if (o.id === sub.id || o.metadata?.hub_shop_id !== shopId || productKey(o) !== productKey(sub) || ENDED.has(o.status) || !((o.created ?? 0) < (sub.created ?? 0))) continue;
       await stripe.cancelSubscription(o.id);
       console.warn(`billing: shop ${shopId} subscribed again (${sub.id}), so its older subscription ${o.id} (${o.status}) is cancelled in Stripe; if both were paid for the same days, refund the older one by hand`);
+    }
+  }
+
+  /**
+   * The bundle switch: a shop that bought the bundle has its single add-on subscriptions cancelled at once with Stripe's
+   * proration (the unused days are a credit on the customer's next invoice), so it isn't billed twice for one module. A
+   * single whose period wasn't paid (past_due, or on hold after a refund or chargeback) is cancelled without proration:
+   * no credit for days never paid. Stripe's cancellation can't be undone, so one already cancelled there (this event
+   * handled before and rolled back after it) still has its row synced and its keys revoked.
+   */
+  async function cancelSinglesFor(client, shopId, bundle) {
+    const rows = (await client.query(`SELECT product, stripe_subscription_id, status, unpaid_since FROM addon_subscriptions WHERE shop_id = $1 AND product <> 'bundle'`, [shopId])).rows;
+    for (const r of rows) {
+      if (r.stripe_subscription_id === bundle.id || !ADDON_RUNNING.has(r.status)) continue;
+      const s = await stripe.retrieveSubscription(r.stripe_subscription_id);
+      const unpaid = Boolean(r.unpaid_since) || s.status === "past_due";
+      if (!ENDED.has(s.status)) await (unpaid ? stripe.cancelSubscription : stripe.cancelSubscriptionProrated)(r.stripe_subscription_id);
+      await syncAddonSub(client, await stripe.retrieveSubscription(r.stripe_subscription_id));
+      await revokeAddonKeys(client, shopId, r.product);
+      console.log(`billing: shop ${shopId} took the bundle (${bundle.id}), so its ${r.product} subscription ${r.stripe_subscription_id} is cancelled in Stripe ${unpaid ? "without proration (its period wasn't paid)" : "with a proration credit"}`);
+    }
+  }
+
+  /**
+   * A single add-on's Checkout completed while the shop's bundle already runs (it was started before the bundle, or in
+   * another tab): it would be billed for nothing. It is cancelled at once, its charge refunded in full (the refund's own
+   * webhook takes its period back), its keys revoked, and the owner is told. Safe to run again (Stripe's cancellation and
+   * the refund are only made once).
+   */
+  async function refundSingleUnderBundle(client, shopId, single, mails) {
+    const product = addonProductOf(single);
+    if (!ENDED.has(single.status)) await stripe.cancelSubscription(single.id);
+    const latest = typeof single.latest_invoice === "string" ? single.latest_invoice : single.latest_invoice?.id;
+    const inv = latest ? await stripe.retrieveInvoice(latest) : null;
+    const chargeId = typeof inv?.charge === "string" ? inv.charge : (inv?.charge?.id ?? null);
+    const ch = chargeId ? await stripe.retrieveCharge(chargeId) : null;
+    if (ch && !ch.refunded && ch.amount > (ch.amount_refunded ?? 0)) await stripe.createRefund({ charge: ch.id, idempotencyKey: `single-under-bundle:${single.id}` });
+    await syncAddonSub(client, await stripe.retrieveSubscription(single.id));
+    await revokeAddonKeys(client, shopId, product);
+    console.warn(`billing: shop ${shopId} paid for ${product} (${single.id}) while its bundle runs; cancelled in Stripe${ch ? ` and charge ${ch.id} refunded in full` : ""}`);
+    const owner = (await client.query(`SELECT a.email, s.name FROM shops s JOIN accounts a ON a.id = s.account_id WHERE s.id = $1 AND a.verified_at IS NOT NULL AND NOT a.disabled`, [shopId])).rows[0];
+    if (owner) {
+      mails.push(async () => {
+        try {
+          await sendMail({
+            to: owner.email,
+            subject: `${owner.name}: ${ADDON_LABELS[product]} refunded`,
+            text: `Hello,
+
+${owner.name} already has all five add-ons, ${ADDON_LABELS[product]} among them, so the ${ADDON_LABELS[product]} subscription you just paid for has been cancelled and its payment refunded in full. Nothing changes in the program.
+
+${hubName}
+${hubUrl}`,
+            fromName: hubName,
+          });
+        } catch (e) {
+          console.error(`billing mail (single under bundle) to the owner of ${shopId}: ${e.message}`);
+        }
+      });
     }
   }
 
@@ -966,9 +1198,23 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
     }
     const row = (await client.query(`SELECT sub.shop_id, s.account_id, s.created_at FROM subscriptions sub JOIN shops s ON s.id = sub.shop_id WHERE sub.stripe_subscription_id = $1`, [subId])).rows[0];
     if (!row) {
-      if (!(await assistantTookBack(client, subId, ch.id ?? chargeId))) return console.warn(`stripe: subscription ${subId} isn't on the hub; ignored`);
-      if (!disputed && full) await cancelNow(subId, `charge ${chargeId} of the Assistant was refunded in full`);
+      if (await assistantTookBack(client, subId, ch.id ?? chargeId)) {
+        if (!disputed && full) await cancelNow(subId, `charge ${chargeId} of the Assistant was refunded in full`);
+        return;
+      }
+      // A trade add-on's (or the bundle's) own subscription: the same (its keys revoked, cancelled on a full refund).
+      const ad = await addonTookBack(client, subId, ch.id ?? chargeId);
+      if (!ad) return console.warn(`stripe: subscription ${subId} isn't on the hub; ignored`);
+      if (!disputed && full) await cancelNow(subId, `charge ${chargeId} of ${ad.product} was refunded in full`);
       return;
+    }
+    // A refund of no more than the invoice's extra-stores lines is the stores' money: the plan's period stands.
+    if (!disputed && !full) {
+      const book = addonPriceBook();
+      const storeCents = (inv.lines?.data ?? []).filter((l) => book.get(typeof l.price === "string" ? l.price : l.price?.id)?.product === "store").reduce((n, l) => n + (Number(l.amount) || 0), 0);
+      if (storeCents > 0 && (ch.amount_refunded ?? 0) <= storeCents) {
+        return console.log(`billing: charge ${chargeId} of subscription ${subId} was refunded in part (${ch.amount_refunded} of ${storeCents} for extra stores); shop ${row.shop_id}'s period stands`);
+      }
     }
     const trialEnd = trialEndMs(row);
     const inTrial = !disputed && full && inv.billing_reason === "subscription_create" && Date.now() < trialEnd && (!ch.created || ch.created * 1000 < trialEnd);
@@ -1058,22 +1304,27 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
     }
     const row = (await client.query(`SELECT shop_id, inquiry_dispute_ids, chargeback_dispute_ids FROM subscriptions WHERE stripe_subscription_id = $1 FOR UPDATE`, [found.subId])).rows[0];
     if (!row) {
-      const a = (await client.query(`SELECT shop_id, unpaid_charge_id, chargeback_dispute_ids FROM assistant_subscriptions WHERE stripe_subscription_id = $1 FOR UPDATE`, [found.subId])).rows[0];
+      let a = (await client.query(`SELECT shop_id, unpaid_charge_id, chargeback_dispute_ids FROM assistant_subscriptions WHERE stripe_subscription_id = $1 FOR UPDATE`, [found.subId])).rows[0];
+      // A trade add-on's own subscription is handled the same way, on its own table.
+      const addon = a ? null : await addonRowOf(client, found.subId, true);
+      if (addon) a = addon;
+      const table = addon ? "addon_subscriptions" : "assistant_subscriptions";
+      const what = addon ? ADDON_LABELS[addon.product] : "the Assistant";
       if (!a) return console.warn(`stripe: dispute ${dp.id} is on subscription ${found.subId}, which isn't on the hub; ignored`);
       // The Assistant's own subscription: a chargeback takes the period back (its keys revoked) once, written down as acted
       // on like the base plan's, so a later event for it (evidence, review, lost) doesn't take back a period a later payment
       // made good; lost, it cancels the subscription; won, the period counts again unless a refund also took it back.
       if (tookMoney) {
-        if (a.chargeback_dispute_ids.includes(dp.id)) console.log(`billing: dispute ${dp.id} (${type}, ${status}) on the Assistant was acted on already`);
+        if (a.chargeback_dispute_ids.includes(dp.id)) console.log(`billing: dispute ${dp.id} (${type}, ${status}) on ${what} was acted on already`);
         else {
-          await client.query(`UPDATE assistant_subscriptions SET chargeback_dispute_ids = array_append(chargeback_dispute_ids, $2) WHERE stripe_subscription_id = $1`, [found.subId, dp.id]);
+          await client.query(`UPDATE ${table} SET chargeback_dispute_ids = array_append(chargeback_dispute_ids, $2) WHERE stripe_subscription_id = $1`, [found.subId, dp.id]);
           await tookBack(client, chargeId, true);
         }
-        if (status === "lost") await cancelNow(found.subId, `chargeback ${dp.id} on the Assistant was lost`);
+        if (status === "lost") await cancelNow(found.subId, `chargeback ${dp.id} on ${what} was lost`);
       } else if (won && a.unpaid_charge_id === chargeId && !(found.ch.amount_refunded > 0)) {
-        await assistantPaidAgain(client, found.subId);
-        console.log(`billing: dispute ${dp.id} on charge ${chargeId} was won; shop ${a.shop_id}'s Assistant counts again`);
-      } else console.log(`billing: dispute ${dp.id} (${type}, ${status}) on Assistant subscription ${found.subId}; nothing changes`);
+        await (addon ? addonPaidAgain : assistantPaidAgain)(client, found.subId);
+        console.log(`billing: dispute ${dp.id} on charge ${chargeId} was won; shop ${a.shop_id}'s ${what} counts again`);
+      } else console.log(`billing: dispute ${dp.id} (${type}, ${status}) on ${what}'s subscription ${found.subId}; nothing changes`);
       return;
     }
     const inquiry = row.inquiry_dispute_ids.includes(dp.id); // an open inquiry the hub holds
@@ -1160,6 +1411,18 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
           // The Assistant's own subscription, the same way (an older one on hold after a partial refund would charge again).
           const a = await stripe.retrieveSubscription(subId);
           if (isAssistantSub(a) && ASSISTANT_RUNNING.has(a.status) && a.metadata?.hub_shop_id) await cancelOlder(a.metadata.hub_shop_id, a);
+          // An add-on's (or the bundle's) the same way; the bundle also ends the shop's single add-ons (it covers them).
+          if (isAddonSub(a) && ADDON_RUNNING.has(a.status) && a.metadata?.hub_shop_id) {
+            const shopId = a.metadata.hub_shop_id;
+            await cancelOlder(shopId, a);
+            if (addonProductOf(a) === "bundle") await cancelSinglesFor(client, shopId, a);
+            else {
+              // A single bought while the bundle runs on (not set to end) is refunded: the bundle covers it.
+              const b = (await client.query(`SELECT * FROM addon_subscriptions WHERE shop_id = $1 AND product = 'bundle'`, [shopId])).rows[0];
+              const bs = addonStatus(b);
+              if (b && b.stripe_subscription_id !== a.id && (bs.status === "active" || bs.status === "past_due")) await refundSingleUnderBundle(client, shopId, a, mails);
+            }
+          }
         }
         return;
       }
@@ -1177,6 +1440,9 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
           // The Assistant's own subscription: a period taken back by a refund or chargeback counts again on the same terms.
           const a = (await client.query(`SELECT unpaid_charge_id FROM assistant_subscriptions WHERE stripe_subscription_id = $1 AND unpaid_since IS NOT NULL`, [subId])).rows[0];
           if (a && (await paidAgain(inv, a.unpaid_charge_id))) await assistantPaidAgain(client, subId);
+          // An add-on's, the same.
+          const ad = (await client.query(`SELECT unpaid_charge_id FROM addon_subscriptions WHERE stripe_subscription_id = $1 AND unpaid_since IS NOT NULL`, [subId])).rows[0];
+          if (ad && (await paidAgain(inv, ad.unpaid_charge_id))) await addonPaidAgain(client, subId);
           return;
         }
         // Paid: a period that was taken back is good again when this payment stands and follows the one taken back (a late
@@ -1265,7 +1531,11 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
     const shop = await tx(async (client) => {
       const r = await client.query(`UPDATE shops SET lapsed_at = CASE WHEN $2 THEN coalesce(lapsed_at, now()) ELSE NULL END WHERE id = $1 RETURNING *`, [c.req.param("id"), lapsed]);
       if (!r.rowCount) throw fail(404, "No such shop.");
-      if (lapsed) await revokeLiveKeys(client, r.rows[0].id);
+      if (lapsed) {
+        await revokeLiveKeys(client, r.rows[0].id);
+        // The comp's add-on key goes too (no new one is signed while the shop is lapsed: addons.mjs compCovers).
+        await revokeCompAddonKeys(client, r.rows[0].id);
+      }
       return r.rows[0];
     });
     return c.json({ ok: true, shop: { id: shop.id, lapsedAt: shop.lapsed_at, ...(await standingOf(shop)) } });
@@ -1336,6 +1606,7 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
     }
   }
   const sweep = () => dunningSweep().catch((e) => console.error("billing sweep:", e.message));
+  registered.syncStores = syncStores;
   setTimeout(sweep, 30_000).unref();
   setInterval(sweep, 3600_000).unref();
 }

@@ -33,6 +33,9 @@ const CLASSES = {
   read: { env: "ASSISTANT_MODEL_READ", fallback: "claude-haiku-4-5-20251001", maxTokens: 600, timeoutMs: 30_000 },
   manuals: { env: "ASSISTANT_MODEL_MANUALS", fallback: "claude-opus-5-5", maxTokens: 2500, timeoutMs: 60_000 },
 };
+// A read feature whose answer is longer than the read class's: the invoice and packing-slip reader answers JSON for each
+// line of the slip (the program asks 1500). The other read features keep the class's cap.
+const READ_CAPS = { read_invoice: 2000 };
 const modelFor = (cls) => (process.env[CLASSES[cls].env] ?? "").trim() || CLASSES[cls].fallback;
 
 // Dollars per million tokens: input, cache read, output (a 5-minute cache write is 1.25 x input). Unknown ids cost as Sonnet.
@@ -161,7 +164,10 @@ export async function keyHolds(text, installId, shopRef, today, { bind = false }
 
 // ----- request checks -----
 const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
-const PHOTO_FEATURES = new Set(["read_plate", "read_label", "tag_fabric"]);
+// The program features that send a photo: the plate reader, the bolt-label reader, the swatch tagger, the trade-in
+// condition note (round 2, 2.3), the packing-slip and invoice reader (round 2, 1.10) and the thread photo match (round 2,
+// 9.10; "thread_photo" in the design, "thread_match" kept as well until the program settles on one).
+export const PHOTO_FEATURES = new Set(["read_plate", "read_label", "tag_fabric", "trade_in_note", "read_invoice", "thread_photo", "thread_match"]);
 const MAX_SYSTEM = 40_000;
 const MAX_TEXT = 120_000;
 const MAX_IMAGE = 220_000; // base64 characters: the program shrinks a plate photo to about 150 KB
@@ -185,11 +191,11 @@ function clean(body, fail) {
     return { role: m.role, content: m.content };
   });
   if (messages[messages.length - 1].role !== "user") throw fail(400, "The last message must be the user's.");
-  const cap = CLASSES[cls].maxTokens;
+  const cap = cls === "read" && READ_CAPS[feature] ? READ_CAPS[feature] : CLASSES[cls].maxTokens;
   const maxTokens = Number.isInteger(body.maxTokens) && body.maxTokens > 0 ? Math.min(body.maxTokens, cap) : Math.min(1000, cap);
   let image = null;
   if (body.image != null) {
-    if (!PHOTO_FEATURES.has(feature) || (cls !== "read" && cls !== "suggest")) throw fail(400, "Only the plate, bolt-label and swatch readers take a photo.");
+    if (!PHOTO_FEATURES.has(feature) || (cls !== "read" && cls !== "suggest")) throw fail(400, "Only the photo readers take a photo: the plate, bolt-label, swatch, trade-in, packing-slip or invoice, and thread photo readers.");
     if (!IMAGE_TYPES.has(body.image?.mediaType) || typeof body.image.data !== "string" || !/^[A-Za-z0-9+/=]+$/.test(body.image.data) || body.image.data.length > MAX_IMAGE) throw fail(400, "Send the photo as a JPEG, PNG or WebP of at most about 150 KB.");
     image = { mediaType: body.image.mediaType, data: body.image.data };
   }
