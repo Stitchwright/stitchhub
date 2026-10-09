@@ -37,6 +37,19 @@
   <div id="app" hidden>
     <section><h2>Hub</h2><div class="grid" id="stats"></div></section>
 
+    <section id="fbSection">
+      <h2>Help &amp; ideas</h2>
+      <p class="muted">What shops sent from the Help button: problems, ideas, ratings, and errors the programs caught on their own. Mark an item Seen when you have read it and Done when it is dealt with. Pictures are deleted 90 days after Done.</p>
+      <div class="row">
+        <label for="fbStatus" class="muted">Show</label><select id="fbStatus"><option value="new">New</option><option value="">All</option><option value="seen">Seen</option><option value="done">Done</option></select>
+        <label for="fbKind" class="muted">Kind</label><select id="fbKind"><option value="">All kinds</option><option value="help">Something's wrong</option><option value="idea">Idea</option><option value="rating">Rating</option><option value="error">Error</option></select>
+        <label for="fbShop" class="muted">Shop</label><select id="fbShop"><option value="">All shops</option></select>
+        <span id="fbCounts" class="muted"></span>
+      </div>
+      <div id="fbList"></div>
+      <div class="row"><button type="button" class="plain" id="fbMore" hidden>Show older</button></div>
+    </section>
+
     <section>
       <h2>Join key</h2>
       <p class="muted">Email this to members (for example after they pay). Changing it stops new people joining with the old one; shops already joined keep working.</p>
@@ -197,12 +210,82 @@
     }));
     $("datasets").textContent = s.datasets.length ? s.datasets.map((d) => `${d.name}: version ${d.version}, ${(d.size / 1e6).toFixed(1)} MB`).join(" · ") : "None yet.";
     window.hubInstalls = s.installs;
+    await loadFeedback();
     await loadAccounts();
     await loadMoves();
     await loadRepository();
     await loadTakedown();
     await loadAssistant();
   }
+
+  // ----- Help & ideas (GET /feedback, POST /feedback/:id, GET /feedback/:id/picture). What shops typed is shown with textContent only. -----
+  let fbLimit = 50;
+  const KIND_WORDS = { help: "Something's wrong", idea: "Idea", rating: "Rating", error: "Error" };
+  const KIND_MARK = { help: "!", idea: "*", rating: "★", error: "x" };
+  function fbViewer(url) {
+    const v = document.createElement("div");
+    v.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.85);display:flex;align-items:center;justify-content:center;z-index:9;cursor:zoom-out;padding:12px";
+    const img = document.createElement("img"); img.src = url; img.alt = "The screen the shop sent"; img.style.cssText = "max-width:100%;max-height:100%;background:#fff";
+    const close = () => { v.remove(); document.removeEventListener("keydown", esc); };
+    const esc = (e) => { if (e.key === "Escape") close(); };
+    v.onclick = close; document.addEventListener("keydown", esc); v.append(img); document.body.append(v);
+  }
+  function fbCard(f) {
+    const box = document.createElement("div"); box.style.cssText = "border-top:1px solid var(--line);padding:12px 0";
+    const x = f.context || {};
+    const head = document.createElement("div");
+    const strong = document.createElement("strong"); strong.textContent = `${KIND_MARK[f.kind] || ""} ${KIND_WORDS[f.kind] || f.kind}: ${f.shopName}`;
+    const meta = document.createElement("span"); meta.className = "muted";
+    meta.textContent = ` · ${x.program || "?"} ${x.version || ""} · ${x.path || ""} · ${when(f.lastAt)}${f.status === "new" ? "" : " · " + f.status}`;
+    head.append(strong, meta);
+    box.append(head);
+    if (f.stars) { const s = document.createElement("div"); s.textContent = "★".repeat(f.stars) + "☆".repeat(5 - f.stars) + (f.quoteOk ? "  (may be quoted with the shop's name)" : ""); box.append(s); }
+    if (f.kind === "error") {
+      const e = f.error || {};
+      const m = document.createElement("div"); m.className = "bad"; m.textContent = `${e.message}${f.count > 1 ? `  (${f.count} times on ${f.day})` : `  (${f.day})`}${e.action ? "  in " + e.action : ""}`; box.append(m);
+      if (e.stack) { const d = document.createElement("details"); const sm = document.createElement("summary"); sm.textContent = "Stack"; const pre = document.createElement("pre"); pre.style.cssText = "white-space:pre-wrap;font-size:12px;margin:4px 0"; pre.textContent = e.stack; d.append(sm, pre); box.append(d); }
+    }
+    if (f.text) { const t = document.createElement("div"); t.style.cssText = "white-space:pre-wrap;margin:6px 0"; t.textContent = f.text; box.append(t); }
+    const more = document.createElement("div"); more.className = "muted";
+    more.textContent = [x.role && "role: " + x.role, x.desktop === true ? "desktop" : x.desktop === false ? "hosted" : null, x.screen && "screen " + x.screen, x.userAgent].filter(Boolean).join(" · ");
+    box.append(more);
+    if (f.hasPicture) {
+      const b = document.createElement("button"); b.type = "button"; b.className = "plain"; b.style.cssText = "padding:2px;margin:6px 0;display:block"; b.title = "Open the picture";
+      const img = document.createElement("img"); img.alt = "Picture from the shop"; img.style.cssText = "max-height:120px;max-width:200px;display:block";
+      b.append(img); box.append(b);
+      let blobUrl = null;
+      const get = async () => { if (!blobUrl) blobUrl = URL.createObjectURL(await (await api(`/feedback/${f.id}/picture`)).blob()); return blobUrl; };
+      // Pictures are fetched as the card scrolls into view, so a long list doesn't load them all at once.
+      new IntersectionObserver(async (es, o) => { if (es.some((e) => e.isIntersecting)) { o.disconnect(); try { img.src = await get(); } catch { b.textContent = "Picture missing"; } } }).observe(b);
+      b.onclick = async () => { try { fbViewer(await get()); } catch (err) { say(err.message, true); } };
+    }
+    const row = document.createElement("div"); row.className = "row";
+    if (f.replyTo) { const a = document.createElement("a"); a.textContent = "Email back"; a.href = "mailto:" + encodeURIComponent(f.replyTo).replace(/%40/g, "@") + "?subject=" + encodeURIComponent("Re: your note to StitchBench"); a.style.cssText = "padding:7px 10px;border:1px solid var(--line);border-radius:6px"; row.append(a); }
+    else { const n = document.createElement("span"); n.className = "muted"; n.textContent = "No reply address."; row.append(n); }
+    const set = (label, status, cls) => { const b = document.createElement("button"); b.type = "button"; b.textContent = label; if (cls) b.className = cls; b.onclick = async () => { try { await post("/feedback/" + f.id, { status }); loadFeedback(); } catch (err) { say(err.message, true); } }; return b; };
+    if (f.status !== "seen") row.append(set("Seen", "seen", "plain"));
+    if (f.status !== "done") row.append(set("Done", "done"));
+    else row.append(set("Reopen", "new", "plain"));
+    box.append(row);
+    const nr = document.createElement("div"); nr.className = "row";
+    const note = document.createElement("input"); note.placeholder = "Your note (only you see it)"; note.value = f.note || ""; note.style.flex = "1"; note.setAttribute("aria-label", "Your note");
+    const save = document.createElement("button"); save.type = "button"; save.className = "plain"; save.textContent = "Save note";
+    save.onclick = async () => { try { await post("/feedback/" + f.id, { note: note.value }); say("Note saved."); } catch (err) { say(err.message, true); } };
+    nr.append(note, save); box.append(nr);
+    return box;
+  }
+  async function loadFeedback() {
+    const qs = new URLSearchParams({ status: $("fbStatus").value, kind: $("fbKind").value, shop: $("fbShop").value, limit: fbLimit });
+    const r = await (await api("/feedback?" + qs)).json();
+    const keep = $("fbShop").value;
+    $("fbShop").replaceChildren(...[["", "All shops"], ...r.shops.map((s) => [s.key, s.name])].map(([v, t]) => { const o = document.createElement("option"); o.value = v; o.textContent = t; return o; }));
+    $("fbShop").value = keep;
+    $("fbCounts").textContent = `${r.counts.new} new · ${r.counts.seen} seen · ${r.counts.done} done`;
+    $("fbList").replaceChildren(...(r.items.length ? r.items.map(fbCard) : [Object.assign(document.createElement("p"), { className: "muted", textContent: "Nothing here." })]));
+    $("fbMore").hidden = !r.more;
+  }
+  for (const id of ["fbStatus", "fbKind", "fbShop"]) $(id).onchange = () => { fbLimit = 50; loadFeedback().catch((err) => say(err.message, true)); };
+  $("fbMore").onclick = () => { fbLimit += 50; loadFeedback().catch((err) => say(err.message, true)); };
 
   async function loadRepository() {
     const r = await (await api("/repository")).json();
