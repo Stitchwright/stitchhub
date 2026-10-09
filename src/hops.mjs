@@ -15,6 +15,7 @@
 import crypto from "node:crypto";
 import { bodyLimit } from "hono/body-limit";
 import { one, q, tx } from "./db.mjs";
+import { shell } from "./look.mjs";
 
 const all = async (text, params) => (await q(text, params)).rows;
 import { canonical, isPublicKey, sha256hex } from "./partnersign.mjs";
@@ -73,30 +74,32 @@ function slugOf(name) {
 
 // ----- the public pages -----
 
+// Shoppers' pages: the hub's look (src/look.mjs) with bigger type, and only the hub's name in the header.
 const STYLE = `
-:root{color-scheme:light}
-body{margin:0;background:#fff;color:#111;font:20px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
-main{max-width:640px;margin:0 auto;padding:20px 16px 48px}
-h1{font-size:32px;line-height:1.2;margin:8px 0 12px}
-h2{font-size:24px;margin:28px 0 8px}
+body{font-size:20px}
+main{max-width:640px}
+h1{font-size:clamp(30px,6vw,38px)}
+h2{font-size:24px;margin:30px 0 8px}
 p,li{font-size:20px}
-label{display:block;font-size:20px;font-weight:600;margin:18px 0 6px}
-input[type=text],input[type=email],input[type=tel]{width:100%;box-sizing:border-box;font-size:22px;padding:12px;border:2px solid #555;border-radius:8px}
+label{font-size:20px;font-weight:600;color:var(--ink);margin:18px 0 6px}
+input[type=text],input[type=email],input[type=tel]{max-width:none;font-size:22px;padding:13px 14px;border-width:2px}
 .tick{display:flex;gap:12px;align-items:flex-start;font-weight:400;margin-top:22px}
 .tick input{width:28px;height:28px;flex:none;margin-top:2px}
-button,.button{display:inline-block;font-size:22px;font-weight:700;padding:14px 22px;margin-top:22px;border:0;border-radius:10px;background:#1d4ed8;color:#fff;text-decoration:none;cursor:pointer}
-.note{color:#333;font-size:18px}
-.error{background:#fee2e2;border:2px solid #b91c1c;color:#7f1d1d;padding:12px;border-radius:8px}
-.code{font:700 40px/1.2 ui-monospace,Consolas,monospace;letter-spacing:2px;margin:12px 0}
+button,.button{font-size:22px;font-weight:700;min-height:58px;padding:14px 28px;margin-top:22px}
+.note{font-size:18px}
+.error{background:color-mix(in srgb,var(--bad) 10%,var(--card));border:2px solid var(--bad);color:var(--bad);padding:12px 14px;border-radius:12px}
+.code{font:700 40px/1.2 ui-monospace,Consolas,monospace;letter-spacing:2px;margin:12px 0;color:var(--accent)}
 .qr{margin:8px 0}
-.stamps li{margin:4px 0}
-.card{border:2px dashed #555;border-radius:12px;padding:16px;margin-top:24px;max-width:420px}
+.qr img{background:#fff;padding:8px;border-radius:10px}
+.stamps{list-style:none;padding:0}
+.stamps li{margin:6px 0;padding:10px 14px;background:var(--card);border:1px solid var(--line);border-radius:12px}
+.card{border:2.5px dashed var(--thread);border-radius:16px;padding:18px 20px;margin-top:24px;max-width:440px;background:var(--card)}
 .card .code{font-size:30px}
-@media print{.noprint{display:none}main{padding:0}.card{border:2px solid #000}}
+@media print{main{padding:0}.card{border:2px solid #000;box-shadow:none}}
 `;
 
 function page(hubName, title, body) {
-  return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)} · ${esc(hubName)}</title><style>${STYLE}</style><body><main>${body}</main></body></html>`;
+  return shell({ hubName, title: `${title} · ${hubName}`, body, css: STYLE, nav: false });
 }
 
 function secure(c) {

@@ -23,6 +23,7 @@ import { stripeMode } from "./stripe.mjs";
 import { refuseIfMoved } from "./moves.mjs";
 import { hostedOffer, resetStateOf, withdrawGrants } from "./provisioning.mjs";
 import { checkShown, currentVersion, isDraft, recordAcceptance, termsFor } from "./terms.mjs";
+import { LOOK_CSS, header, footer } from "./look.mjs";
 
 const SESSION_DAYS = 30;
 const SET_PASSWORD_HOURS = 24; // a link to set the first password, or to verify an address
@@ -373,7 +374,17 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
   // ---------- the hub's own pages and their API (session cookie) ----------
 
   const PAGES = ["/account", "/account/verify", "/account/forgot", "/account/set-password", "/account/shops", "/account/settings", "/account/manuals", "/account/repository"];
-  for (const p of PAGES) app.get(p, (c) => c.html(fs.readFileSync(path.join(root, "public", "account.html"), "utf8")));
+  // The page is read at each request (easy to change in place); the hub's look, header and footer go in its placeholders.
+  for (const p of PAGES)
+    app.get(p, (c) =>
+      c.html(
+        fs
+          .readFileSync(path.join(root, "public", "account.html"), "utf8")
+          .replace("/*HUB_LOOK*/", () => LOOK_CSS)
+          .replace("<!--HUB_HEADER-->", () => header(hubName, { active: p === "/account/manuals" ? "/account/manuals" : "/account" }))
+          .replace("<!--HUB_FOOTER-->", () => footer(hubName)),
+      ),
+    );
 
   const acct = new Hono();
   acct.use("*", async (c, next) => {

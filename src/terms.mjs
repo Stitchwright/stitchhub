@@ -14,6 +14,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { shell } from "./look.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const VERSION = /^(\d{4}-\d{2}-\d{2})(?:\.(\d{1,2}))?(-draft)?$/;
@@ -269,52 +270,30 @@ function pageHtml({ doc, version, current, versions, hubName, text }) {
     : "";
   const others = versions.filter((v) => v !== version && compareVersions(v, current) <= 0).reverse();
   const otherList = others.length ? `<p class="muted">Other versions: ${others.map((v) => `<a href="/${doc}/${esc(v)}">${esc(v)}</a>`).join(" · ")}</p>` : "";
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${esc(title)}</title>
-<style>
-  :root { --bg: #f4f2ee; --card: #fff; --ink: #1c2430; --muted: #5b6573; --line: #ddd8cf; --accent: #1f3a5f; --warn-bg: #fff4d6; --warn-line: #d9a400; --warn-ink: #5a4300; }
-  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #15181d; --card: #1e232a; --ink: #e8ebef; --muted: #a3acb8; --line: #333a44; --accent: #8fb3e0; --warn-bg: #3a3014; --warn-line: #b38900; --warn-ink: #ffe299; } }
-  :root[data-theme="dark"] { --bg: #15181d; --card: #1e232a; --ink: #e8ebef; --muted: #a3acb8; --line: #333a44; --accent: #8fb3e0; --warn-bg: #3a3014; --warn-line: #b38900; --warn-ink: #ffe299; }
-  * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.6 system-ui, "Segoe UI", sans-serif; }
-  main { max-width: 780px; margin: 0 auto; padding: 24px 16px 64px; overflow-wrap: anywhere; }
-  article { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 8px 20px 16px; }
-  h1 { font-size: 26px; line-height: 1.25; } h2 { font-size: 20px; margin-top: 28px; } h3 { font-size: 17px; }
-  a { color: var(--accent); }
-  .muted, .ver { color: var(--muted); font-size: 14px; }
-  .draft { background: var(--warn-bg); color: var(--warn-ink); border: 2px solid var(--warn-line); border-radius: 8px; padding: 10px 14px; }
-  .note { border-left: 4px solid var(--accent); padding: 6px 12px; background: var(--card); }
-  blockquote { margin: 12px 0; padding: 4px 14px; border-left: 4px solid var(--line); color: var(--muted); }
-  code { font-family: ui-monospace, Consolas, monospace; font-size: 0.92em; }
-  .scroll { overflow-x: auto; }
-  table { border-collapse: collapse; width: 100%; font-size: 14px; } td, th { text-align: left; vertical-align: top; padding: 6px 8px; border: 1px solid var(--line); }
-  hr { border: 0; border-top: 1px solid var(--line); margin: 20px 0; }
-</style>
-</head>
-<body>
-<main>
-<p class="ver">Version ${esc(version)} · <a href="/${other}${version === current ? "" : `/${esc(version)}`}">${TITLES[other]}</a> · <a href="/account">Your account</a> · <a href="/">${esc(hubName)}</a></p>
+  const body = `<p class="ver">Version ${esc(version)} · <a href="/${other}${version === current ? "" : `/${esc(version)}`}">${TITLES[other]}</a></p>
 ${banner}
 ${notice}
 <article>
 ${text}
 </article>
-${otherList}
-</main>
-</body>
-</html>`;
+${otherList}`;
+  return shell({ hubName, title, body, css: PAGE_CSS });
 }
+
+// The hub's look (src/look.mjs), with the legal text's own touches.
+const PAGE_CSS = `
+main{max-width:800px}
+article{padding:12px 26px 20px}
+article h1{margin-top:12px}article h2{font-size:21px;margin-top:30px}article h3{font-size:17px}
+.muted,.ver{color:var(--muted);font-size:14px}
+article table{font-size:14px}article td,article th{border:1px solid var(--line)}
+`;
 
 export function registerTerms({ app, hubName }) {
   load();
   const notFound = (c, doc) =>
-    c.html(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(TITLES[doc])} · ${esc(hubName)}</title>
-<body style="font:16px/1.5 system-ui;max-width:640px;margin:40px auto;padding:0 16px"><p>There's no such version of the ${esc(TITLES[doc])} on this hub.</p>
-<p><a href="/${doc}">The version in force</a></p></body>`, 404);
+    c.html(shell({ hubName, title: `${TITLES[doc]} · ${hubName}`, css: PAGE_CSS, body: `<section><p>There's no such version of the ${esc(TITLES[doc])} on this hub.</p>
+<p><a href="/${doc}">The version in force</a></p></section>` }), 404);
 
   function answer(c, doc, asked) {
     const t = load();

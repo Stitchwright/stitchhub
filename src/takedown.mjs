@@ -26,6 +26,7 @@ import { one, q, tx, getSetting, setSetting } from "./db.mjs";
 import { r2FromEnv } from "./r2.mjs";
 import { sendMail } from "./mail.mjs";
 import { libraryName } from "./repository.mjs";
+import { shell } from "./look.mjs";
 
 // ===== business days =====
 const iso = (d) => d.toISOString().slice(0, 10);
@@ -367,24 +368,19 @@ export function registerTakedown({ app, admin, acct, fail, newId, allow, clientI
 
   // ----- the public side: /copyright -----
 
+  // The hub's look (src/look.mjs), with the notice form's own touches.
+  const PAGE_CSS = `
+textarea{min-height:90px;max-width:none}input{max-width:none}
+.check label{margin:0;color:var(--ink);font-size:15px;font-weight:400}
+section table th{text-transform:none;letter-spacing:0;font-size:15px;font-weight:400;padding-right:16px;border:0}section table td{border:0}
+.hp{position:absolute;left:-9999px;height:0;overflow:hidden}
+`;
+
   const page = () => {
     const a = agent();
     const open = Boolean(a);
     const row = (label, value) => (value ? `<tr><th>${label}</th><td>${esc(value)}</td></tr>` : "");
-    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Copyright - ${esc(hubName)}</title>
-<style>
-:root{--bg:#f4f2ee;--card:#fff;--ink:#1c2430;--muted:#5b6573;--line:#ddd8cf;--accent:#1f3a5f;--bad:#b3261e;--ok:#1e7a3c}
-@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#15181d;--card:#1e232a;--ink:#e8ebef;--muted:#a3acb8;--line:#333a44;--accent:#8fb3e0;--bad:#ff8a80;--ok:#7dd3a0}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,"Segoe UI",sans-serif}
-main{max-width:720px;margin:0 auto;padding:24px 16px 64px}h1{font-size:26px;margin:0 0 4px}h2{font-size:18px;margin:0 0 10px}
-section{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin:16px 0}.muted{color:var(--muted)}
-label{display:block;margin:10px 0 2px;color:var(--muted);font-size:13px}input,textarea,button{font:inherit;padding:8px 10px;border-radius:6px;border:1px solid var(--line);background:var(--card);color:var(--ink);width:100%}
-textarea{min-height:80px}button{background:var(--accent);color:#fff;border-color:var(--accent);cursor:pointer;margin-top:12px;width:auto}
-.check{display:flex;gap:8px;align-items:flex-start;margin:10px 0}.check input{width:auto;margin-top:4px}.check label{margin:0;color:var(--ink);font-size:15px}
-th{text-align:left;padding:2px 12px 2px 0;vertical-align:top;color:var(--muted);font-weight:normal}a{color:var(--accent)}.hp{position:absolute;left:-9999px;height:0;overflow:hidden}
-.bad{color:var(--bad)}.ok{color:var(--ok)}
-</style></head><body><main>
-<h1>Copyright</h1><p class="muted">${esc(hubName)} keeps a library of manuals that members choose to offer. We respond to notices of claimed infringement under 17 U.S.C. 512.</p>
+    return shell({ hubName, title: `Copyright - ${hubName}`, css: PAGE_CSS, body: `<h1>Copyright</h1><p class="muted">${esc(hubName)} keeps a library of manuals that members choose to offer. We respond to notices of claimed infringement under 17 U.S.C. 512.</p>
 <section><h2>Our designated agent</h2>${
       open
         ? `<table>${row("Name", a.name)}${row("Address", a.address)}${row("Email", a.email)}${row("Telephone", a.phone)}</table>`
@@ -419,8 +415,7 @@ else{m.className="ok";m.textContent=j.message;e.target.reset()}}catch(err){m.cla
 }
 <section><h2>Counter-notices</h2><p>If a file you offered was removed on a notice and you believe that was a mistake or a misidentification, sign in and send a counter-notice from your account's repository page. It needs your signature, name, address and telephone number; a statement under penalty of perjury that you believe the file was removed by mistake or misidentification; and your consent to the jurisdiction of the federal court for your address and acceptance of service from the person who sent the notice. We send the whole counter-notice to that person. Unless they tell us within 10 to 14 business days (weekends and US federal holidays don't count) that they have gone to court, the file is restored.</p></section>
 <section><h2>Repeat infringers</h2><p>A notice that removes files an account offered is one strike for that account (however many of its files the notice names), withdrawn if the files are restored after a counter-notice. Three strikes within 12 months end that account's uploading to the repository (a new account made to get round this is refused), its waiting offers are rejected and its other files are looked at again. In a flagrant case uploading can end sooner.</p></section>
-<section><h2>What review checks</h2><p>Every file offered is looked at before it appears: that it is a manual, readable and whole; that its brand, models, document type and year are right; that nothing private is in it; that the automatic checks passed (no scripts or encryption); that it isn't a duplicate of a better file; that it isn't a work an earlier notice named; and that it isn't marked confidential, dealer-only or not for distribution. This screens files; it doesn't decide who owns the rights to them.</p></section>
-<p class="muted"><a href="/">Home</a> · <a href="/terms">Terms</a> · <a href="/privacy">Privacy</a></p></main></body></html>`;
+<section><h2>What review checks</h2><p>Every file offered is looked at before it appears: that it is a manual, readable and whole; that its brand, models, document type and year are right; that nothing private is in it; that the automatic checks passed (no scripts or encryption); that it isn't a duplicate of a better file; that it isn't a work an earlier notice named; and that it isn't marked confidential, dealer-only or not for distribution. This screens files; it doesn't decide who owns the rights to them.</p></section>` });
   };
   app.get("/copyright", (c) => c.html(page()));
 

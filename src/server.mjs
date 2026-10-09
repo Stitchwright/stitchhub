@@ -29,6 +29,7 @@ import { registerRepository } from "./repository.mjs";
 import { registerTakedown } from "./takedown.mjs";
 import { registerAssistant } from "./assistant.mjs";
 import { discordBody } from "./discord.mjs";
+import { shell, esc, LOGO, ICONS } from "./look.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const HUB_NAME = process.env.HUB_NAME ?? "StitchHub";
@@ -235,13 +236,34 @@ app.get("/health", (c) => c.json({ ok: true }));
 app.get("/", async (c) => {
   const s = await one(`SELECT (SELECT count(*) FROM links WHERE NOT deleted) links, (SELECT count(*) FROM posts WHERE NOT deleted) posts,
     (SELECT count(*) FROM installs WHERE NOT blocked) installs, (SELECT count(*) FROM manuals WHERE status = 'published') manuals`);
-  return c.html(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${HUB_NAME}</title>
-<body style="font:16px/1.5 system-ui;max-width:640px;margin:40px auto;padding:0 16px">
-<h1>${HUB_NAME}</h1><p>The community server for StitchBench repair shops: manual links, tech notes, photos and figure snapshots.
-Manual links point to where makers publish them.${s.manuals > 0 ? " A community manual library is free with a StitchHub account (<a href=\"/account/manuals\">Manuals</a>)." : ""}</p>
-<p>${s.links} manual links · ${s.posts} shared notes · ${s.installs} shops</p>
-<p>To join, open StitchBench → Settings → Community hub and enter this address and the join key you were given.</p>
-<p><a href="/account">Your account</a> · <a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · <a href="/copyright">Copyright</a> · <a href="/admin">Hub admin</a></p></body>`);
+  const n = (v) => Number(v).toLocaleString("en-US");
+  const card = (icon, title, text) => `<div class="card rise"><span class="badge">${ICONS[icon]}</span><h3>${title}</h3><p>${text}</p></div>`;
+  const stat = (v, what) => `<div class="stat rise"><b>${n(v)}</b><span>${what}</span></div>`;
+  const body = `<div class="hero"><div class="in">
+<h1 class="rise">Where repair shops help each other.</h1>
+<p class="rise">${esc(HUB_NAME)} is the free community for shops that run StitchBench or StitchShop: manuals, tech notes, parts and photos, shared by the techs who use them.</p>
+<p class="rise"><a class="button" href="/account">Sign in or make an account</a>${s.manuals > 0 ? `<a class="button plain" href="/account/manuals">Browse manuals</a>` : ""}</p>
+${LOGO.replace('class="logo"', 'class="spool"')}<div class="seam" aria-hidden="true"></div></div></div>
+<main class="wide">
+<div class="stats">${stat(s.links, "manual links")}${stat(s.posts, "shared tech notes")}${stat(s.installs, "shops on the hub")}${s.manuals > 0 ? stat(s.manuals, "manuals in the library") : ""}</div>
+<p class="kicker">What's here</p><h2>Everything the bench needs, in one place</h2>
+<div class="grid">
+${card("book", "Manual links", "Find the service manual for a machine, linked to where its maker publishes it.")}
+${card("note", "Tech notes", "Fixes and tips from other techs, searchable by brand and model.")}
+${card("camera", "Photos and figures", "Pictures of the parts and adjustments that are hard to describe in words.")}
+${card("parts", "Parts and cross-references", "Which part numbers fit which machines, and where shops buy them.")}
+${card("shop", "Shop to shop", "List spare parts and machines for other shops, and send repairs to partner shops.")}
+${card("map", "Shop hops", "Run a shop hop with passports your shoppers carry from store to store.")}
+</div>
+<section class="rise"><p class="kicker" style="margin-top:0">Joining is free</p><h2>Get your shop on the hub</h2>
+<ol class="steps">
+<li>Open StitchBench or StitchShop on your shop's computer.</li>
+<li>Go to <strong>Settings → Account</strong> and type your email.</li>
+<li>Click the link in the email we send you and choose a password. That's it: your shop is on the hub.</li>
+</ol>
+<p class="muted">Already have an account? <a href="/account">Sign in</a> and connect another shop with the code your program shows.</p></section>
+</main>`;
+  return c.html(shell({ hubName: HUB_NAME, title: HUB_NAME, body, active: "/", main: false }));
 });
 
 app.get("/admin", (c) => c.html(fs.readFileSync(path.join(ROOT, "public", "admin.html"), "utf8")));
