@@ -199,9 +199,15 @@ page's **Help & ideas** section (`src/feedback.mjs`, migration 034, `StitchBench
   companies) and 200 errors a day per install; over, 429 and the program keeps the item and tries later. 413 for a
   picture over 1 MB, 415 for one that isn't a JPEG.
 - Admin (Bearer admin token): `GET /v1/admin/feedback?status=new|seen|done&kind=&shop=<install id>/<shop ref>&limit=`
-  → `{ items, more, counts, shops }`; `POST /v1/admin/feedback/:id { status?, note? }`;
+  → `{ items, more, counts, shops }` (each item has `reply` and `repliedAt`); `POST /v1/admin/feedback/:id { status?, note?, reply? }`
+  (`reply`, up to 4000 characters: saved with the time, the item becomes done, and it is emailed to the item's reply address
+  when it has one, subject "Your note to <program>", quoting the first 200 characters the shop sent; an error item can't be
+  answered, 400);
   `GET /v1/admin/feedback/:id/picture` (the JPEG); `POST /v1/admin/feedback-sweep` (the 90-day picture clean-up, also run
   every 6 hours).
+- `GET /v1/feedback/replies?since=<iso>` (install key, company in `X-Shop-Ref`, like `POST /v1/feedback`): the answers to
+  this install's and company's items, newest first, at most 50, `replied_at` after `since` (default 90 days ago) →
+  `[{ id, kind, text, reply, repliedAt }]` (`text` = the first 200 characters of what they sent). The program asks at each sync.
 - `FEEDBACK_EMAIL` (optional): the owner's address. Each help, idea and rating is mailed at once (subject "Help: <shop> –
   first 60 characters", everything in the body, a link to `/admin`); new errors go in one digest email at most every hour
   ("3 new errors from 2 shops"; the wait is kept in memory, so a restart sends the next one at once). Unset: no email,
@@ -212,6 +218,27 @@ page's **Help & ideas** section (`src/feedback.mjs`, migration 034, `StitchBench
   & ideas list.
 - The admin page shows what shops typed as text only, never as HTML.
 - Test: `node test/feedback.mjs` (`npm run test:feedback`, a scratch database of its own, mail through `MAIL_DEV_LOG`).
+
+## Program updates (releases)
+
+Migration 035, `src/releases.mjs`, design `StitchBench/docs/plans/ease-of-use-design.md` section 1. The owner publishes each
+installer with `node scripts/release/publish-release.mjs` (StitchBench repo); the installed programs ask the hub for the
+newest one and update themselves. The hub stores the sha256, size and Ed25519 signature but does not check the signature
+(it has no key; the program checks it against the public key built into it).
+
+- `GET /v1/releases/latest?flavor=stitchbench|stitchshop` (no key, limited per address): the newest release of that program
+  that is not withdrawn, by version number → `{ version, url, sha256, size, signature, notes, publishedAt }`; 404 when none.
+  `url` is the installer's own https address, or `<HUB_URL>/v1/releases/<id>/download` when the hub keeps the file in R2.
+- `GET /v1/releases/:id/download` (no key): 302 to a presigned R2 address good for 15 minutes that downloads the file as
+  "StitchBench Setup 1.7.1.exe"; 404 for a release with no file in R2 or one that is withdrawn.
+- Admin (Bearer admin token): `GET /v1/admin/releases` (all, with `withdrawnAt`);
+  `POST /v1/admin/releases/upload-url { flavor, version, size }` → `{ key, putUrl, putHeaders, expiresAt }` (a presigned PUT,
+  `application/octet-stream`, at most 600 MB; 503 when R2_* isn't set; 409 when that version is published);
+  `POST /v1/admin/releases { flavor, version, sha256, size, signature, notes, url | key }` (exactly one of an https `url` or
+  the `key` from upload-url, whose object is looked up in R2 and must be `size` bytes; `notes` up to 12 lines of 200
+  characters; 409 for a version already published); `POST /v1/admin/releases/:id/withdraw`.
+- The admin page's **Program updates** section lists them with a Withdraw button.
+- Test: `node test/releases.mjs` (`npm run test:releases`, a scratch database and the R2 mock).
 
 ## Shop owner accounts
 A shop owner can have an **account** on the hub: an email address and a password, confirmed by email, with a password

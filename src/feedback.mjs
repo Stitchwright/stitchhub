@@ -212,6 +212,8 @@ export function registerFeedback({ member, admin, fail, newId, allow, hubName, h
     status: r.status,
     note: r.owner_note,
     hasPicture: r.has_picture,
+    reply: r.reply ?? null,
+    repliedAt: r.replied_at ?? null,
   });
 
   admin.get("/feedback", async (c) => {
@@ -231,7 +233,7 @@ export function registerFeedback({ member, admin, fail, newId, allow, hubName, h
     }
     const rows = (
       await q(
-        `SELECT id, install_id, shop_ref, shop_name, kind, body, count, day, created_at, last_at, status, owner_note, (picture IS NOT NULL) AS has_picture
+        `SELECT id, install_id, shop_ref, shop_name, kind, body, count, day, created_at, last_at, status, owner_note, reply, replied_at, (picture IS NOT NULL) AS has_picture
          FROM feedback ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY last_at DESC LIMIT ${n + 1}`,
         params,
       )
@@ -250,7 +252,19 @@ export function registerFeedback({ member, admin, fail, newId, allow, hubName, h
     const body = await c.req.json();
     const sets = [];
     const params = [c.req.param("id")];
-    if (body.status !== undefined) {
+    let reply = null;
+    let before = null;
+    if (body.reply !== undefined) {
+      reply = String(body.reply ?? "").replace(/\u0000/g, "").trim();
+      if (!reply) throw fail(400, "Write the answer first.");
+      if (reply.length > 4000) throw fail(400, "The answer can be up to 4000 characters.");
+      before = await one(`SELECT kind, body, shop_name FROM feedback WHERE id = $1`, [c.req.param("id")]);
+      if (!before) throw fail(404, "No such item.");
+      if (before.kind === "error") throw fail(400, "An error report can't be answered.");
+      params.push(reply);
+      sets.push(`reply = $${params.length}`, "replied_at = now()", "status = 'done'", "done_at = COALESCE(done_at, now())");
+    }
+    if (body.status !== undefined && reply === null) {
       if (!STATUSES.has(body.status)) throw fail(400, "status is new, seen or done.");
       params.push(body.status);
       sets.push(`status = $${params.length}`, `done_at = ${body.status === "done" ? "COALESCE(done_at, now())" : "NULL"}`);
@@ -259,13 +273,67 @@ export function registerFeedback({ member, admin, fail, newId, allow, hubName, h
       params.push(str(body.note, 4000));
       sets.push(`owner_note = $${params.length}`);
     }
-    if (!sets.length) throw fail(400, "Send a status or a note.");
+    if (!sets.length) throw fail(400, "Send a status, a note or a reply.");
     const r = await one(
-      `UPDATE feedback SET ${sets.join(", ")} WHERE id = $1 RETURNING id, install_id, shop_ref, shop_name, kind, body, count, day, created_at, last_at, status, owner_note, (picture IS NOT NULL) AS has_picture`,
+      `UPDATE feedback SET ${sets.join(", ")} WHERE id = $1 RETURNING id, install_id, shop_ref, shop_name, kind, body, count, day, created_at, last_at, status, owner_note, reply, replied_at, (picture IS NOT NULL) AS has_picture`,
       params,
     );
     if (!r) throw fail(404, "No such item.");
-    return c.json(out(r));
+    const result = out(r);
+    if (reply !== null) result.emailed = await mailReply(before, reply);
+    return c.json(result);
+  });
+
+  /** The answer, by email to the reply address when the shop gave one. True when it was sent. A mail failure never loses the saved answer. */
+  async function mailReply(item, reply) {
+    const to = item.body?.replyTo;
+    if (!emailOk(to)) return false;
+    const program = item.body?.context?.program || "StitchBench";
+    const sent = (item.body?.text ?? (item.body?.stars ? `${item.body.stars} of 5 stars` : "")).replace(/\s+/g, " ").trim();
+    const quote = sent.length > 200 ? `${sent.slice(0, 200)}...` : sent;
+    const text = [
+      "Hello,",
+      "",
+      `Thank you for writing to us about ${program}. Here is our answer:`,
+      "",
+      reply,
+      "",
+      quote ? `You wrote:\n> ${quote}` : null,
+      "",
+      "You can also read this answer in the program: open the Help button.",
+      "",
+      `The ${program} team`,
+    ].filter((l) => l !== null).join("\n");
+    try {
+      await sendMail({ to, subject: `Your note to ${program}`, text, fromName: hubName });
+      return true;
+    } catch (e) {
+      console.error("feedback reply mail:", e.message);
+      return false;
+    }
+  }
+
+  // ----- the programs' route: answers to what this company sent -----
+
+  member.get("/feedback/replies", async (c) => {
+    const inst = c.get("install");
+    const shopRef = str(c.req.header("x-shop-ref"), 64);
+    if (!shopRef) throw fail(400, "Send X-Shop-Ref: the company's id.");
+    if (!allow(`feedbackr:${inst.id}:${shopRef}`, 600)) throw fail(429, "Too many tries. Wait a while.");
+    const sinceRaw = c.req.query("since");
+    let since = new Date(Date.now() - 90 * 86400_000);
+    if (sinceRaw) {
+      since = new Date(sinceRaw);
+      if (Number.isNaN(since.getTime())) throw fail(400, "since is a date and time (ISO 8601).");
+    }
+    const rows = (
+      await q(
+        `SELECT id, kind, left(COALESCE(body->>'text', ''), 200) AS text, reply, replied_at FROM feedback
+         WHERE install_id = $1 AND shop_ref = $2 AND reply IS NOT NULL AND date_trunc('milliseconds', replied_at) > $3 ORDER BY replied_at DESC LIMIT 50`,
+        [inst.id, shopRef, since],
+      )
+    ).rows;
+    return c.json(rows.map((r) => ({ id: r.id, kind: r.kind, text: r.text, reply: r.reply, repliedAt: r.replied_at })));
   });
 
   admin.get("/feedback/:id/picture", async (c) => {

@@ -237,11 +237,91 @@ try {
   await ok(await sendJson(W, "w9", { kind: "idea", text: "ideas aren't errors", context: ctx() }));
   console.log("limits: ok");
 
+  // ----- answers to Help: the owner writes back; the program fetches them (migration 035) -----
+  {
+  const RA = await register("Install Reply A");
+  const RB = await register("Install Reply B");
+  const wordy = "The invoice page will not open. " + "x".repeat(300);
+  const rh1 = (await ok(await sendJson(RA, "ra1", { kind: "help", text: wordy, replyTo: "denise@example.test", context: ctx({ program: "StitchShop" }) }))).id;
+  const rh2 = (await ok(await sendJson(RA, "ra1", { kind: "idea", text: "Bigger labels", context: ctx() }))).id;
+  const rh3 = (await ok(await sendJson(RA, "ra2", { kind: "help", text: "Another company on the same install", replyTo: "other@example.test", context: ctx() }))).id;
+  const rh4 = (await ok(await sendJson(RB, "ra1", { kind: "help", text: "Same company ref, other install", context: ctx() }))).id;
+  const rErr = (await ok(await sendJson(RA, "ra1", { kind: "error", error: { message: "boom", stack: "Error: boom\n at x" }, context: ctx() }))).id;
+  const reply = (id, body) => adminCall(`/feedback/${id}`, { json: body });
+
+  // not for errors; not empty; not too long; not an unknown item
+  await refused(await reply(rErr, { reply: "We fixed it" }), 400, /error/i, "answering an error");
+  await refused(await reply(rh1, { reply: "   " }), 400, /answer/i, "an empty answer");
+  await refused(await reply(rh1, { reply: "y".repeat(4001) }), 400, /4000/, "an answer over 4000");
+  await refused(await reply("nope", { reply: "hello" }), 404, null, "an unknown item");
+  assert.equal((await list("status=new&kind=help")).items.find((i) => i.id === rh1).reply, null, "nothing saved by the refusals");
+  assert.deepEqual(await ok(await call("/v1/feedback/replies", { key: RA, shop: "ra1" })), [], "no answers yet");
+
+  // the answer is saved, marks the item done and is emailed to the reply address
+  hubLog = "";
+  const done = await ok(await reply(rh1, { reply: "Thanks! Please update to 1.8.1, it is fixed there." }));
+  assert.equal(done.reply, "Thanks! Please update to 1.8.1, it is fixed there.");
+  assert.equal(done.status, "done");
+  assert.ok(done.repliedAt);
+  assert.equal(done.emailed, true);
+  await waitFor(() => hubLog.includes("to denise@example.test\nsubject: Your note to StitchShop"), "the answer by email");
+  assert.ok(hubLog.includes("Please update to 1.8.1"), "the answer is in the email");
+  assert.ok(hubLog.includes(`> ${wordy.slice(0, 200)}...`) && !hubLog.includes(wordy.slice(0, 201) + "x"), "the email quotes the first 200 characters");
+  const row = (await list("status=done&kind=help")).items.find((i) => i.id === rh1);
+  assert.equal(row.reply, done.reply);
+  assert.ok(row.repliedAt, "the admin list has repliedAt");
+  assert.equal((await list("status=new")).items.find((i) => i.id === rh2)?.reply ?? null, null, "items with no answer have reply null");
+
+  // an item with no reply address still keeps the answer (no email)
+  hubLog = "";
+  const quiet = await ok(await reply(rh2, { reply: "Good idea, we will do it." }));
+  assert.equal(quiet.emailed, false);
+  assert.equal(quiet.status, "done");
+  await new Promise((r) => setTimeout(r, 400));
+  assert.ok(!hubLog.includes("subject: Your note to"), "no email without a reply address");
+  // answering again replaces the answer
+  const again = await ok(await reply(rh2, { reply: "Done in 1.9." }));
+  assert.equal(again.reply, "Done in 1.9.");
+  await ok(await reply(rh3, { reply: "For the second company." }));
+  await ok(await reply(rh4, { reply: "For the other install." }));
+
+  // the program's route: its own install and company only, newest first, 200 characters of what it sent
+  const mine = await ok(await call("/v1/feedback/replies", { key: RA, shop: "ra1" }));
+  assert.deepEqual(mine.map((r) => r.id), [rh2, rh1], "newest first, only this company");
+  assert.deepEqual(Object.keys(mine[0]).sort(), ["id", "kind", "repliedAt", "reply", "text"]);
+  assert.equal(mine[1].text, wordy.slice(0, 200));
+  assert.equal(mine[1].kind, "help");
+  assert.equal(mine[1].reply, "Thanks! Please update to 1.8.1, it is fixed there.");
+  assert.deepEqual((await ok(await call("/v1/feedback/replies", { key: RA, shop: "ra2" }))).map((r) => r.id), [rh3]);
+  assert.deepEqual((await ok(await call("/v1/feedback/replies", { key: RB, shop: "ra1" }))).map((r) => r.id), [rh4], "another install's key sees its own");
+  assert.deepEqual(await ok(await call("/v1/feedback/replies", { key: RB, shop: "ra2" })), []);
+  // since
+  const cut = mine[0].repliedAt;
+  assert.deepEqual((await ok(await call(`/v1/feedback/replies?since=${encodeURIComponent(cut)}`, { key: RA, shop: "ra1" }))).map((r) => r.id), [], "since is exclusive");
+  assert.deepEqual((await ok(await call(`/v1/feedback/replies?since=${encodeURIComponent(mine[1].repliedAt)}`, { key: RA, shop: "ra1" }))).map((r) => r.id), [rh2]);
+  await refused(await call("/v1/feedback/replies?since=yesterday-ish", { key: RA, shop: "ra1" }), 400, /since/, "a bad since");
+  // the default is 90 days back
+  await db.query(`UPDATE feedback SET replied_at = now() - interval '91 days' WHERE id = $1`, [rh1]);
+  assert.deepEqual((await ok(await call("/v1/feedback/replies", { key: RA, shop: "ra1" }))).map((r) => r.id), [rh2], "older than 90 days is not offered");
+  assert.equal((await ok(await call("/v1/feedback/replies?since=2000-01-01T00:00:00Z", { key: RA, shop: "ra1" }))).length, 2, "since reaches further back");
+  // key and company are needed
+  await refused(await call("/v1/feedback/replies", { key: RA }), 400, /X-Shop-Ref/, "no company");
+  await refused(await call("/v1/feedback/replies", { shop: "ra1" }), 401, null, "no key");
+  // at most 50
+  for (let i = 0; i < 55; i++) {
+    const id = (await ok(await sendJson(RB, "many", { kind: "idea", text: `idea ${i}`, context: ctx() }))).id;
+    await db.query(`UPDATE feedback SET reply = 'ok', replied_at = now() - make_interval(secs => $2) WHERE id = $1`, [id, i + 1]);
+  }
+  assert.equal((await ok(await call("/v1/feedback/replies", { key: RB, shop: "many" }))).length, 50, "at most 50");
+  console.log("replies: ok");
+  }
+
   // ----- a hub with no FEEDBACK_EMAIL sends nothing -----
   await stop2();
   console.log("feedback tests passed");
 } catch (e) {
   console.error(e);
+  console.error(hubLog.slice(-3000));
   process.exitCode = 1;
 } finally {
   await stop();
