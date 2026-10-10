@@ -50,6 +50,12 @@
       <div class="row"><button type="button" class="plain" id="fbMore" hidden>Show older</button></div>
     </section>
 
+    <section id="relSection">
+      <h2>Program updates</h2>
+      <p class="muted">Releases are published with <code>node scripts/release/publish-release.mjs</code> from the StitchBench repo. The newest release that is not withdrawn is what shops are offered; Withdraw takes one back.</p>
+      <div class="scroll"><table><thead><tr><th>Program</th><th>Version</th><th>Published</th><th>Size</th><th>Kept</th><th></th></tr></thead><tbody id="relList"></tbody></table></div>
+    </section>
+
     <section>
       <h2>Join key</h2>
       <p class="muted">Email this to members (for example after they pay). Changing it stops new people joining with the old one; shops already joined keep working.</p>
@@ -211,6 +217,7 @@
     $("datasets").textContent = s.datasets.length ? s.datasets.map((d) => `${d.name}: version ${d.version}, ${(d.size / 1e6).toFixed(1)} MB`).join(" · ") : "None yet.";
     window.hubInstalls = s.installs;
     await loadFeedback();
+    await loadReleases();
     await loadAccounts();
     await loadMoves();
     await loadRepository();
@@ -272,7 +279,27 @@
     const save = document.createElement("button"); save.type = "button"; save.className = "plain"; save.textContent = "Save note";
     save.onclick = async () => { try { await post("/feedback/" + f.id, { note: note.value }); say("Note saved."); } catch (err) { say(err.message, true); } };
     nr.append(note, save); box.append(nr);
+    if (f.kind !== "error") {
+      const wr = document.createElement("div"); wr.style.cssText = "margin-top:8px";
+      if (f.reply) { const a = document.createElement("div"); a.className = "muted"; a.style.cssText = "white-space:pre-wrap;margin-bottom:6px"; a.textContent = `Your answer (${when(f.repliedAt)}):\n${f.reply}`; wr.append(a); }
+      const ta = document.createElement("textarea"); ta.rows = 3; ta.maxLength = 4000; ta.style.cssText = "width:100%;box-sizing:border-box"; ta.placeholder = f.reply ? "Write another answer" : (f.replyTo ? "Write back (emailed to " + f.replyTo + " and shown in the program)" : "Write back (shown in the program; no reply address to email)"); ta.setAttribute("aria-label", "Write back");
+      const send = document.createElement("button"); send.type = "button"; send.textContent = "Write back";
+      send.onclick = async () => { if (!ta.value.trim()) return say("Write the answer first.", true); send.disabled = true; try { const r = await (await post("/feedback/" + f.id, { reply: ta.value })).json(); say(r.emailed ? "Answer saved and emailed." : "Answer saved (not emailed)."); loadFeedback(); } catch (err) { say(err.message, true); } send.disabled = false; };
+      wr.append(ta, send); box.append(wr);
+    }
     return box;
+  }
+  async function loadReleases() {
+    const r = await (await api("/releases")).json();
+    const NAMES = { stitchbench: "StitchBench", stitchshop: "StitchShop" };
+    $("relList").replaceChildren(...(r.releases.length ? r.releases.map((x) => {
+      const tr = document.createElement("tr");
+      const c = td("");
+      if (x.withdrawnAt) c.textContent = "withdrawn " + when(x.withdrawnAt);
+      else { const b = document.createElement("button"); b.className = "plain"; b.textContent = "Withdraw"; b.onclick = async () => { if (!confirm(`Withdraw ${NAMES[x.flavor]} ${x.version}? Shops will be offered the next newest release instead.`)) return; try { await post(`/releases/${x.id}/withdraw`, {}); say("Withdrawn."); loadReleases(); } catch (err) { say(err.message, true); } }; c.append(b); }
+      tr.append(td(NAMES[x.flavor] || x.flavor), td(x.version), td(when(x.publishedAt)), td((x.size / 1048576).toFixed(1) + " MB"), td(x.where === "hub" ? "on the hub" : "elsewhere (link)"), c);
+      return tr;
+    }) : [Object.assign(document.createElement("tr"), { innerHTML: "<td colspan=6 class=muted>No releases yet.</td>" })]));
   }
   async function loadFeedback() {
     const qs = new URLSearchParams({ status: $("fbStatus").value, kind: $("fbKind").value, shop: $("fbShop").value, limit: fbLimit });
