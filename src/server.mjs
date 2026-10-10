@@ -19,6 +19,8 @@ import { registerMarket, listingsByIds, sellerBlocked, claimListings, actingShop
 import { registerUsage } from "./usage.mjs";
 import { registerPartners } from "./partners.mjs";
 import { registerHops } from "./hops.mjs";
+import { registerFeedback } from "./feedback.mjs";
+import { registerReleases } from "./releases.mjs";
 import { registerAccounts } from "./accounts.mjs";
 import { registerBilling } from "./billing.mjs";
 import { registerMoves } from "./moves.mjs";
@@ -175,6 +177,7 @@ const ADMIN_UPLOAD = (Number(process.env.ADMIN_UPLOAD_MB) || 1024) * MB; // bulk
 function maxBody(p) {
   if (p === "/v1/register" || p === "/v1/partners/join" || p === "/v1/accounts/start" || p === "/v1/shops/move" || p === "/copyright/notice") return 16 * KB; // no key needed: a join key, code, move token or email and a name
   if (p === "/v1/assistant") return 256 * KB; // a question for the Assistant with its context (a plate photo is about 150 KB)
+  if (p === "/v1/feedback") return MB + 128 * KB; // an item with a JPEG of the screen (1 MB at most)
   if (p === "/v1/stripe") return 256 * KB; // a Stripe webhook event (an invoice with its lines)
   if (p === "/v1/posts") return 12 * 3 * MB + MB; // a note with up to 12 photos of 3 MB
   if (p === "/v1/listings") return 8 * 3 * MB + MB; // a listing with up to 8 photos
@@ -310,9 +313,9 @@ member.use("*", async (c, next) => {
   const inst = await installByKey(h.startsWith("Bearer ") ? h.slice(7) : "");
   // Joined with a partner code only: the partner channel and its own account and shops, nothing of the community's.
   // (Shop hops too: a quilt shop on a partner code is the kind of shop that runs or joins one.)
-  if (inst.scope === "partner" && !/^\/v1\/(partners\/|hops(\/|$)|shops\/|accounts\/|assistant(\/usage)?$|me$|upgrade$)/.test(c.req.path)) throw fail(403, "This shop is connected to its partner shops only. Join the community with a join key to use this.");
+  if (inst.scope === "partner" && !/^\/v1\/(partners\/|hops(\/|$)|feedback(\/replies)?$|shops\/|accounts\/|assistant(\/usage)?$|me$|upgrade$)/.test(c.req.path)) throw fail(403, "This shop is connected to its partner shops only. Join the community with a join key to use this.");
   // Joined by starting a StitchHub account (no join key): a member once the account's email is verified.
-  if (inst.scope === "pending" && !/^\/v1\/(shops\/|accounts\/|me$|upgrade$)/.test(c.req.path)) throw fail(403, "Finish setting up your StitchHub account first: open the link in the email we sent (Settings → Account).");
+  if (inst.scope === "pending" && !/^\/v1\/(shops\/|feedback(\/replies)?$|accounts\/|me$|upgrade$)/.test(c.req.path)) throw fail(403, "Finish setting up your StitchHub account first: open the link in the email we sent (Settings → Account).");
   c.set("install", inst);
   await next();
 });
@@ -932,6 +935,10 @@ registerTakedown({ app, admin, acct: accounts.acct, fail, newId, allow, clientIp
 // (src/backups.mjs, src/s3.mjs; BACKUP_S3_* in the environment).
 // (before the account routes are mounted: Hono copies a router's routes when it is mounted)
 registerBackups({ app, member, acct: accounts.acct, fail, newId, allow, bucket, requireAccount: accounts.requireAccount });
+// Help, ideas, ratings and error alerts from the programs, and the admin page's "Help & ideas" (src/feedback.mjs).
+registerFeedback({ member, admin, fail, newId, allow, hubName: HUB_NAME, hubUrl: accounts.hubUrl });
+// Program updates: the latest release per program, its download, and the owner publish routes (src/releases.mjs).
+registerReleases({ app, admin, fail, newId, allow, clientIp, hubUrl: accounts.hubUrl });
 app.route("/account/api", accounts.acct);
 // A company moving from one install to another: the move token, its redemption (with or without an install key), the
 // admin's list and move by hand (src/moves.mjs). Before the member routes, so a program on no hub yet can redeem.

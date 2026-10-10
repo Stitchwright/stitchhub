@@ -84,6 +84,21 @@ example, too many sign-in attempts). It holds this in memory and doesn't save it
 provider may record addresses in its request logs. [OWNER: check Railway's log retention and say it here.]
 [LAWYER: confirm this is enough.]
 
+### 5.2a The Help button and error reports
+
+[LAWYER: new text for the Help button (9 Oct 2026); check it against what the program really sends and fit it into
+sections 5, 8 and 12.]
+The programs have a Help button. When someone uses it to say something is wrong, suggest an idea or rate the program,
+the program sends the hub what they typed, the email address they gave to be answered at (if any), the program, its
+version, the page they were on, their role (not their name), whether the program runs on a PC or hosted, the browser
+and screen size, and the shop's id and name. For "Something's wrong" it can also send a picture of the screen; that is
+optional, shown to the person before sending, and may show whatever was on the screen, including customer details,
+which they can choose to leave out. When the program meets an error, it sends the error's message and technical trace
+and the page, with anything that looks like an email address, a phone number or a card number removed, and never form
+contents. We keep this until we have dealt with it (pictures are deleted 90 days after that) and use it only to fix
+and improve the programs and to answer the person; we do not share it or use it to advertise. [OWNER: confirm who
+reads it and how long the words are kept after an item is handled.]
+
 ### 5.3 What you share on the hub
 
 **You choose what to share, item by item.** Nothing about a ticket or a customer goes to the community unless someone
@@ -275,6 +290,7 @@ We share only:
 | Reset and link codes | Minutes to a day; each works once |
 | Partner messages on the hub | A year after delivery; never more than three years |
 | Things you shared on the hub (notes, link and part edits, listings, ratings) | Until you remove them, or for as long as the community uses them (section 9) |
+| Help button items and error reports (the words) | Until we have dealt with them, then as long as they help improve the programs [OWNER: choose]; pictures 90 days after they are dealt with |
 | Assistant counts on the hub (no text) | [OWNER: choose, e.g. 2 years] |
 | Your shop's data on the hosted service | While your shop is on the service. **A lapsed subscription never deletes it.** After you close the account: [OWNER: e.g. 90 days], then deleted |
 | Hosted database backups | [OWNER: Railway's backup schedule and retention] |
