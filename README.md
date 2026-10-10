@@ -183,6 +183,63 @@ email, phone } | null }` (404 `{ error, code: "no_passport" }` for a passport no
 /v1/hops/:id/draws { passport, prize }` (organizer, a completed passport) → `{ draw }`; `PATCH /v1/hops/:id/draws/:drawId
 { present }` → `{ draw }`. Test: `node test/hops.mjs` (`npm run test:hops`, a scratch database of its own).
 
+## Help, ideas, ratings and error alerts
+The programs' Help button (and the errors they catch on their own) send items here; the owner reads them on the admin
+page's **Help & ideas** section (`src/feedback.mjs`, migration 034, `StitchBench/docs/plans/help-feedback-design.md`).
+
+- `POST /v1/feedback` (install key, the company in `X-Shop-Ref`; a pending install and a partner-only install may send
+  too). Multipart: `item` (JSON `{ kind: "help" | "idea" | "rating" | "error", text?, stars?, quoteOk?, replyTo?,
+  fingerprint?, day?, count?, context: { program, version, path, role, desktop, userAgent, screen }, error?: { message,
+  stack, digest, action } }`) and an optional `picture` (a JPEG, `image/jpeg`, checked by its first bytes, 1 MB at
+  most); or the same item as a plain JSON body. Answers `{ ok, id }`. help and idea need `text` (4,000 characters at
+  most), rating needs `stars` 1 to 5, error needs `error.message` (stack 8,000); every string is capped and unknown
+  fields are dropped. The company's name is the one the hub already has for that `X-Shop-Ref` on that install, else
+  `context.shopName`, else the install's name. An error is one row per (install, company, fingerprint, day): sending it
+  again adds `count`. Limits: 60 items an hour per company (600 per install, since a hosted program serves many
+  companies) and 200 errors a day per install; over, 429 and the program keeps the item and tries later. 413 for a
+  picture over 1 MB, 415 for one that isn't a JPEG.
+- Admin (Bearer admin token): `GET /v1/admin/feedback?status=new|seen|done&kind=&shop=<install id>/<shop ref>&limit=`
+  → `{ items, more, counts, shops }` (each item has `reply` and `repliedAt`); `POST /v1/admin/feedback/:id { status?, note?, reply? }`
+  (`reply`, up to 4000 characters: saved with the time, the item becomes done, and it is emailed to the item's reply address
+  when it has one, subject "Your note to <program>", quoting the first 200 characters the shop sent; an error item can't be
+  answered, 400);
+  `GET /v1/admin/feedback/:id/picture` (the JPEG); `POST /v1/admin/feedback-sweep` (the 90-day picture clean-up, also run
+  every 6 hours).
+- `GET /v1/feedback/replies?since=<iso>` (install key, company in `X-Shop-Ref`, like `POST /v1/feedback`): the answers to
+  this install's and company's items, newest first, at most 50, `replied_at` after `since` (default 90 days ago) →
+  `[{ id, kind, text, reply, repliedAt }]` (`text` = the first 200 characters of what they sent). The program asks at each sync.
+- `FEEDBACK_EMAIL` (optional): the owner's address. Each help, idea and rating is mailed at once (subject "Help: <shop> –
+  first 60 characters", everything in the body, a link to `/admin`); new errors go in one digest email at most every hour
+  ("3 new errors from 2 shops"; the wait is kept in memory, so a restart sends the next one at once). Unset: no email,
+  the admin page only. Mail goes through `src/mail.mjs` (needs `SMTP_URL` and `MAIL_FROM`; `MAIL_DEV_LOG=true` prints it on
+  a test hub).
+- Retention: items are kept (they are the owner's product feedback); a picture is deleted 90 days after the item is
+  marked done. **Feedback is not part of the hub's export or a company's move**: a rebuilt hub starts with an empty Help
+  & ideas list.
+- The admin page shows what shops typed as text only, never as HTML.
+- Test: `node test/feedback.mjs` (`npm run test:feedback`, a scratch database of its own, mail through `MAIL_DEV_LOG`).
+
+## Program updates (releases)
+
+Migration 035, `src/releases.mjs`, design `StitchBench/docs/plans/ease-of-use-design.md` section 1. The owner publishes each
+installer with `node scripts/release/publish-release.mjs` (StitchBench repo); the installed programs ask the hub for the
+newest one and update themselves. The hub stores the sha256, size and Ed25519 signature but does not check the signature
+(it has no key; the program checks it against the public key built into it).
+
+- `GET /v1/releases/latest?flavor=stitchbench|stitchshop` (no key, limited per address): the newest release of that program
+  that is not withdrawn, by version number → `{ version, url, sha256, size, signature, notes, publishedAt }`; 404 when none.
+  `url` is the installer's own https address, or `<HUB_URL>/v1/releases/<id>/download` when the hub keeps the file in R2.
+- `GET /v1/releases/:id/download` (no key): 302 to a presigned R2 address good for 15 minutes that downloads the file as
+  "StitchBench Setup 1.7.1.exe"; 404 for a release with no file in R2 or one that is withdrawn.
+- Admin (Bearer admin token): `GET /v1/admin/releases` (all, with `withdrawnAt`);
+  `POST /v1/admin/releases/upload-url { flavor, version, size }` → `{ key, putUrl, putHeaders, expiresAt }` (a presigned PUT,
+  `application/octet-stream`, at most 600 MB; 503 when R2_* isn't set; 409 when that version is published);
+  `POST /v1/admin/releases { flavor, version, sha256, size, signature, notes, url | key }` (exactly one of an https `url` or
+  the `key` from upload-url, whose object is looked up in R2 and must be `size` bytes; `notes` up to 12 lines of 200
+  characters; 409 for a version already published); `POST /v1/admin/releases/:id/withdraw`.
+- The admin page's **Program updates** section lists them with a Withdraw button.
+- Test: `node test/releases.mjs` (`npm run test:releases`, a scratch database and the R2 mock).
+
 ## Shop owner accounts
 A shop owner can have an **account** on the hub: an email address and a password, confirmed by email, with a password
 reset by email. The account owns one or more **hub shops** (a company on an install; a hosted StitchBench holds several).
