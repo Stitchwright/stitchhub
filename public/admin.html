@@ -187,12 +187,15 @@
     return r;
   }
   const when = (d) => (d ? new Date(d).toLocaleString() : "never");
+  const size = (b) => (b >= 1073741824 ? `${(b / 1073741824).toFixed(1)} GB` : `${(b / 1048576).toFixed(1)} MB`);
   function td(text) { const c = document.createElement("td"); c.textContent = text ?? ""; return c; }
 
   async function load() {
     const s = await (await api("/summary")).json();
     $("login").hidden = true; $("app").hidden = false;
     const stats = [["Manual links", s.counts.links], ["Working", s.counts.ok], ["Dead", s.counts.dead], ["Notes", s.counts.posts], ["Figures", s.counts.figures], ["Members", s.counts.installs], ["Parts", s.counts.parts], ["Listings", s.counts.listings], ["Orders", s.counts.orders]];
+    // The members' pictures against the hub's limit (MEDIA_QUOTA_HUB_GB): at the limit no new ones are taken.
+    if (s.media) stats.push([`Pictures, of ${size(s.media.limitBytes)}`, size(s.media.usedBytes) + (s.media.usedBytes >= s.media.limitBytes ? " (full)" : "")]);
     $("stats").replaceChildren(...stats.map(([k, v]) => { const d = document.createElement("div"); d.innerHTML = '<div class="muted"></div><div class="stat"></div>'; d.children[0].textContent = k; d.children[1].textContent = v; return d; }));
     $("join").value = s.joinKey || "";
     $("dInvite").value = s.discordInvite || "";
