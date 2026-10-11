@@ -3,6 +3,8 @@
 // markdown files in legal/ (LEGAL_DIR for a test): terms-<version>.md and privacy-<version>.md, never edited once
 // published. A version is YYYY-MM-DD, the day it comes into force (YYYY-MM-DD.2 for a second one that day), with
 // "-draft" on the end while it is a draft for the lawyer: the page then says "DRAFT, not yet in force" over the text.
+// The pages leave out the reviewers' notes in the files ("[LAWYER: ...]", "[OWNER: ...]") and put the owner's legal name
+// (LEGAL_NAME, else the hub's name) where a draft says [OWNER LEGAL NAME].
 // The version in force is TERMS_VERSION, or when that is unset the newest pair on file (drafts don't count once a
 // published version exists, so a draft committed early never asks every account to accept it).
 //   /terms, /privacy               the version in force
@@ -253,6 +255,53 @@ export function render(md) {
   return out.join("\n");
 }
 
+// ----- what the pages leave out -----
+// The drafts carry questions for the lawyer, "[LAWYER: ...]", and facts or choices for the owner, "[OWNER: ...]" (or for
+// both, "[OWNER/LAWYER: ...]"), many over several lines. The files keep them for the reviewers; the pages never show
+// them. A note runs to its own closing bracket (brackets inside it nest), or, never closed, to the end of its paragraph.
+// One in inline code (the drafts' banner names the kinds that way) is words about notes, not a note, and stays. A line
+// left with nothing but a note goes too, so a note on a line of its own doesn't split a paragraph or a list.
+
+const NOTE = /\[(?:LAWYER|OWNER)(?:\s*\/\s*(?:LAWYER|OWNER))*\s*:/g;
+const BLANK_LINE = /[ \t]*(?:\n|$)/y;
+const CUT = "\u0000";
+
+/** Where a note starting at `start` ends (the index after its closing bracket, or its paragraph's end). */
+function noteEnd(text, start) {
+  let depth = 0;
+  for (let i = start; i < text.length; i++) {
+    if (text[i] === "[") depth++;
+    else if (text[i] === "]" && --depth === 0) return i + 1;
+    else if (text[i] === "\n") {
+      BLANK_LINE.lastIndex = i + 1;
+      if (BLANK_LINE.test(text)) return i;
+    }
+  }
+  return text.length;
+}
+
+/** The markdown as the pages show it: the reviewers' notes taken out, with the spaces before them. */
+export function withoutNotes(md) {
+  const text = String(md).replace(/\r\n?/g, "\n").replaceAll(CUT, "");
+  let out = "";
+  let at = 0;
+  for (const m of text.matchAll(NOTE)) {
+    if (m.index < at) continue; // inside a note already cut
+    const line = text.slice(text.lastIndexOf("\n", m.index - 1) + 1, m.index);
+    if ((line.match(/`/g)?.length ?? 0) % 2) continue; // in inline code
+    const from = m.index - /[ \t]*$/.exec(line)[0].length;
+    out += text.slice(at, from) + CUT;
+    at = noteEnd(text, m.index);
+  }
+  out += text.slice(at);
+  return out
+    .split("\n")
+    .filter((l) => !l.includes(CUT) || l.replaceAll(CUT, "").trim())
+    // A note that was all a bold or an italic held takes the marks with it.
+    .map((l) => l.replace(/(\*\*|\*|__|_)\u0000\1/g, "").replaceAll(CUT, ""))
+    .join("\n");
+}
+
 // ----- the pages -----
 
 function pageHtml({ doc, version, current, versions, hubName, text }) {
@@ -291,6 +340,9 @@ article table{font-size:14px}article td,article th{border:1px solid var(--line)}
 
 export function registerTerms({ app, hubName }) {
   load();
+  // Who "we" are where the drafts leave it open ([OWNER LEGAL NAME]): LEGAL_NAME, the business's legal name, else the
+  // hub's name. Put in after the markdown is rendered, so it shows exactly as typed.
+  const legalName = process.env.LEGAL_NAME?.trim() || hubName;
   const notFound = (c, doc) =>
     c.html(shell({ hubName, title: `${TITLES[doc]} · ${hubName}`, css: PAGE_CSS, body: `<section><p>There's no such version of the ${esc(TITLES[doc])} on this hub.</p>
 <p><a href="/${doc}">The version in force</a></p></section>` }), 404);
@@ -303,7 +355,8 @@ export function registerTerms({ app, hubName }) {
     const key = `${doc}:${version}`;
     let html = t.html.get(key);
     if (!html) {
-      html = pageHtml({ doc, version, current: t.current, versions: t.versions, hubName, text: render(fs.readFileSync(file, "utf8")) });
+      const text = render(withoutNotes(fs.readFileSync(file, "utf8"))).replaceAll("[OWNER LEGAL NAME]", esc(legalName));
+      html = pageHtml({ doc, version, current: t.current, versions: t.versions, hubName, text });
       t.html.set(key, html);
     }
     // No script runs on these pages, so none is allowed: a slip in the renderer couldn't run anything.
