@@ -1,6 +1,7 @@
 // Checks that need hubs of their own, started here on a scratch database (no other hub may be running on it):
 // - Partner storage: a member and the partner-only installs its codes brought on share one room on the hub
 //   (PARTNER_MEMBER_STORED_MB, 1 MB here), so minting installs doesn't multiply what a member can store.
+// - Wrong join keys: 20 an hour per address (joining and upgrading together), then 1,000 for the whole hub.
 // - One writer: a second hub started on the same database (a deploy that overlaps the old one, a second replica)
 //   answers /health and reads, refuses writes and feeds with 503 while the first runs, and takes over when it stops.
 // usage: DATABASE_URL=postgresql://... (a scratch database) node test/limits.mjs
@@ -29,7 +30,7 @@ async function startHub() {
       JOIN_KEY: JOIN,
       PORT: String(port),
       LINK_CHECKER: "off",
-      TRUST_PROXY: "",
+      TRUST_PROXY: "true", // the limits per address see the test's addresses in X-Forwarded-For (none sent: 127.0.0.1)
       RAILWAY_ENVIRONMENT_ID: "",
       HUB_NAME: "Limits Test Hub",
       PARTNER_MEMBER_STORED_MB: "1",
@@ -50,10 +51,10 @@ async function startHub() {
 const stopAll = () => hubs.forEach((h) => h.proc.exitCode === null && h.proc.kill());
 process.on("exit", stopAll);
 
-const call = (hub, p, { key, method, json } = {}) =>
+const call = (hub, p, { key, method, json, headers = {} } = {}) =>
   fetch(hub.url + p, {
     method: method ?? (json !== undefined ? "POST" : "GET"),
-    headers: { ...(key ? { Authorization: `Bearer ${key}` } : {}), ...(json !== undefined ? { "Content-Type": "application/json" } : {}) },
+    headers: { ...(key ? { Authorization: `Bearer ${key}` } : {}), ...(json !== undefined ? { "Content-Type": "application/json" } : {}), ...headers },
     body: json !== undefined ? JSON.stringify(json) : undefined,
   });
 const ok = async (r) => {
@@ -93,6 +94,35 @@ try {
   assert.equal((await post(p3.installKey, p3.link.id, "p3")).status, 200);
   assert.equal((await post(otherKey, p3.link.id, "main")).status, 200);
   console.log("partner storage per member: ok");
+
+  // ----- wrong join keys: per address first, then the hub's ceiling -----
+  const from = (ip) => ({ "X-Forwarded-For": ip });
+  const join = (ip, joinKey) => call(hub, "/v1/register", { json: { joinKey, name: "Limits Joiner" }, headers: from(ip) });
+  const upgrade = (ip, key, joinKey) => call(hub, "/v1/upgrade", { key, json: { joinKey }, headers: from(ip) });
+  // One address: 10 wrong keys joining (the tries an address gets there in an hour) and 10 upgrading a partner-only
+  // install (as a pending install would); then even the right key from that address waits, and from another it works.
+  for (let i = 0; i < 10; i++) assert.equal((await join("10.7.0.1", `wrong-${i}`)).status, 403);
+  for (let i = 0; i < 10; i++) assert.equal((await upgrade("10.7.0.1", p1.installKey, `wrong-${i}`)).status, 403);
+  const waits = await upgrade("10.7.0.1", p2.installKey, JOIN);
+  assert.equal(waits.status, 429, "the 21st try from that address");
+  assert.match((await waits.json()).error, /from this address/);
+  assert.equal((await ok(await upgrade("10.7.0.2", p2.installKey, JOIN))).scope, "member", "the right key from another address");
+  // Many addresses: more wrong keys than the hub-wide pause there used to be (100), and joining goes on; at 1,000 wrong
+  // keys in the hour it pauses for everyone (a join key can be a phrase a person chose).
+  const addr = (n) => `10.6.${n >> 8}.${n & 255}`;
+  let wrong = 20;
+  for (let a = 1; wrong < 120; a++, wrong += 10) {
+    for (const r of await Promise.all(Array.from({ length: 10 }, (_, i) => join(addr(a), `guess-${a}-${i}`)))) assert.equal(r.status, 403);
+  }
+  await ok(await join("10.5.0.1", JOIN));
+  for (let a = 1000; wrong < 1000; a++, wrong += 10) {
+    for (const r of await Promise.all(Array.from({ length: 10 }, (_, i) => join(addr(a), `guess-${a}-${i}`)))) assert.equal(r.status, 403);
+  }
+  const pausedForAll = await join("10.5.0.2", JOIN);
+  assert.equal(pausedForAll.status, 429, "1,000 wrong keys in the hour pause joining");
+  assert.match((await pausedForAll.json()).error, /tried lately/);
+  assert.match(hub.log, /1000 wrong join keys this hour/);
+  console.log("wrong join keys: ok (20 an hour per address first, 1,000 for the hub)");
 
   // ----- one writer -----
   const second = await startHub();
