@@ -139,7 +139,7 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
     mail(
       email,
       `Set your ${hubName} password`,
-      `Hello,\n\nA shop named "${nameForMail(shop.name)}"${shop.program ? ` (${shop.program})` : ""} asked for a ${hubName} account for ${email}. Set your password here; the link works once, for ${SET_PASSWORD_HOURS} hours:\n\n${link("set-password", shop.token)}\n\nIf you didn't ask for this, ignore this email and nothing happens.${signOff}`,
+      `Hello,\n\n${shop.name ? `A shop named "${nameForMail(shop.name)}"${shop.program ? ` (${shop.program})` : ""}` : "Someone"} asked for a ${hubName} account for ${email}. Set your password here; the link works once, for ${SET_PASSWORD_HOURS} hours:\n\n${link("set-password", shop.token)}\n\nIf you didn't ask for this, ignore this email and nothing happens.${signOff}`,
     );
   const verifyMail = (email, token) =>
     mail(
@@ -678,7 +678,7 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
       const slot = byAdmin ? null : setPasswordSlot(a.email);
       if (slot?.refused) return;
       try {
-        const shop = (await one(`SELECT * FROM shops WHERE account_id = $1 ORDER BY created_at LIMIT 1`, [a.id])) ?? { name: "Your shop", program: null };
+        const shop = (await one(`SELECT * FROM shops WHERE account_id = $1 ORDER BY created_at LIMIT 1`, [a.id])) ?? { name: null, program: null };
         const token = await tx((client) => issueToken(client, "reset", { accountId: a.id }, SET_PASSWORD_HOURS * 3600_000));
         await setPasswordMail(a.email, { ...shop, token });
       } catch (e) {
