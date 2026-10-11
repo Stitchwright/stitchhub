@@ -299,6 +299,7 @@ try {
   assert.deepEqual(await ok(await page(browser(), "/signup", { email: emailS, password: "Owner-password-5", acceptTerms: true })), { ok: true });
   const sS = await mailTo(emailS);
   assert.match(sS.subject, /Set your Accounts Test Hub password/);
+  assert.ok(sS.text.includes(`Someone asked for a Accounts Test Hub account for ${emailS}.`), `an account with no shop yet names none: ${sS.text}`);
   await status(await page(browser(), "/verify", { token: tokenOf(vS) }), 410, "the stranger's confirm link is cancelled");
   await status(await page(browser(), "/signin", { email: emailS, password: "Stranger-password-5" }), 401, "the stranger's password is gone");
   await ok(await page(browser(), "/set-password", { token: tokenOf(sS), password: "Owner-password-5" }));
