@@ -1,9 +1,11 @@
 # StitchHub
 
-The community server for **StitchBench**, a repair-shop app for sewing, embroidery and quilting machine technicians.
+The free community hub for **StitchBench** and **StitchShop**, the free and open-source programs for sewing machine
+repair shops and the sewing and quilt shops they work with ([SiteSentrix/StitchBench](https://github.com/SiteSentrix/StitchBench)).
+The public hub runs at https://hub.stitchbench.app and is free for every shop; anyone can also run their own.
 
-StitchBench runs in each shop, on the shop's own PC, and its customers, machines, tickets and prices stay there.
-StitchHub is the one small shared server that the shops sync with. It holds only what they choose to share:
+Each shop's program keeps its customers, machines, tickets and prices on the shop's own PC or server. StitchHub is the
+one small shared server the shops sync with. It holds only what they choose to share:
 
 - **Manual links.** Where each service, parts or operator manual can be downloaded, with a status (working, dead,
   or blocks robots) that the hub rechecks every week. Anyone can fix a dead link. Every change is kept and can be
@@ -164,8 +166,9 @@ with the join key, keeping its partner links).
 What goes through the hub is only what the two shops need: the sewing shop's tag number, the customer's first name
 and last initial, the machine and the problem, intake photos, the repair bill and status, orders, consignment counts
 and sales, and settlements. Customer phone numbers and addresses stay in the sewing shop. Messages are kept for a
-year so a shop that was offline catches up. They are not encrypted or signed: the hub admin can read them in the
-database, like everything else on the hub, and could send one as either shop.
+year so a shop that was offline catches up. They aren't encrypted, so whoever runs the hub can read them, but they are
+signed: each program checks every message against the key it holds for its partner, so the hub can't make one up
+(docs/partners.md; messages from older programs, which don't sign, are still accepted and marked unverified).
 
 ## Shop hops
 Paper passports stamped at each shop, on the hub (`src/hops.mjs`, migration 031; StitchBench's
@@ -270,10 +273,10 @@ at `/account`. Three ways in:
    it under "Connect a shop".
 3. **On the hub first**: `/account` → Create an account, confirm by email, then connect a shop with a code.
 
-Every company tells the hub about itself at each sync (`POST /v1/shops/claim`) and learns its **standing** (see
-Billing below): a 30-day trial from its first claim, a subscription, free while partnered, free with the admin's
-compliments (the /admin page, Shops → Comp), or lapsed. The answer carries the **license key** the program should hold for
-itself (module `base`), signed by the hub; the key, not the words, is what the program enforces.
+Every company tells the hub about itself at each sync (`POST /v1/shops/claim`) and learns its **standing**: since
+11 Oct 2026 every shop is free, with every add-on, for good (Billing below). The answer carries the **license keys** the
+program holds for itself (module `base`) and for the add-ons, signed by the hub; older programs enforce the keys, so
+they are signed to run to 2099-12-31 and are never taken back.
 
 Passwords are hashed with scrypt; links, codes and session ids are stored as SHA-256 hashes; sessions are HttpOnly
 cookies for 30 days; a password reset signs every browser out. Sign-ups are limited to 10 an hour per address and wrong
@@ -295,152 +298,26 @@ Never set that on a real hub.
 ## Billing
 **Since 11 Oct 2026 every shop is free, with every add-on, for good** (the owner's decision; StitchBench
 `docs/plans/free-software-design.md`): every claim answer is the admin's "comp forever, everything" (standing `comped`,
-keys of plan `c` through 2099-12-31 for `base` and for the five add-ons) and nothing ends it. The plan billing below
-(trials, Solo and Shop, founding prices, the waiver, the add-ons' and extra stores' prices, "Lapse now") is parked and
-will be replaced by hosting billing; the Assistant is still sold (**Selling the Assistant**, below).
+keys of plan `c` through 2099-12-31 for `base` and for the five add-ons) and nothing ends it. The hub sells the
+Assistant (**Selling the Assistant**, below) and, later, hosting for shops on the hosted service. The plan billing built
+before (trials, Solo and Shop plans, founding prices, the partnership waiver, the add-ons' and extra stores' prices,
+"Lapse now") is parked behind `PLANS_PARKED` in `src/billing.mjs` and will be removed.
 
-Two plans per shop (decided 3 Oct 2026), the same program and every feature on both, for StitchBench on Windows,
-StitchShop on Windows and every company on a hosted instance, through Stripe Billing on the hub:
-
-| plan | monthly | yearly | logins |
-|---|---|---|---|
-| **Solo** | $25 | $250 | up to 2 people signed in (active logins) |
-| **Shop** | $45 | $450 | everyone |
-| Solo, founding shop | $15 | $150 | up to 2 |
-| Shop, founding shop | $30 | $300 | everyone |
-
-**Founding shops** are the first 25 accounts the admin marks on /admin (Accounts → "Founding shop"; the page shows how
-many of the 25 are used and refuses a 26th). A founding account gets the founding price of whichever plan it subscribes
-to or switches to. The mark stays while the account's subscriptions run without a gap: when the last one stops (its paid
-period ends, or a payment is refunded or disputed) the hub writes down when the gap started (`accounts.founding_gap_since`);
-an account that subscribes again within 60 days keeps the founding prices, and after 60 days the mark goes by itself
-(`founding_lost_at`) and its place is free again (a chargeback the shop later wins gives back a mark its gap cost, while a
-place is free). A subscription already on a founding price keeps it in Stripe; taking
-the mark off by hand changes only what the account is offered next. A trial, a comp and a partnered (waived) shop are
-Shop, so a shop can try the program with its staff.
-
-The owner subscribes on `/account` → Your shops → Solo or Shop, yearly or monthly (Stripe Checkout, a card is always
-taken: the hub runs the trial itself). **Subscribing during the 30-day trial** charges nothing until the trial ends: when
-more than about 48 hours of it are left (Stripe's minimum), Checkout gets `subscription_data.trial_end` = the trial's end,
-so the subscription starts on Stripe's trial (`trialing`), the shop shows as subscribed with full use, and the first charge
-falls the day the trial ends (the account page says which day, before and after subscribing); with less left it is
-charged at once. The owner moves between the plans with **Switch to Shop / Switch to Solo** on the same page
-(the subscription item moves to the other plan's price, same interval, founding if the account is, with Stripe's
-proration). **Up to Shop** charges the difference for the rest of the period at once (`always_invoice`), and the change
-waits for that payment (`payment_behavior: pending_if_incomplete`): the hub reads the plan from the price, so the Shop
-key is signed only once Stripe has the difference paid, usually at once; a declined card leaves the shop on Solo (the
-page says so, no dunning mail) until the invoice is paid. **Down to Solo** credits the difference on the next invoice
-and takes effect at once. The owner changes the card, cancels or downloads invoices under Manage billing (Stripe's
-Customer Portal). The hub never sees a card number. A shop has one subscription on the hub: when a Checkout completes
-while an older subscription for the same shop hasn't ended (a past_due one Stripe still retries, a second Checkout),
-the older one is cancelled in Stripe at once (no refund: if both were paid for the same days the log says to refund the
-older one by hand), and a late event for an older subscription (its update, a retry, a payment, its cancellation) is
-logged and ignored, never written over the shop's current one.
-
-**The Customer Portal** (Stripe dashboard → Settings → Billing → Customer portal): turn on "Customers can switch plans",
-add the one product with its four regular prices (Solo and Shop, monthly and yearly; add the founding prices too if
-founding shops may switch there), choose to prorate and to **invoice the proration immediately** (the API's
-`always_invoice`; with the default, invoiced at the next renewal, a switch up to Shop made in the portal would get every
-login for up to a year before paying the difference; or leave "Customers can switch plans" off so every switch goes
-through the hub's Switch), allow "Update payment methods", "Cancel subscriptions" (at the end of the billing period)
-and "Invoice history". Leave quantity changes off: a plan is per shop, not per seat. Whatever the portal switches to,
-the webhook re-reads the subscription and the hub takes its plan from the price.
-
-The **login plan** reaches the program with the standing: `plan` ("solo" | "shop"), `interval` ("monthly" | "yearly" for
-a subscription, else null) and `founding`, and inside the signed key as `l` (and `fs: true` for a founding price), so it
-holds offline. A program limits logins only on a key that says `l: "solo"`; a key without `l` (an older hub, an emailed
-key, the hosted administrator's switch) or no key at all is no limit. A shop already over two when it moves to Solo is
-never locked out: the program shows the owner a notice and refuses only a third login added or restored. A lapsed shop
-keeps its last plan. Stripe tells the
-hub what happened through the webhook `POST /v1/stripe`: the signature is checked first, each event is handled once (its
-id is kept in `stripe_events`; a replay is a 200 that does nothing) and the event's own copy of the object is never
-trusted (the hub re-reads the subscription, invoice or charge from Stripe by id).
-
-A shop's **standing**, worked out at every claim:
-
-| standing | when | the key |
-|---|---|---|
-| `trial` | 30 days from the shop's first claim | plan `t`, from the first claim through the trial's last day; `l: "shop"` |
-| `active` | Stripe says the subscription is paid (`active`), or on its trial (`trialing`: subscribed inside the hub's trial, the first charge on the trial's last day), or it is cancelled but paid through the period end | plan `m` or `y`, through the current period end (the trial's last day while `trialing`); `l` the subscription's plan |
-| `past_due` | the last payment failed; 14 days' grace past the period end while Stripe retries | the same key (it already carries 14 days of grace) |
-| `waived` | a **retail** shop (StitchShop, `kind: "retail"`) on the retail side of an `ACTIVE` partner link while **the real-partnership rule** holds (below). A repair shop is never waived, and a `both` shop counts as repair and pays. In its grace period the standing is still `waived`, `lastDay` is the grace's end and the message is the friendly notice | plan `w`, a 35-day key signed fresh each day the waiver holds (in a grace, ending with the grace), so an offline install works about a month past the end of its partnership and no longer |
-| `comped` | the admin's "Comp": free through a day, or for good (`2099-12-31`) | plan `c` through that day |
-| `lapsed` | the trial ended; the subscription ended or its grace ran out; a refund or chargeback (but see below: a full refund of the first payment inside the trial, a chargeback won); the admin's "Lapse now"; a waiver that ended more than 35 days ago | a key that is over: the trial's or period's own (grace from its last day); after a refund, a chargeback or "Lapse now", a one-day key with no grace, so the program is read-only from its next sync |
-
-**The real-partnership rule** (owner decided 5 Oct 2026; `billing.mjs` `waiverRule`). A partnered quilt shop's free plan (the waiver: the
-Shop plan, base only; add-ons are always paid, the hub signs the waiver's key for `base` alone) holds while BOTH (1) its repair partner is a
-paying subscriber (`active` by a subscription: paid, or trialing with a card; not a free trial without a card, a comp, past_due, lapsed,
-or itself waived) and (2) a repair passed between the two shops in the last calendar quarter or the current one. The hub measures (2)
-from what it already relays: the distinct `job.new` messages the quilt shop sent over the link plus finished pickup runs (`pickup.done`)
-in `partner_messages`, since the first day of last quarter (UTC); nothing new is reported by the programs. A link is exempt from (2) for
-its first 90 days, so a new partnership is waived at once. When (1) or (2) stops, `waiver_grace` (migration 022) records the first day the
-hub found the rule broken for that link and a 30-day grace runs: the shop is still `waived`, its key ends with the grace and the program
-shows "Your free StitchShop comes with your repair partnership with X. Subscribe to keep going after <date>; nothing is locked or
-lost." If the rule holds again inside the grace (a repair passes, the partner subscribes) the row is deleted and nothing changes. After
-the grace the shop falls back to its normal standing by the existing rules (its trial if unused, else lapsed: read-only, never deleted);
-if the rule holds again later it is waived again. The grace starts when the hub first notices, which is at the shop's or the admin page's
-next look, never later than the next daily claim. The admin page lists, for each waived shop, its partner, the partner's standing, the
-repairs counted, the last repair date and the grace end. A partner message isn't signed end to end yet (handoff item L134), so a quilt
-shop could fake `job.new` messages to keep its waiver; the hub's per-hour limits apply, and the review of partnered shops' support hours
-and add-on uptake (six months in) is the check.
-
-Rules of thumb: a key is re-signed only when the plan, the login plan or last day changes (a renewal, a switch, a new comp date), and the current
-key is sent at every claim so a program that lost it gets it back; a lapsed shop's key is never cut shorter than the one
-it holds (a comp that ran out keeps its 14 days of grace), but a key the program believes is still live when the standing
-has ended (a comp taken away) is replaced by one ending today, so the grace runs from today; `revokeKeyIds` names the
-keys of a refunded or charged-back period (and of a "Lapse now") for the program to drop. A refund or chargeback lapses
-the shop at once, with two exceptions (below). **A full refund also cancels the subscription in Stripe at once** (no
-proration, nothing refunded beyond what was), so it can't charge the shop again; a partial refund doesn't. A paid
-invoice makes a refunded or charged-back period good again only when its own payment stands (not refunded, not
-disputed) and it is newer than the one taken back: a late or retried `invoice.paid` for that period changes nothing. Only a
-period's own charge (an invoice for `subscription_create` or `subscription_cycle`) takes the period back: refunding the
-difference charged for a plan switch leaves the period and the subscription alone. The Assistant's own subscription is
-treated the same way (its keys revoked at once, the proxy refuses them, cancelled on a full refund, good again on a later
-payment that stands or a won chargeback), and a refunded or charged-back top-up takes its calls back (a partial refund, its
-share, rounded up). **A full refund of the subscription's first payment while the trial's original end
-is still ahead** puts the shop back on its trial until that day (the trial key comes back, the paid period's key is still
-named for removal; after that day it is a trial that ended); a partial refund, a refund of a later payment or a chargeback
-inside the trial still lapses it. **A chargeback the shop wins** (`charge.dispute.closed` with status `won`, the dispute
-re-read from Stripe) is undone: the period counts again, the subscription is re-read, the admin's dispute flag goes, a
-founding mark the dispute's gap cost comes back while a place is free, the next sync gets a fresh key (the revoked ones
-stay revoked), and the hub's log says so; a won one whose period was also refunded is left as it is. **A lost
-chargeback** stands and cancels the subscription in Stripe; one the hub never acted on (an inquiry it held, a dispute it
-never saw open) lapses the shop then. **A card-company inquiry** (a dispute whose status starts with `warning_`: a
-retrieval request, no money taken yet) doesn't lock the shop: the hub records it on the subscription (several can be
-open, one per charge), the admin page shows it as INQUIRY and the log says so, and the shop keeps full use. Only a real
-chargeback (`needs_response`, `under_review`) lapses the shop, whether it opens as one or an inquiry escalates into one
-(`charge.dispute.updated` with the new status, for any open inquiry); an inquiry that closes as `warning_closed` just
-leaves the list, since nothing was taken. The hub keeps the disputes it has acted on, so a late or repeated dispute
-event (evidence submitted, a review, a `created` or `updated` for a dispute already won, one ending in a refund) never
-lapses the shop a second time. When a subscription ends while the trial still runs, the shop is back on
-its trial. A partnered shop that also pays is told it can cancel and stay free; the hub never cancels for it. Dunning mail
-goes once per period: when a payment fails, 7 days into the grace, the day the shop lapses, and 30 days before a yearly
-renewal (Stripe sends the receipts).
+Stripe tells the hub what happened through the webhook `POST /v1/stripe`: the signature is checked first, each event
+is handled once (its id is kept in `stripe_events`; a replay is a 200 that does nothing) and the event's own copy of an
+object is never trusted (the hub re-reads the subscription, invoice or charge from Stripe by id). Customers change their
+card, cancel or download invoices under Manage billing (Stripe's Customer Portal: in the Stripe dashboard, Settings →
+Billing → Customer portal, allow "Update payment methods", "Cancel subscriptions" at the end of the billing period and
+"Invoice history"). The hub never sees a card number.
 
 Variables: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` (the endpoint `https://<hub>/v1/stripe` with these ten events:
 `checkout.session.completed`, `customer.subscription.created|updated|deleted`, `invoice.paid`,
 `invoice.payment_failed`, `charge.refunded`, `charge.dispute.created`, `charge.dispute.updated`,
-`charge.dispute.closed`), the prices (recurring prices made in the Stripe
-dashboard, one product): `STRIPE_PRICE_SOLO_MONTHLY`, `STRIPE_PRICE_SOLO_YEARLY`, `STRIPE_PRICE_SHOP_MONTHLY`,
-`STRIPE_PRICE_SHOP_YEARLY`, and for founding shops `STRIPE_PRICE_SOLO_MONTHLY_FOUNDING`,
-`STRIPE_PRICE_SOLO_YEARLY_FOUNDING`, `STRIPE_PRICE_SHOP_MONTHLY_FOUNDING`, `STRIPE_PRICE_SHOP_YEARLY_FOUNDING`, and
-`STRIPE_API_BASE` (the mock, for a test hub). **Several prices count as one plan**: each price variable takes a
-comma-separated list of price ids; the first is the one new subscriptions get, the rest are older prices that still count
-as that plan. A price rise is a new price put in front (`STRIPE_PRICE_SHOP_MONTHLY=price_new,price_old`): new shops pay
-the new one, existing subscriptions stay on theirs (raise them in Stripe when their 12 months are up). An id in two
-variables is refused (the admin page says which). A subscription on a price in none of them counts as **Shop** and is
-logged (`stripe: subscription … is on a price the hub doesn't know`), so a forgotten variable never holds a paying shop
-to two logins. The single price from before the plans (`STRIPE_PRICE_MONTHLY`, `STRIPE_PRICE_YEARLY`) is still
-recognised, as Shop, for a subscription already on it, and is never sold again. Missing founding prices don't close
-billing (the admin page lists them; a founding shop is told to ask). The account page shows each plan's price as Stripe
-has it (read once an hour). **With the secret key, the webhook secret or any of the four regular prices unset,
-subscriptions are closed**: the account page says so, a trial that ended
-changes nothing ("Subscriptions aren't open yet"), and no trial or waiver key is signed, so no shop can go read-only for
-want of a way to pay; comps still get their key. Keys are signed with `HUB_LICENSE_KID` and `HUB_LICENSE_KEY` (the
-Ed25519 private key, PEM base64, from `npm run license:keygen -- --kid hub1 --hub` in the StitchBench repo; the hub prints
-the public half at start, and the matching line must be in `license-keys.ts` in both programs before the hub signs).
-Without them no key is signed and standing is only words. Every key issued is written in `license_issues` (the
-retirement allow list of a kid is made from it; `GET /v1/admin/shops/:id/keys` lists a shop's).
+`charge.dispute.closed`) and `STRIPE_API_BASE` (the mock, for a test hub). Keys are signed with `HUB_LICENSE_KID` and
+`HUB_LICENSE_KEY` (the Ed25519 private key, PEM base64, from `npm run license:keygen -- --kid hub1 --hub` in the
+StitchBench repository; the hub prints the public half at start, and the matching line must be in `license-keys.ts` in
+the programs before the hub signs). Without them no key is signed and standing is only words. Every key issued is written
+in `license_issues` (`GET /v1/admin/shops/:id/keys` lists a shop's).
 
 ## Hosted shops and password resets
 **Start a hosted shop.** A verified account can start a StitchShop or StitchBench on the hosted service from
@@ -448,8 +325,7 @@ retirement allow list of a kid is made from it; `GET /v1/admin/shops/:id/keys` l
 `HOSTED_STITCHBENCH_URL`, the site's https address only, with `Authorization: Bearer PLATFORM_API_TOKEN`, 32+ random
 characters, the same variable on the service); the service makes the company with the account's email as its owner
 login and answers its id, its own install on this hub and a link for the owner to choose a password (24 hours, one use).
-The hub ties the company to the account on that install, so the company's first claim finds it under the account and its
-trial runs from then, and shows the link once (it is never stored or logged). One start per account per 10 minutes; each
+The hub ties the company to the account on that install, so the company's first claim finds it under the account, and shows the link once (it is never stored or logged). One start per account per 10 minutes; each
 is written in `hosted_starts`. Unset variables: the option isn't shown. A service that isn't on this hub still makes
 the shop; its owner connects it with a link code.
 
@@ -504,35 +380,10 @@ calls. A second Assistant Checkout that is paid cancels the older Assistant subs
 charged back) before its Checkout credit lands is held (`assistant_topup_pending`) and taken back when the credit comes.
 `npm run test:assistant-billing` (the Stripe and Anthropic mocks, a fresh database).
 
-**Selling the add-ons** (`src/addons.mjs`, migration 032; StitchBench `pricing-review-2026-10.md`). The price list:
-
-| Add-on (module id) | Monthly | Yearly | Variables |
-|---|---|---|---|
-| Vac Shop (`vac`) | $10 | $100 | `STRIPE_PRICE_VAC_MONTHLY`, `STRIPE_PRICE_VAC_YEARLY` |
-| Small Appliance Repair (`appliance`) | $5 | $50 | `STRIPE_PRICE_APPLIANCE_MONTHLY`, `_YEARLY` |
-| Scheduling (`scheduling`) | $15 | $150 | `STRIPE_PRICE_SCHEDULING_MONTHLY`, `_YEARLY` |
-| Marketing (`marketing`) | $10 | $100 | `STRIPE_PRICE_MARKETING_MONTHLY`, `_YEARLY` |
-| Maker Shop (`maker`) | $10 | $100 | `STRIPE_PRICE_MAKER_MONTHLY`, `_YEARLY` |
-| All five add-ons (the bundle) | $30 | $300 | `STRIPE_PRICE_BUNDLE_MONTHLY`, `_YEARLY` |
-| Each store after the first | $25 | $250 | `STRIPE_PRICE_STORE_MONTHLY`, `_YEARLY` |
-
-The Assistant ($15 / $150) stays out of the bundle. Each variable is a comma list like the plans' (the first id is sold); an
-add-on isn't offered while either of its two is unset (the admin page lists what's missing). On the account page each shop
-gets a button for each add-on and for all five. Each add-on, and the bundle, is its own Stripe subscription per shop (table
-`addon_subscriptions`, one row per shop and product; metadata `hub_product: "addon"`, `hub_addon`), handled the way the
-Assistant's is: paying signs a key for its module ids (`{maker}`, or all five for the bundle), plan `m` or `y`, through the
-paid-through day plus 14 days, sent after the Assistant's in `moduleKeys` (five keys at most: a shop holds four single
-add-ons at most, the bundle costing less by then); a refund or chargeback of a period's charge takes the period back and
-revokes its keys (a full refund cancels it; a chargeback is acted on once and undone when won; a later payment that stands
-makes it good); a second Checkout for the same add-on cancels the older one. **Buying the bundle cancels the shop's single
-add-on subscriptions at once with Stripe's proration** (the unused days are a credit on the next invoice) and revokes their
-keys; a single add-on isn't sold while the bundle runs. **The comp**: the admin's comp can cover the five add-ons too
-("everything", `addons: true`: a key for all five, plan `c`, through the comp's last day; the Assistant keeps its own comp);
-taking the comp away, or comping the program only, revokes that key. **Extra stores**: the program reports `stores` at every
-claim (an older program says nothing and the count stays); each store after the first is a quantity of the store price on
-the shop's base subscription: in its Checkout, and changed with Stripe's proration (on the next invoice) when the reported
-count changes while it runs. The account and admin pages show the stores reported, the extra ones and those billed.
-`npm run test:addons-billing` (the Stripe mock, a fresh database).
+**The add-ons are free.** Vac Shop, Small Appliance Repair, Scheduling, Marketing and Maker Shop come with every shop:
+each claim carries one key for all five (plan `c`, through 2099-12-31) that is never taken back, and the shop switches
+them on in the program. Extra stores cost nothing either. The add-on and extra-store checkout built before
+(`src/addons.mjs`, migration 032) is parked and will be removed.
 
 **Duplicate finder.** `node scripts/find-duplicate-xparts.mjs --dry` lists groups of cross-reference entries with the same
 brand, a shared fit and names a letter apart and what asking about them costs; without `--dry` it asks Claude Haiku through the
@@ -758,27 +609,14 @@ escaping), `GET /v1/terms/current`, acceptance from the program, at sign-up, on 
 without the tick while the account is behind), the claim answer's `terms`, the export, and a `TERMS_VERSION` with no files.
 
 `DATABASE_URL=<a database on a server where the role may create databases> npm run test:billing` makes a fresh database
-beside it for the run (dropped at the end), starts a hub with the Stripe mock (`test/stripe-mock.mjs`:
-Checkout in subscription mode with Stripe's `trial_end` and its 48 hours, the Portal, signed webhooks, refunds (whole or
-partial) and disputes (chargebacks and inquiries, opened, updated, then won, lost or closed), with hooks to fail or renew a payment)
-and a throwaway `hub1` key, and walks a shop from its trial through subscribe → active → past_due → lapsed → paid again,
-cancelling, a yearly plan, a refund and a chargeback (keys revoked; a full refund and a lost chargeback cancel the
-subscription; late `invoice.paid` and dispute events change nothing), Solo and Shop (Switch up charged now, a declined
-card waiting on Solo until the difference is paid, Switch down credited, an older price
-still counted, the old single price and an unknown price counted as Shop, lapsed keeping its plan, the key's `l`),
-founding shops (the admin's mark and the 26th refused, founding prices at Checkout and Switch, back within 60 days, the
-mark lost after), the trial's edges (subscribing inside the trial is `trialing` and charged when it ends, no `trial_end`
-under 48 hours, a partial refund lapses, a full refund of the first payment goes back to the trial and then ends with it,
-a lost dispute changes nothing, a won one restores the period, a fresh key and the founding mark its gap cost; an
-inquiry keeps full use and shows to the admin, two at once, the first escalating and lapsing the shop, the second
-closing with the flag cleared), two subscriptions for one shop (the new Checkout cancels the old one, whose late events
-are ignored), a
-partnered retail shop waived and the waiver ending (the real-partnership rule: a paying partner and a repair in the quarter; grace and fallback for each break; add-ons never waived), comps, "Lapse now", replayed and badly signed
-webhooks, one account unable to subscribe another's shop, the export, and a hub with billing closed. The database must be
-fresh because the founding places are counted across it; the test makes its own each run. Every key the hub sends is verified with the program's own verify logic (a copy of
-`license.ts`'s `verifyLicense`) and checked to be for the right shop. The mock also runs on its own
-(`node test/stripe-mock.mjs`, `STRIPE_MOCK_PORT`, `STRIPE_MOCK_WEBHOOK_URL`) for a local test hub: set
-`STRIPE_API_BASE` to it (on its own it offers the prices named in the hub's `STRIPE_PRICE_*` variables).
+beside it for the run (dropped at the end) and starts a hub with the Stripe mock (`test/stripe-mock.mjs`: Checkout, the
+Portal, signed webhooks, refunds and disputes, with hooks to fail or renew a payment) and a throwaway `hub1` key. It checks
+that every shop (a new one, one from an old trial, a partnered one, a `both` one, one lapsed before 11 Oct 2026) gets keys
+for the program and the five add-ons that run to 2099-12-31, verified with the program's own verify logic (a copy of
+`license.ts`'s `verifyLicense`); that no refund, chargeback, failed payment, end of grace, cancellation, "Lapse now" or comp
+lapses a shop or takes a key back; that the parked checkouts answer 410; replayed and badly signed webhooks; and the
+export. The mock also runs on its own (`node test/stripe-mock.mjs`, `STRIPE_MOCK_PORT`, `STRIPE_MOCK_WEBHOOK_URL`) for a
+local test hub: set `STRIPE_API_BASE` to it.
 
 ## API (for StitchBench)
 Members send `Authorization: Bearer <install key>`.
@@ -812,7 +650,7 @@ Members send `Authorization: Bearer <install key>`.
 | `GET /v1/partners/messages?since=N&shopRef=` | messages for this install's shops after `N`; `shopRef` keeps one company's (a company that just moved here pulls its backlog once from the old install's place) |
 | `POST /v1/partners/links/:id/end` | end a partnership (both shops are told) |
 | `POST /v1/upgrade` | `{ joinKey }`: a partner-only install becomes a member |
-| `POST /v1/shops/claim` | `{ shopRef, shopName, kind: "repair" \| "retail" \| "both", program: "StitchBench" \| "StitchShop", version, sole }` → `{ ok, listings, shop, account: { email, verified } \| null, terms: { version, draft, accepted }, standing: "trial" \| "active" \| "past_due" \| "waived" \| "comped" \| "lapsed", lastDay, message, plan: "solo" \| "shop", interval: "monthly" \| "yearly" \| null, founding, key: "SB1.…" \| null, revokeKeyIds: [] }`. Sent for every company at every sync; the first time starts its trial. `key` is the hub-signed key for the module `base` the program should hold (its current one, or a fresh one when the standing changed; null when the hub has no signing key, or billing is closed and the shop is on its trial); `revokeKeyIds` names hub keys to drop (a refund, a chargeback, "Lapse now"). `sole: true` (or a body with only `shopRef`, as older programs send) hands what the install listed, ordered and shared before it named its company to that company. `stores` (an integer, 1 to 100: the company's stores; each after the first is billed on its base subscription) is kept on the shop, left as it was when not sent; `moduleKeys` carries the Assistant's key and the add-ons' (five at most); `resetOptIn` (the Windows program's "allow a reset from my StitchHub account") is kept on the shop; left as it was when not sent; `false` withdraws a reset request still waiting |
+| `POST /v1/shops/claim` | `{ shopRef, shopName, kind: "repair" \| "retail" \| "both", program: "StitchBench" \| "StitchShop", version, sole }` → `{ ok, listings, shop, account: { email, verified } \| null, terms: { version, draft, accepted }, standing: "trial" \| "active" \| "past_due" \| "waived" \| "comped" \| "lapsed", lastDay, message, plan: "solo" \| "shop", interval: "monthly" \| "yearly" \| null, founding, key: "SB1.…" \| null, revokeKeyIds: [] }`. Sent for every company at every sync. `key` is the hub-signed key for the module `base` the program should hold (its current one, or a fresh one when the standing changed; null when the hub has no signing key, or billing is closed and the shop is on its trial); `revokeKeyIds` names hub keys to drop (a refund, a chargeback, "Lapse now"). `sole: true` (or a body with only `shopRef`, as older programs send) hands what the install listed, ordered and shared before it named its company to that company. `stores` (an integer, 1 to 100: the company's stores; each after the first is billed on its base subscription) is kept on the shop, left as it was when not sent; `moduleKeys` carries the Assistant's key and the add-ons' (five at most); `resetOptIn` (the Windows program's "allow a reset from my StitchHub account") is kept on the shop; left as it was when not sent; `false` withdraws a reset request still waiting |
 | `GET /v1/shops/:ref/standing` | the same answer without the claim (404 until the shop has claimed itself). For a company that moved to another install, the install it left gets `410 { error, moved: true, to: <the install's name>, at }` here and at the claim |
 | `POST /v1/shops/:ref/move-token`, `DELETE` | the install the company is on, making a move file: `{ shopName, kind, program, version }` → `{ token, expiresAt, shopRef }`, answered once (only its hash is kept), one use, 14 days; a second call replaces the first. `DELETE` cancels it (the owner cancelled the move) |
 | `POST /v1/shops/move` (key optional) | `{ shopRef, token, shopName, kind, program, version }`: the install the company moved to redeems the token from the move file; every row of that company (shop, partner links, unused partner codes, listings, orders, ratings, notes, link and part revisions, parts usage) moves to it in one transaction, and listings, notes and orders are numbered again in the feeds. → the claim's answer plus `{ moved: { table: rows }, partner: { shopRef, links }, hubName }`; without a key (a program on no hub yet) the hub makes it an install with the old install's scope and adds `{ installId, installKey, scope }`. 404 wrong token, 409 used (the same install asking again gets the same answer), 410 replaced, cancelled or expired; 429 after 20 wrong tokens in an hour from one address (that address only: a token can't be guessed, so there is no pause for the whole hub) |
@@ -823,7 +661,9 @@ Members send `Authorization: Bearer <install key>`.
 | `POST /v1/shops/:ref/reset-grants/:id/done` | `{ result: "allowed" \| "refused", why }`: what the program's window answered; the grant is spent |
 | `POST /v1/accounts/link-code` | `{ shopRef, shopName, kind, program, version }` → `{ code, expiresAt }`: a 10-character code the owner types in on the hub within 15 minutes (409 when the shop already has an account) |
 
-The hub's own pages use a session cookie and JSON under `/account/api`: `GET me`, `POST signup { email, password,
+The hub's own pages use a session cookie and JSON under `/account/api`. Since 11 Oct 2026 the plan, switch and add-on
+checkouts and the admin's "Lapse now" answer 410 (parked, to be removed); the trial, plan and founding fields stay in the
+answers for older programs and pages: `GET me`, `POST signup { email, password,
 acceptTerms, termsVersion }`, `terms { acceptTerms, termsVersion }` ("We updated our terms"), `verify { token }`, `signin { email, password }`, `signout`, `signout-all`, `forgot { email }`,
 `resend { email }`, `set-password { token, password }`, `password { current, password }`, `connect { code }`,
 `shops/:id/checkout { plan: "solo" | "shop", interval: "monthly" | "yearly", termsVersion, acceptTerms }` → `{ url,
@@ -897,7 +737,15 @@ figure a shop shared).
 
 ## License
 
-AGPL-3.0. You can run, change and share it. If you run a changed version for other people, share your changes too.
+Copyright (C) 2026 SiteSentrix.
+
+StitchHub is free software under the GNU Affero General Public License, version 3 (LICENSE): you can run, change and
+share it. If you run a changed copy for other people, the license asks you to offer them its source: the "Source code"
+link in every page's footer and `GET /source` do that (set `SOURCE_URL` to your copy's address).
+
+- **Names and logos:** StitchHub, StitchBench and StitchShop aren't covered by the license (TRADEMARKS.md).
+- **Security problems:** SECURITY.md. **Contributing:** CONTRIBUTING.md.
+- `src/qr.mjs` adapts Project Nayuki's QR Code generator (MIT License; its notice is in the file).
 
 Every public page's footer has a **Source code** link, and `GET /source` redirects to the same address: `SOURCE_URL` (the
 repository; `https://github.com/sitesentrix/stitchhub` when it is unset), at the commit being run (`<SOURCE_URL>/tree/<commit>`)
