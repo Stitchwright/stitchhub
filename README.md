@@ -271,6 +271,12 @@ computer can set `MAIL_DEV_LOG=true` instead: each email is printed to the hub's
 Never set that on a real hub.
 
 ## Billing
+**Since 11 Oct 2026 every shop is free, with every add-on, for good** (the owner's decision; StitchBench
+`docs/plans/free-software-design.md`): every claim answer is the admin's "comp forever, everything" (standing `comped`,
+keys of plan `c` through 2099-12-31 for `base` and for the five add-ons) and nothing ends it. The plan billing below
+(trials, Solo and Shop, founding prices, the waiver, the add-ons' and extra stores' prices, "Lapse now") is parked and
+will be replaced by hosting billing; the Assistant is still sold (**Selling the Assistant**, below).
+
 Two plans per shop (decided 3 Oct 2026), the same program and every feature on both, for StitchBench on Windows,
 StitchShop on Windows and every company on a hosted instance, through Stripe Billing on the hub:
 
