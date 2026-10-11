@@ -6,7 +6,8 @@
 //   1. the version in force by default (the newest published one: a draft committed early doesn't count), the pages,
 //      versions old and not yet in force, 404s, the markdown and its escaping, GET /v1/terms/current;
 //   2. acceptance at an account started from the program, at sign-up on the hub (the tick, a page left open over a new
-//      version), in the claim answer, at Checkout (no tick needed while current; the version in Stripe's metadata);
+//      version), in the claim answer, at Checkout (the Assistant's: plans aren't sold since 11 Oct 2026; no tick needed
+//      while current; the version in Stripe's metadata);
 //   3. TERMS_VERSION moved to the drafts: the DRAFT banner, "We updated our terms" on /account (me.terms.needsAccept),
 //      accepted there; Checkout refused without the tick and recorded with it; the export carries terms_acceptances;
 //   4. a TERMS_VERSION with no files: the newest published version, and the log says why.
@@ -28,13 +29,16 @@ const JOIN = "join-terms-test";
 const RUN = Date.now().toString(36);
 const ROOT = path.resolve(import.meta.dirname, "..");
 const WEBHOOK_SECRET = "whsec_termstest1234567890";
-// The two plans' prices (src/billing.mjs priceBook): Solo and Shop, monthly and yearly.
-const PRICES = { monthly: `price_month_${RUN}`, yearly: `price_year_${RUN}`, shopMonthly: `price_shopm_${RUN}`, shopYearly: `price_shopy_${RUN}` };
+// The two plans' prices (src/billing.mjs priceBook: Stripe is open with them set), Solo and Shop, monthly and yearly, and
+// the Assistant's, the one Checkout still sold.
+const PRICES = { monthly: `price_month_${RUN}`, yearly: `price_year_${RUN}`, shopMonthly: `price_shopm_${RUN}`, shopYearly: `price_shopy_${RUN}`, aMonthly: `price_am_${RUN}`, aYearly: `price_ay_${RUN}` };
 const CATALOG = [
   { id: PRICES.monthly, interval: "month", amount: 2500 },
   { id: PRICES.yearly, interval: "year", amount: 25000 },
   { id: PRICES.shopMonthly, interval: "month", amount: 4500 },
   { id: PRICES.shopYearly, interval: "year", amount: 45000 },
+  { id: PRICES.aMonthly, interval: "month", amount: 1500 },
+  { id: PRICES.aYearly, interval: "year", amount: 15000 },
 ];
 const OLD = "2026-09-01";
 const DRAFT = "2026-10-03-draft";
@@ -111,6 +115,8 @@ const ENV = {
   STRIPE_PRICE_SHOP_YEARLY: PRICES.shopYearly,
   STRIPE_PRICE_MONTHLY: "",
   STRIPE_PRICE_YEARLY: "",
+  STRIPE_PRICE_ASSISTANT_MONTHLY: PRICES.aMonthly,
+  STRIPE_PRICE_ASSISTANT_YEARLY: PRICES.aYearly,
   LEGAL_DIR: LEGAL,
   TERMS_VERSION: "",
 };
@@ -271,9 +277,9 @@ try {
   await ok(page(browser(), "/signup", { email: emailC, password: "Good-password-3", acceptTerms: true }));
   assert.equal((await accountRow(emailC)).terms_version, OLD, "a page that names no version gets the one in force");
 
-  // Checkout while the account's version is current: no tick needed; the version goes with the session.
-  await status(await page(a, `/shops/${shopA}/checkout`, { plan: "solo", interval: "monthly", termsVersion: "2026-08-01" }), 409, "Checkout from a page showing another version");
-  const co1 = await ok(page(a, `/shops/${shopA}/checkout`, { plan: "solo", interval: "monthly", termsVersion: OLD }));
+  // Checkout (the Assistant's) while the account's version is current: no tick needed; the version goes with the session.
+  await status(await page(a, `/shops/${shopA}/assistant/checkout`, { interval: "monthly", termsVersion: "2026-08-01" }), 409, "Checkout from a page showing another version");
+  const co1 = await ok(page(a, `/shops/${shopA}/assistant/checkout`, { interval: "monthly", termsVersion: OLD }));
   const s1 = mock.sessions.get(co1.sessionId);
   assert.equal(s1.metadata.hub_terms_version, OLD, "the version is in the session's metadata");
   assert.equal(s1.subscription_data.metadata.hub_terms_version, OLD, "and the subscription's");
@@ -317,16 +323,17 @@ try {
   await ok(page(n, "/terms", { acceptTerms: true }));
   assert.deepEqual((await acceptances(emailN)).map((x) => [x.version, x.via]), [[DRAFT, "account"]]);
 
-  // A subscribes another shop without accepting first: refused; with the tick: the account is current and it's recorded.
+  // A buys the Assistant for another shop without accepting first: refused; with the tick: the account is current and it's
+  // recorded.
   await claim(keyA, { shopRef: "shopA2", shopName: "A Second", kind: "repair", program: "StitchBench", version: "1.7.0", sole: false });
   const codeA2 = (await ok(call("/v1/accounts/link-code", { key: keyA, json: { shopRef: "shopA2", shopName: "A Second", kind: "repair", program: "StitchBench" } }))).code;
   const shopA2 = (await ok(page(a, "/connect", { code: codeA2 }))).shop.id;
   const before = mock.sessions.size;
-  const refused = await status(await page(a, `/shops/${shopA2}/checkout`, { plan: "solo", interval: "yearly", termsVersion: DRAFT }), 400, "Checkout without the tick");
+  const refused = await status(await page(a, `/shops/${shopA2}/assistant/checkout`, { interval: "yearly", termsVersion: DRAFT }), 400, "Checkout without the tick");
   assert.match(refused, /Tick the box/);
   assert.equal(mock.sessions.size, before, "no Checkout Session was made");
   assert.equal((await accountRow(emailA)).terms_version, OLD);
-  const co2 = await ok(page(a, `/shops/${shopA2}/checkout`, { plan: "solo", interval: "yearly", termsVersion: DRAFT, acceptTerms: true }));
+  const co2 = await ok(page(a, `/shops/${shopA2}/assistant/checkout`, { interval: "yearly", termsVersion: DRAFT, acceptTerms: true }));
   assert.equal(mock.sessions.get(co2.sessionId).metadata.hub_terms_version, DRAFT);
   assert.equal((await accountRow(emailA)).terms_version, DRAFT);
   assert.deepEqual((await acceptances(emailA)).map((x) => [x.version, x.via, x.shop_id, x.checkout_id]), [
@@ -337,7 +344,7 @@ try {
   me = await ok(page(a, "/me"));
   assert.equal(me.terms.needsAccept, false, "the Checkout tick counts as accepting");
   // Current now: the next Checkout needs no tick, and is still recorded.
-  const co3 = await ok(page(a, `/shops/${shopA}/checkout`, { plan: "solo", interval: "monthly" }));
+  const co3 = await ok(page(a, `/shops/${shopA}/assistant/checkout`, { interval: "monthly" }));
   assert.deepEqual((await acceptances(emailA)).at(-1), { version: DRAFT, via: "checkout", shop_id: shopA, checkout_id: co3.sessionId });
   assert.deepEqual((await claim(keyA, { shopRef: "shopA", shopName: "A Repair", kind: "repair", program: "StitchBench", version: "1.7.0", sole: false })).terms.accepted, DRAFT);
   console.log("updated terms, re-accept and Checkout's tick: ok");

@@ -19,7 +19,7 @@ import pg from "pg";
 import { startStripeMock } from "./stripe-mock.mjs";
 
 // Parked since 11 Oct 2026 (StitchBench docs/plans/free-software-design.md, package 1): every shop has the five add-ons
-// free, for good: every claim carries their key, so the walk below no longer holds. test/billing.mjs checks
+// free, for good, so none can be bought (billing.mjs PLANS_PARKED) and the walk below can't run. test/billing.mjs checks
 // every shop's add-ons key (and that no comp, "Lapse now" or webhook takes it) and a price id given to two products;
 // test/assistant-billing.mjs has the Assistant's parts that were here (a top-up refunded before its credit, the keys
 // owed). Package 3 removes src/addons.mjs and this test.

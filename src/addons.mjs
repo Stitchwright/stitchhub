@@ -1,5 +1,7 @@
 // Since 11 Oct 2026 every shop has the five add-ons free, for good (StitchBench docs/plans/free-software-design.md):
-// addonKeysFor gives every shop what the admin's comp of everything gave (one key, plan c, all five, through 2099-12-31).
+// addonKeysFor gives every shop what the admin's comp of everything gave (one key, plan c, all five, through 2099-12-31)
+// and selling them is parked (billing.mjs PLANS_PARKED) until package 3 removes this file. The rest of this note is how
+// they were sold:
 //
 // Selling the trade add-ons (StitchBench pricing-review-2026-10.md; migration 032): Vac Shop $10, Small Appliance Repair $5,
 // Scheduling $15, Marketing $10 and Maker Shop $10 a month, yearly ten times monthly, or all five for $30 a month ($300 a

@@ -17,7 +17,7 @@ import { one, q, tx } from "./db.mjs";
 import { sendMail, mailProblem } from "./mail.mjs";
 import { assistantOffer, assistantPriceList, assistantStanding } from "./assistant-billing.mjs";
 import { addonPriceList, addonProblem, addonsForSale, addonStandings, ADDON_IDS, extraStores, MAX_SINGLES, modulesOn, stillBilled, storesForSale } from "./addons.mjs";
-import { registered as billingHooks, standingOf, claimAnswer, billingOpen, billingProblem, FOREVER, FOUNDING_LIMIT, foundingMissing, foundingUsed, priceList, refreshFounding, SOLO_LOGINS, trialChargeStart } from "./billing.mjs";
+import { registered as billingHooks, standingOf, claimAnswer, billingOpen, billingProblem, FOREVER, FOUNDING_LIMIT, foundingMissing, foundingUsed, PLANS_PARKED, priceList, refreshFounding, SOLO_LOGINS, trialChargeStart } from "./billing.mjs";
 import { signer as hubSigner } from "./license.mjs";
 import { stripeMode } from "./stripe.mjs";
 import { refuseIfMoved } from "./moves.mjs";
@@ -399,6 +399,9 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
     const a = await requireAccount(c);
     const shops = (await q(`SELECT s.*, i.name AS install_name FROM shops s JOIN installs i ON i.id = s.install_id WHERE s.account_id = $1 ORDER BY s.created_at`, [a.id])).rows;
     const open = billingOpen();
+    // Plans, the trade add-ons and extra stores aren't offered while they are parked (billing.mjs PLANS_PARKED): every
+    // shop has them free. The Assistant and Manage billing go on as before.
+    const sell = open && !PLANS_PARKED;
     const founding = await refreshFounding(null, a.id);
     const resets = await resetStateOf(shops.map((s) => s.id));
     const optIn = new Map(shops.map((s) => [s.id, s.reset_opt_in === true]));
@@ -424,7 +427,7 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
               status: x.status,
               paidThrough: x.paidThrough,
               plan: x.plan,
-              canAdd: open && forSale.includes(p) && !stillBilled(x.row, x) && (p === "bundle" || (!bundleBilled && singles < MAX_SINGLES)),
+              canAdd: sell && forSale.includes(p) && !stillBilled(x.row, x) && (p === "bundle" || (!bundleBilled && singles < MAX_SINGLES)),
             },
           ]),
         ),
@@ -434,10 +437,10 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
       account: { id: a.id, email: a.email, verified: Boolean(a.verified_at), termsVersion: a.terms_version, createdAt: a.created_at, lastSignInAt: a.last_sign_in_at, hasBilling: Boolean(a.stripe_customer_id) },
       shops: (await Promise.all(shops.map(withStanding))).map((s) => ({
         ...s,
-        canSubscribe: open && !(s.source === "subscription" && s.standing !== "lapsed"),
-        firstChargeOn: open && !(s.source === "subscription" && s.standing !== "lapsed") ? s.firstChargeOn : null,
+        canSubscribe: sell && !(s.source === "subscription" && s.standing !== "lapsed"),
+        firstChargeOn: sell && !(s.source === "subscription" && s.standing !== "lapsed") ? s.firstChargeOn : null,
         // Switch to Shop / Solo: a running subscription (paid, or retrying a payment), not one that has ended.
-        canSwitch: open && s.source === "subscription" && s.standing !== "lapsed" && ["active", "trialing", "past_due"].includes(s.subscription?.status),
+        canSwitch: sell && s.source === "subscription" && s.standing !== "lapsed" && ["active", "trialing", "past_due"].includes(s.subscription?.status),
         canManage: open && Boolean(a.stripe_customer_id),
         assistant: {
           status: assist.get(s.id).status,
@@ -454,7 +457,7 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
       hubName,
       // What each plan costs for this account (the founding prices for a founding shop), Solo's login limit, and the
       // founding mark: while a gap runs, the day it would go.
-      billing: { open, prices: open ? await priceList(founding.founding) : null, assistantPrices: open && (offer.subscribe || offer.topup) ? await assistantPriceList() : null, addonPrices: open && (forSale.length || storesForSale()) ? await addonPriceList() : null, soloLogins: SOLO_LOGINS, founding: { on: founding.founding, gapSince: founding.gapSince, losesOn: founding.losesOn } },
+      billing: { open, prices: sell ? await priceList(founding.founding) : null, assistantPrices: open && (offer.subscribe || offer.topup) ? await assistantPriceList() : null, addonPrices: sell && (forSale.length || storesForSale()) ? await addonPriceList() : null, soloLogins: SOLO_LOGINS, founding: { on: founding.founding, gapSince: founding.gapSince, losesOn: founding.losesOn } },
       // "Start a hosted StitchShop / StitchBench" (src/provisioning.mjs): which this hub offers, and whether it can sign resets.
       hosted: hostedOffer(),
       canSignResets: Boolean(hubSigner().signer),

@@ -1,7 +1,8 @@
 // Since 11 Oct 2026 the software is free (the owner's decision; StitchBench docs/plans/free-software-design.md): every
 // shop has the program and every add-on free, for good, on Windows, self-hosted or hosted. standingOf answers that for
 // every shop (the admin's "comp forever, everything": standing comped, keys of plan c through 2099-12-31 for the program
-// and the five add-ons) and nothing ends it: not a trial, the waiver, a refund, a chargeback or "Lapse now". The
+// and the five add-ons) and nothing ends it: not a trial, the waiver, a refund, a chargeback or "Lapse now". Selling the
+// plans, the founding prices, the add-ons and extra stores is parked (PLANS_PARKED) until package 3 removes it; the
 // webhook, refunds, disputes and dunning stay for hosting billing (package 4). The Assistant is still sold as before.
 // The rest of this note is the plan billing as it was built:
 //
@@ -75,6 +76,14 @@ export const addDays = (ymd, n) => new Date(Date.parse(`${ymd}T00:00:00Z`) + n *
 const today = () => day(new Date());
 const earlier = (a, b) => (a < b ? a : b);
 
+/**
+ * Plans (Solo, Shop, founding prices), the trade add-ons and extra stores aren't sold any more: every shop has them free
+ * since 11 Oct 2026. Their routes, the account page's offers and the extra stores' billing stay in the code behind this
+ * until package 3 removes them; each refuses, or offers nothing. Not a switch to turn back on: standingOf no longer reads a
+ * plan. The Assistant is still sold, and Manage billing stays for it.
+ */
+export const PLANS_PARKED = true;
+const PARKED_WORDS = "StitchBench and StitchShop are free for every shop, with every add-on: there's nothing to subscribe to.";
 /** What every shop is told, and what a 1.7.x program shows beside "Free, with the hub admin's compliments" (standing comped). */
 export const FREE_WORDS = "Free, with every add-on.";
 
@@ -603,7 +612,12 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
     return e;
   };
   const open = () => {
-    if (!billingOpen()) throw fail(503, "Subscriptions aren't open yet. Every shop is free while the hub is in its community period.");
+    if (!billingOpen()) throw fail(503, "Subscriptions aren't open on this hub yet.");
+  };
+  // Plans and the trade add-ons aren't sold (PLANS_PARKED): their Checkout and Switch refuse before anything reaches
+  // Stripe, until package 3 removes them.
+  const parked = () => {
+    if (PLANS_PARKED) throw fail(410, PARKED_WORDS);
   };
 
   async function customerFor(a) {
@@ -625,9 +639,10 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
 
   // Subscribe: a Checkout Session in subscription mode for one shop, Solo or Shop, monthly or yearly, back to
   // /account/shops after. A founding account (the admin's mark, kept while its subscriptions run without a gap over 60
-  // days) gets the founding price of the plan it picks; nobody else can.
+  // days) gets the founding price of the plan it picks; nobody else can. Parked: every shop is free.
   acct.post("/shops/:id/checkout", async (c) => {
     ready();
+    parked();
     open();
     const a = await requireAccount(c);
     if (!allow(`checkout:${a.id}`, 20)) throw fail(429, "Too many tries. Wait an hour.");
@@ -680,9 +695,10 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
   // hub reads and the Shop key, change only when Stripe has it paid (a declined card leaves the shop on Solo until it is).
   // Moving down to Solo credits the difference on the next invoice and takes effect at once. The hub re-reads the
   // subscription and writes it at once (the webhooks that follow change nothing more), so the next sync brings the
-  // program a key for the plan it has.
+  // program a key for the plan it has. Parked: every shop is free.
   acct.post("/shops/:id/switch", async (c) => {
     ready();
+    parked();
     open();
     const a = await requireAccount(c);
     if (!allow(`switch:${a.id}`, 20)) throw fail(429, "Too many tries. Wait an hour.");
@@ -766,9 +782,11 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
 
   // Add a trade add-on (Vac Shop, Small Appliance Repair, Scheduling, Marketing, Maker Shop) or all five: its own
   // subscription Checkout for one shop (src/addons.mjs). A single add-on isn't sold while the bundle runs (it covers it);
-  // the bundle can be bought over singles (they are cancelled with a proration credit when it is paid).
+  // the bundle can be bought over singles (they are cancelled with a proration credit when it is paid). Parked: every
+  // shop has all five free.
   acct.post("/shops/:id/addons/checkout", async (c) => {
     ready();
+    parked();
     open();
     const a = await requireAccount(c);
     if (!allow(`checkout:${a.id}`, 20)) throw fail(429, "Too many tries. Wait an hour.");
@@ -868,10 +886,11 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
    * invoice), and the subscription is read back. Nothing while the store prices aren't set, or with no running
    * subscription (a Checkout includes them). Logged; a failure is tried again at the next claim. Stripe's Customer Portal
    * doesn't change the plan of a subscription with more than one item, so a shop billed for extra stores switches plan
-   * with the account page's Switch (switchSubscriptionPrice moves only the plan item, planItemOf).
+   * with the account page's Switch (switchSubscriptionPrice moves only the plan item, planItemOf). Parked: extra stores
+   * are free.
    */
   async function syncStores(shop) {
-    if (!billingOpen() || !storesForSale()) return;
+    if (PLANS_PARKED || !billingOpen() || !storesForSale()) return;
     const sub = await one(`SELECT * FROM subscriptions WHERE shop_id = $1`, [shop.id]);
     if (!sub?.stripe_subscription_id || !RUNNING.has(sub.status) || sub.unpaid_since) return;
     const want = extraStores(shop.stores);

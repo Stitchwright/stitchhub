@@ -7,7 +7,8 @@
 // for removal. So for a brand-new shop, an old trial shop, a waived (partnered) shop and a "both" one, a shop the admin
 // lapsed before, and a shop whose subscription made in Stripe fails, runs out of grace, is refunded, charged back, loses
 // its dispute and ends (the webhook still keeps its books, for hosting billing); no comp and no "Lapse now" (refused)
-// changes a key or revokes one. The Assistant is still sold, and its key goes beside the forever ones. Also the webhook's own
+// changes a key or revokes one. Selling plans, Switch, the add-ons and extra stores is parked (refused before Stripe;
+// /account offers none); the Assistant is still sold, and its key goes beside the forever ones. Also the webhook's own
 // checks (a replay, a bad signature, a forged object), the export, a hub with billing closed (the keys are signed all the
 // same) and a price id given to two products. The plan billing this test walked until 11 Oct (trials, Solo and Shop,
 // founding shops, the waiver's rule, refunds and disputes lapsing a shop) is parked with that code: hosting billing
@@ -319,17 +320,38 @@ try {
   assert.equal((await db.query(`SELECT comp_until FROM shops WHERE id = $1`, [shopA])).rows[0].comp_until, null, "nothing written on the shop: its comp stays the admin's own");
   console.log("a brand-new shop: ok");
 
-  // ----- 2. The account page says free; the Assistant is still sold, and its key goes beside the forever ones. -----
+  // ----- 2. The account page offers no plan, Switch or add-on, and those routes refuse before anything reaches Stripe;
+  // the Assistant is still sold, and its key goes beside the forever ones. -----
   const emailA = `owner-a-${RUN}@stitchhub.test`;
   await ok(await call("/v1/accounts/start", { key: keyA, json: { shopRef: "shopA", shopName: "A Repair", kind: "repair", program: "StitchBench", email: emailA, termsVersion: "2026-10-02" } }));
   const a = browser();
   await ok(await page(a, "/set-password", { token: linkToken("set-password"), password: "Good-password-1" }));
   let me = await ok(await page(a, "/me"));
   const rowA = me.shops[0];
-  assert.deepEqual([rowA.standing, rowA.message, rowA.source, rowA.lastDay], ["comped", "Free, with every add-on.", "free", null]);
+  assert.deepEqual([rowA.standing, rowA.message, rowA.source, rowA.lastDay, rowA.canSubscribe, rowA.canSwitch, rowA.firstChargeOn], ["comped", "Free, with every add-on.", "free", null, false, false, null]);
   assert.deepEqual(rowA.addons.on, FIVE, "every shop has the five add-ons");
+  assert.ok(Object.values(rowA.addons.items).every((x) => x.canAdd === false), "no add-on is offered");
+  assert.deepEqual([me.billing.open, me.billing.prices, me.billing.addonPrices], [true, null, null], "no plan or add-on price is shown");
   assert.deepEqual(me.billing.assistantPrices, { monthly: "$15 a month", yearly: "$150 a year", topup: "$10", topUpCalls: 300 }, "the Assistant is still sold");
   assert.equal(rowA.assistant.canAdd, true);
+  const b = browser();
+  await ok(await page(b, "/signup", { email: `owner-b-${RUN}@stitchhub.test`, password: "Good-password-2", acceptTerms: true }));
+  await ok(await page(b, "/verify", { token: linkToken("verify") }));
+  const sessionsBefore = mock.sessions.size;
+  const customersBefore = mock.customers.size;
+  for (const [who, p, body] of [
+    [a, "/checkout", { plan: "solo", interval: "monthly", acceptTerms: true }],
+    [a, "/checkout", { plan: "shop", interval: "yearly" }],
+    [a, "/switch", { plan: "shop" }],
+    [a, "/addons/checkout", { addon: "bundle", interval: "monthly", acceptTerms: true }],
+    [a, "/addons/checkout", { addon: "maker", interval: "yearly" }],
+    [b, "/checkout", { plan: "solo", interval: "monthly" }],
+    [browser(), "/addons/checkout", { addon: "vac", interval: "monthly" }],
+  ]) {
+    const refused = await status(await page(who, `/shops/${shopA}${p}`, body), 410, `${p} ${JSON.stringify(body)}`);
+    assert.equal(refused.error, "StitchBench and StitchShop are free for every shop, with every add-on: there's nothing to subscribe to.");
+  }
+  assert.deepEqual([mock.sessions.size, mock.customers.size], [sessionsBefore, customersBefore], "nothing reached Stripe");
   const asstCo = await ok(await page(a, `/shops/${shopA}/assistant/checkout`, { interval: "monthly", acceptTerms: true }));
   assert.equal(mock.sessions.get(asstCo.sessionId).line_items.data[0].price.id, PRICES.aMonthly);
   const asstPaid = await mockPost(`/__pay/${asstCo.sessionId}`);
@@ -341,7 +363,7 @@ try {
   assert.deepEqual([st.moduleKeys.length, asstKey.m, asstKey.p, asstKey.u], [2, ["assistant"], "m", day(asstPaid.subscription.current_period_end * 1000)], "the Assistant's own key, then the add-ons'");
   const portal = await ok(await page(a, `/shops/${shopA}/portal`, {}));
   assert.ok(portal.url.startsWith(`${mock.url}/portal/cus_`), "Manage billing, for the Assistant");
-  console.log("the account page, the Assistant still sold: ok");
+  console.log("nothing to subscribe to, the Assistant still sold: ok");
 
   // ----- 3. An old trial shop (as a 1.7.x install that joined before holds it: a trial key run out, billing open). -----
   const keyT = await register("Billing Test Old Trial");
@@ -516,6 +538,7 @@ try {
   assert.deepEqual([me.billing.open, me.shops[0].standing, me.shops[0].canSubscribe, me.shops[0].assistant.canAdd], [false, "comped", false, false]);
   list = await ok(await adminCall("/accounts"));
   assert.match(list.billing.problem, /STRIPE_SECRET_KEY isn't set/);
+  await status(await page(a, `/shops/${shopA}/checkout`, { plan: "solo", interval: "monthly" }), 410, "plans parked, closed or not");
   await status(await page(a, `/shops/${shopA}/assistant/checkout`, { interval: "monthly" }), 503, "the Assistant with billing closed");
   console.log("billing closed: ok");
 

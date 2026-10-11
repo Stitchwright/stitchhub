@@ -1,13 +1,13 @@
 // Checks selling the Assistant (src/assistant-billing.mjs; the Stripe mock stands in for Stripe, the Anthropic mock for the
 // model): the account page offers "Add the Assistant" and, once it is on, "Buy 300 more"; the Assistant is its own
 // subscription (the shop's base standing, free since 11 Oct 2026, its key and the five add-ons' key are untouched, and a
-// base Checkout afterwards doesn't cancel it); paying signs a key for the module "assistant" for the company's own id (the
-// proxy accepts it) and the claim answer carries it as moduleKeys, before the add-ons' key; a renewal signs the next one;
-// a cancelled subscription is paid through its day and an ended one gets no new key; the 300-call allowance runs out
-// (402) and a paid top-up Checkout, credited by the webhook once (a replayed event adds nothing), gives 300 more that
-// month, and one refunded before its credit lands is taken back when it does; a top-up needs the Assistant; keys owed
-// (past_due keeps the paid period's key, a key run out isn't sent, ended unpaid is revoked); another account can't buy
-// for this shop; a hub without the Assistant prices refuses and offers nothing.
+// base subscription afterwards, made in Stripe now that plans aren't sold, doesn't cancel it); paying signs a key for the
+// module "assistant" for the company's own id (the proxy accepts it) and the claim answer carries it as moduleKeys, before
+// the add-ons' key; a renewal signs the next one; a cancelled subscription is paid through its day and an ended one gets no
+// new key; the 300-call allowance runs out (402) and a paid top-up Checkout, credited by the webhook once (a replayed event
+// adds nothing), gives 300 more that month, and one refunded before its credit lands is taken back when it does; a top-up
+// needs the Assistant; keys owed (past_due keeps the paid period's key, a key run out isn't sent, ended unpaid is
+// revoked); another account can't buy for this shop; a hub without the Assistant prices refuses and offers nothing.
 // Fresh scratch database, dropped at the end.
 // usage: DATABASE_URL=postgresql://... node test/assistant-billing.mjs
 import assert from "node:assert/strict";
@@ -340,11 +340,18 @@ try {
   assert.equal((await db.query(`SELECT count(*)::int AS n FROM assistant_topup_pending`)).rows[0].n, 0, "another app's refund isn't parked as a top-up");
   console.log("a top-up refunded before its credit: ok");
 
-  // ----- 6. the base plan afterwards: its own subscription, the standing and keys as they were; the Assistant is not
-  // cancelled as "older" -----
-  await db.query(`UPDATE shops SET created_at = now() - interval '40 days' WHERE id = $1`, [shopA]);
-  const baseCo = await ok(await page(a, `/shops/${shopA}/checkout`, { plan: "solo", interval: "monthly", acceptTerms: true }));
-  allDelivered(await mockPost(`/__pay/${baseCo.sessionId}`), "base payment");
+  // ----- 6. a base subscription afterwards (made in Stripe: plans aren't sold on the hub since 11 Oct 2026): its own row,
+  // the standing and keys as they were; the Assistant is not cancelled as "older" -----
+  const baseSession = await mockApi("/v1/checkout/sessions", {
+    mode: "subscription",
+    customer: session.customer,
+    "line_items[0][price]": P.soloMonthly,
+    success_url: `${HUB}/account/shops`,
+    cancel_url: `${HUB}/account/shops`,
+    "metadata[hub_shop_id]": shopA,
+    "subscription_data[metadata][hub_shop_id]": shopA,
+  });
+  allDelivered(await mockPost(`/__pay/${baseSession.id}`), "base payment");
   const assistantSub = stripeMock.subscriptions.get(sub.id);
   assert.notEqual(assistantSub.status, "canceled", "the Assistant subscription survives a base Checkout");
   st = await standing(installKey, "shopA");
