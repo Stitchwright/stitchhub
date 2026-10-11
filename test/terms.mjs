@@ -113,6 +113,8 @@ const ENV = {
   STRIPE_PRICE_YEARLY: "",
   LEGAL_DIR: LEGAL,
   TERMS_VERSION: "",
+  SOURCE_URL: "",
+  RAILWAY_GIT_COMMIT_SHA: "",
 };
 let hub = null;
 let hubLog = "";
@@ -226,6 +228,11 @@ try {
   for (const p of ["/terms/2026-12-01-draft", "/terms/notaversion", "/terms/2026-13-01", "/privacy/2026-12-01-draft", "/terms/..%2F..%2Fpackage.json", "/terms/README"]) await html(p, 404);
   const home = (await html("/")).body;
   assert.ok(home.includes(`<a href="/terms">Terms</a>`) && home.includes(`<a href="/privacy">Privacy</a>`), "the hub's front page links both");
+  // The code the hub runs (AGPL): the footer's Source code link and GET /source, the repository when nothing else is set.
+  const SOURCE = "https://github.com/sitesentrix/stitchhub";
+  assert.ok(home.includes(`<a href="${SOURCE}">Source code</a>`) && b.includes(`<a href="${SOURCE}">Source code</a>`), "every public page's footer links the source code");
+  const toSource = await fetch(`${HUB}/source`, { redirect: "manual" });
+  assert.deepEqual([toSource.status, toSource.headers.get("location")], [302, SOURCE], "GET /source redirects to the same address");
   const acctPage = (await html("/account")).body;
   assert.ok(acctPage.includes('id="termsPrompt"') && acctPage.includes('href="/terms"') && acctPage.includes('href="/privacy"'), "the account page links both and has the prompt");
   console.log("pages: ok");
@@ -283,9 +290,13 @@ try {
 
   // ----- 3. The owner moves TERMS_VERSION to the drafts: the banner, "We updated our terms", Checkout's tick. -----
   await stopHub();
-  await startHub({ ...ENV, TERMS_VERSION: DRAFT });
+  // Also: a hub running changed code names its own repository, and on Railway the commit it was deployed from is linked.
+  const COMMIT = "0123456789abcdef0123456789abcdef01234567";
+  await startHub({ ...ENV, TERMS_VERSION: DRAFT, SOURCE_URL: "https://git.example.test/someone/hub/", RAILWAY_GIT_COMMIT_SHA: COMMIT });
   assert.deepEqual(await ok(call("/v1/terms/current")), { version: DRAFT, draft: true, terms: `/terms/${DRAFT}`, privacy: `/privacy/${DRAFT}`, versions: [OLD, DRAFT] });
   const t3 = (await html("/terms")).body;
+  assert.ok(t3.includes(`<a href="https://git.example.test/someone/hub/tree/${COMMIT}">Source code</a>`), "the footer links SOURCE_URL at the deployed commit");
+  assert.equal((await fetch(`${HUB}/source`, { redirect: "manual" })).headers.get("location"), `https://git.example.test/someone/hub/tree/${COMMIT}`);
   assert.ok(t3.includes(`<p class="ver">Version ${DRAFT} · `));
   assert.ok(t3.includes('<p class="draft" role="note"><strong>DRAFT, not yet in force.</strong>'), "the DRAFT banner");
   assert.ok(t3.includes("<blockquote><p><strong>DRAFT for review by a lawyer; not legal advice; not yet in force.</strong>"), "the draft's own banner is kept");

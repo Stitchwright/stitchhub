@@ -31,7 +31,7 @@ import { registerRepository } from "./repository.mjs";
 import { registerTakedown } from "./takedown.mjs";
 import { registerAssistant } from "./assistant.mjs";
 import { discordBody } from "./discord.mjs";
-import { shell, esc, LOGO, ICONS } from "./look.mjs";
+import { shell, esc, LOGO, ICONS, SOURCE_URL } from "./look.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const HUB_NAME = process.env.HUB_NAME ?? "StitchHub";
@@ -235,6 +235,9 @@ app.use("*", async (c, next) => {
 // ---------- public ----------
 
 app.get("/health", (c) => c.json({ ok: true }));
+
+// The code this hub runs (the footer of every public page links the same place; src/look.mjs).
+app.get("/source", (c) => c.redirect(SOURCE_URL, 302));
 
 app.get("/", async (c) => {
   const s = await one(`SELECT (SELECT count(*) FROM links WHERE NOT deleted) links, (SELECT count(*) FROM posts WHERE NOT deleted) posts,
