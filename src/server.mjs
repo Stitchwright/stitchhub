@@ -134,20 +134,30 @@ function clientIp(c) {
   return getConnInfo(c).remote.address ?? "unknown";
 }
 
-// Wrong join keys from everywhere together are limited too, so guessing from many addresses stays slow. When they run
-// out, joining pauses for the rest of the hour; shops already on the hub carry on.
-const WRONG_JOIN_KEYS = 100;
-async function checkJoinKey(joinKey) {
+// Wrong join keys are limited per address first (that address waits out the hour), so one address can't use up the
+// hub's allowance alone; and from everywhere together, so guessing from many addresses stays slow (a join key can be a
+// phrase a person chose). When the hub's allowance runs out, joining pauses for the rest of the hour; shops already on
+// the hub carry on. Every try is counted before the key is checked (tries sent at once are all counted) and given back
+// when the key is right. /v1/register and /v1/upgrade (partner-only and pending installs) both come through here.
+const WRONG_JOIN_KEYS_PER_ADDRESS = 20;
+const WRONG_JOIN_KEYS = 1000;
+async function checkJoinKey(c, joinKey) {
+  const byIp = bucket(`join-key:wrong:${clientIp(c)}`);
+  if (byIp.n >= WRONG_JOIN_KEYS_PER_ADDRESS) throw fail(429, "Too many wrong join keys from this address. Wait an hour, then check the key with the hub admin.");
   const wrong = bucket("join-key:wrong");
   if (wrong.n >= WRONG_JOIN_KEYS) throw fail(429, "Too many wrong join keys were tried lately. Try again in an hour.");
+  byIp.n++;
+  wrong.n++;
   // Compared without spaces around them: StitchBench trims what a member types, and a key pasted from an email often
   // carries one (an admin-saved key may too, from before it was trimmed on saving).
   const expected = ((await getSetting("join_key")) ?? process.env.JOIN_KEY ?? "").trim();
   const given = String(joinKey ?? "").trim();
   if (!expected || !given || !same(sha(given), sha(expected))) {
-    if (++wrong.n === WRONG_JOIN_KEYS) console.warn(`join: ${WRONG_JOIN_KEYS} wrong join keys this hour; joining is paused until the hour is up`);
+    if (wrong.n === WRONG_JOIN_KEYS) console.warn(`join: ${WRONG_JOIN_KEYS} wrong join keys this hour; joining is paused until the hour is up`);
     throw fail(403, "That join key isn't right. Ask the hub admin for the current one.");
   }
+  byIp.n = Math.max(0, byIp.n - 1);
+  wrong.n = Math.max(0, wrong.n - 1);
 }
 
 const app = new Hono();
@@ -282,7 +292,7 @@ registerTerms({ app, hubName: HUB_NAME });
 app.post("/v1/register", async (c) => {
   if (!allow(`register:${clientIp(c)}`, 10)) throw fail(429, "Too many tries. Wait an hour.");
   const { joinKey, name, contact } = await c.req.json();
-  await checkJoinKey(joinKey);
+  await checkJoinKey(c, joinKey);
   const shop = String(name ?? "").trim().slice(0, 120);
   if (!shop) throw fail(400, "Give your shop's name.");
   const { id, key } = await createInstall(pool, shop, String(contact ?? "").slice(0, 200) || null, "member");
@@ -369,7 +379,7 @@ member.get("/me", async (c) =>
 member.post("/upgrade", async (c) => {
   if (!allow(`upgrade:${c.get("install").id}`, 10)) throw fail(429, "Too many tries. Wait an hour.");
   const { joinKey } = await c.req.json().catch(() => ({}));
-  await checkJoinKey(joinKey);
+  await checkJoinKey(c, joinKey);
   if (c.get("install").scope !== "member") {
     await q(`UPDATE installs SET scope = 'member' WHERE id = $1`, [c.get("install").id]);
     notify`👋 ${c.get("install").name} joined ${HUB_NAME}.`;
@@ -937,7 +947,7 @@ registerTakedown({ app, admin, acct: accounts.acct, fail, newId, allow, clientIp
 // Off-site backup storage: upload and download addresses for the programs, and the restore code from the account page
 // (src/backups.mjs, src/s3.mjs; BACKUP_S3_* in the environment).
 // (before the account routes are mounted: Hono copies a router's routes when it is mounted)
-registerBackups({ app, member, acct: accounts.acct, fail, newId, allow, bucket, requireAccount: accounts.requireAccount });
+registerBackups({ app, member, acct: accounts.acct, fail, newId, allow, bucket, clientIp, requireAccount: accounts.requireAccount });
 // Help, ideas, ratings and error alerts from the programs, and the admin page's "Help & ideas" (src/feedback.mjs).
 registerFeedback({ member, admin, fail, newId, allow, hubName: HUB_NAME, hubUrl: accounts.hubUrl });
 // Program updates: the latest release per program, its download, and the owner publish routes (src/releases.mjs).

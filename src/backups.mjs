@@ -35,6 +35,10 @@ export const installQuotaBytes = () => Math.round((Number(process.env.BACKUP_INS
 // An upload address handed out and never confirmed is swept (the object, if any, deleted; the row too) after this long.
 const UNCONFIRMED_HOURS = 6;
 const RESTORE_HOURS = 24;
+// A restore code is 192 random bits: guessing one is hopeless, so wrong ones are limited per address only (that address
+// waits out the hour), never with a pause for every shop that anyone could set off. The whole hub's only go to the log.
+const WRONG_CODES_PER_ADDRESS = 20;
+const WRONG_CODES_LOGGED = 1000;
 const UP_SECONDS = 3600; // a big file on a slow line
 const DOWN_SECONDS = 900;
 const sha = (s) => crypto.createHash("sha256").update(s).digest("hex");
@@ -43,7 +47,7 @@ const str = (v, max) => {
   return s ? s.slice(0, max) : null;
 };
 
-export function registerBackups({ app, member, acct, fail, newId, allow, bucket, requireAccount }) {
+export function registerBackups({ app, member, acct, fail, newId, allow, bucket, clientIp, requireAccount }) {
   const small = bodyLimit({ maxSize: 16 * 1024, onError: (c) => c.json({ error: "Too large." }, 413) });
   const cfg = () => {
     const c = s3Config();
@@ -190,10 +194,14 @@ export function registerBackups({ app, member, acct, fail, newId, allow, bucket,
 
   // ----- the restore code: a new install reads the store, then takes the company over with /v1/shops/move -----
 
-  /** The company a live restore code is for, or the same refusal for any wrong, used, cancelled or expired code. */
+  /**
+   * The company a live restore code is for, or the same refusal for any wrong, used, cancelled or expired code. Each try is
+   * counted against the sender's address before the look-up (tries sent at once are all counted), given back when it's right.
+   */
   async function byCode(c, body) {
-    const wrong = bucket("restore-code:wrong");
-    if (wrong.n >= 100) throw fail(429, "Too many wrong restore codes were tried lately. Try again in an hour.");
+    const byIp = bucket(`restore-code:wrong:${clientIp(c)}`);
+    if (byIp.n >= WRONG_CODES_PER_ADDRESS) throw fail(429, "Too many wrong restore codes from this address. Wait an hour, then make a new code on your StitchHub account.");
+    byIp.n++;
     const code = typeof body.code === "string" ? body.code.trim() : "";
     const row = code
       ? await one(
@@ -203,9 +211,10 @@ export function registerBackups({ app, member, acct, fail, newId, allow, bucket,
         )
       : null;
     if (!row) {
-      wrong.n++;
+      if (++bucket("restore-code:wrong").n === WRONG_CODES_LOGGED) console.warn(`backup: ${WRONG_CODES_LOGGED} wrong restore codes this hour, from many addresses`);
       throw fail(403, "That restore code isn't right, or it has been used or has run out. Make a new one on your StitchHub account.");
     }
+    byIp.n = Math.max(0, byIp.n - 1);
     return row;
   }
 
