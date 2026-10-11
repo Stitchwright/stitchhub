@@ -3,6 +3,7 @@
 // Orders are private to the buyer and the seller.
 import crypto from "node:crypto";
 import { pool, one, tx, feedLimit } from "./db.mjs";
+import { mediaChanged, mediaFull, mediaKept } from "./media.mjs";
 
 const IMAGE = new Set(["image/jpeg", "image/png", "image/webp"]);
 const KINDS = new Set(["PART", "ACCESSORY", "SUPPLY", "NOTION", "FABRIC", "THREAD", "PATTERN"]);
@@ -318,7 +319,12 @@ export function registerMarket({ member, fail, newId, writeLimit, notify, feedPa
     const had = clientId && (await one(`SELECT id FROM listings WHERE install_id = $1 AND client_id = $2`, [inst.id, clientId]));
     if (had) return c.json((await listingsByIds([had.id], inst.id))[0]);
     const id = newId();
+    const bytes = files.reduce((n, x) => n + x.size, 0);
     await tx(async (client) => {
+      // Room for the photos: the company's, the install's and the hub's (src/media.mjs). The listing goes with them or
+      // not at all.
+      const full = files.length ? await mediaFull(client, { installId: inst.id, ref: shopRef, bytes }) : null;
+      if (full) throw fail(507, full);
       const cols = ["id", "install_id", "shop_name", "shop_ref", "client_id", ...Object.keys(f)];
       const vals = [id, inst.id, shopName, shopRef, clientId, ...Object.values(f)];
       await client.query(`INSERT INTO listings (${cols.join(", ")}) VALUES (${cols.map((_, i) => `$${i + 1}`).join(", ")})`, vals);
@@ -332,6 +338,7 @@ export function registerMarket({ member, fail, newId, writeLimit, notify, feedPa
         ]);
       }
     });
+    mediaKept(bytes);
     notify`🛒 ${shopName} listed **${f.title}**${f.brand ? ` (${f.brand}${f.part_number ? ` ${f.part_number}` : ""})` : ""} for ${money(f.price_cents, f.currency)}${f.qty > 1 ? ` · ${f.qty} available` : ""}`;
     return c.json((await listingsByIds([id], inst.id))[0]);
   });
@@ -386,6 +393,7 @@ export function registerMarket({ member, fail, newId, writeLimit, notify, feedPa
       // Orders still waiting on the seller can't be accepted any more: the buyer hears so now, not never.
       await declineWaiting(client, `listing_id = $1`, [l.id], "The seller took the listing down.");
     });
+    mediaChanged();
     return c.json({ ok: true });
   });
 

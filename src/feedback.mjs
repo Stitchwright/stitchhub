@@ -7,12 +7,14 @@
 // picture, and its items are never mailed one by one.
 //
 // Everything the program sends is capped and stored as data; nothing here is ever rendered as HTML (the admin page
-// uses textContent, the email is plain text). A picture is optional, a JPEG of at most 1 MB, and is cleared 90 days
-// after the owner marks the item done. Feedback is not part of the hub's export or of a company's move.
+// uses textContent, the email is plain text). A picture is optional, a JPEG of at most 1 MB, kept while the shop has
+// room for pictures on the hub (src/media.mjs; without it the item is kept with no picture), and cleared 90 days after
+// the owner marks the item done. Feedback is not part of the hub's export or of a company's move.
 import crypto from "node:crypto";
 import { bodyLimit } from "hono/body-limit";
-import { one, q } from "./db.mjs";
+import { one, q, tx } from "./db.mjs";
 import { sendMail } from "./mail.mjs";
+import { mediaChanged, mediaFull, mediaKept } from "./media.mjs";
 
 const KINDS = new Set(["help", "idea", "rating", "error"]);
 const STATUSES = new Set(["new", "seen", "done"]);
@@ -221,9 +223,16 @@ export function registerFeedback({ member, admin, fail, newId, allow, hubName, h
     const { fingerprint = null, day = null, count = 1, ...body } = item;
     const id = newId();
 
-    if (item.kind === "error") {
+    const saved = await tx(async (client) => {
+      // Room for the picture: the company's, the install's and the hub's (src/media.mjs). With none left the item is
+      // kept without it: a refusal would hold up the program's other items, and the words are what matter.
+      if (picture && (await mediaFull(client, { installId: inst.id, ref: shopRef, bytes: picture.length }))) picture = null;
+      if (item.kind !== "error") {
+        await client.query(`INSERT INTO feedback (id, install_id, shop_ref, shop_name, kind, body, picture) VALUES ($1,$2,$3,$4,$5,$6,$7)`, [id, inst.id, shopRef, shopName, item.kind, body, picture]);
+        return { id, inserted: true };
+      }
       // The same error on the same day is one row; the sent count is added.
-      const r = await one(
+      const r = await client.query(
         `INSERT INTO feedback (id, install_id, shop_ref, shop_name, kind, body, picture, fingerprint, day, count)
          VALUES ($1,$2,$3,$4,'error',$5,$6,$7,$8,$9)
          ON CONFLICT (install_id, shop_ref, fingerprint, day) WHERE kind = 'error'
@@ -232,10 +241,13 @@ export function registerFeedback({ member, admin, fail, newId, allow, hubName, h
          RETURNING id, (xmax = 0) AS inserted`,
         [id, inst.id, shopRef, shopName, body, picture, fingerprint, day, count],
       );
-      if (r.inserted) queueError(shopName, body.error.message);
-      return c.json({ ok: true, id: r.id });
+      return r.rows[0];
+    });
+    if (picture) mediaKept(picture.length);
+    if (item.kind === "error") {
+      if (saved.inserted) queueError(shopName, body.error.message);
+      return c.json({ ok: true, id: saved.id });
     }
-    await q(`INSERT INTO feedback (id, install_id, shop_ref, shop_name, kind, body, picture) VALUES ($1,$2,$3,$4,$5,$6,$7)`, [id, inst.id, shopRef, shopName, item.kind, body, picture]);
     mailOrHold(item, shopName, id, Boolean(picture), inst.scope === "pending");
     return c.json({ ok: true, id });
   });
@@ -389,6 +401,7 @@ export function registerFeedback({ member, admin, fail, newId, allow, hubName, h
   // Pictures go 90 days after the owner marks an item done; the words stay.
   async function sweep() {
     const r = await q(`UPDATE feedback SET picture = NULL WHERE picture IS NOT NULL AND done_at < now() - make_interval(days => $1)`, [PICTURE_DAYS]);
+    if (r.rowCount) mediaChanged();
     return r.rowCount;
   }
   setInterval(() => sweep().catch((e) => console.error("feedback sweep:", e.message)), 6 * 3600_000).unref();

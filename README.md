@@ -65,6 +65,20 @@ above 1, `docker compose up --scale hub=2`, a manual `npm start` beside the cont
 finishes the requests it is on before it stops.) Starting several hubs on one database at the same moment is safe for
 the migrations: they take turns.
 
+### Room for pictures
+Members' pictures are kept in the database: note photos, listing photos, figure snapshots and the screens sent with
+Help (`src/media.mjs`). Besides the hourly request limits, what is kept is limited, counted over the pictures on the hub
+now (a removed note or listing takes its photos with it):
+- `MEDIA_QUOTA_COMPANY_MB` (1024): one company (an install and the company it names);
+- `MEDIA_QUOTA_INSTALL_MB` (10240): one install, all its companies together (a hosted program serves many);
+- `MEDIA_QUOTA_HUB_GB` (50): the whole hub. Past it nobody's new pictures are taken, and the hub's log says so at most
+  once an hour; the admin page shows the total against this limit (Hub → Pictures). Raise it when the database's disk
+  has room.
+
+Past a limit a note, listing or figure with pictures is refused with `507` and the reason in words ("This shop's photos
+on the hub have reached 1 GB. Remove old notes or listings to make room."); notes and listings without pictures still
+go, and a Help item is kept without its picture.
+
 ## Moving or rebuilding a hub
 
 The **/admin** page exports everything to one `.ndjson.gz` file, and imports that file into another StitchHub. That
@@ -198,7 +212,8 @@ page's **Help & ideas** section (`src/feedback.mjs`, migration 034, `StitchBench
   `context.shopName`, else the install's name. An error is one row per (install, company, fingerprint, day): sending it
   again adds `count`. Limits: 60 items an hour per company (600 per install, since a hosted program serves many
   companies) and 200 errors a day per install; over, 429 and the program keeps the item and tries later. 413 for a
-  picture over 1 MB, 415 for one that isn't a JPEG.
+  picture over 1 MB, 415 for one that isn't a JPEG. With no room for pictures left (Room for pictures, above) the item
+  is kept without its picture.
 - Admin (Bearer admin token): `GET /v1/admin/feedback?status=new|seen|done&kind=&shop=<install id>/<shop ref>&limit=`
   → `{ items, more, counts, shops }` (each item has `reply` and `repliedAt`); `POST /v1/admin/feedback/:id { status?, note?, reply? }`
   (`reply`, up to 4000 characters: saved with the time, the item becomes done, and it is emailed to the item's reply address
@@ -865,7 +880,9 @@ others'. Parts-usage reports have their own allowance.
 Prices and shipping are up to $1,000,000.00 (100,000,000 cents) and quantities up to 1,000,000; more is a 400 with the reason. A body that isn't JSON is a 400 too.
 
 Request bodies are limited per route: 16 KB to join, 2 MB for a figure, a part or a month of parts usage, 37 MB for a
-note with photos, 25 MB for a listing, 4 MB for a partner message and 64 KB for the rest. A larger one gets 413.
+note with photos, 25 MB for a listing, 4 MB for a partner message and 64 KB for the rest. A larger one gets 413. The
+pictures a company, an install and the whole hub keep are limited too (Room for pictures, above): past a limit a note,
+listing or figure with pictures gets 507 with the reason.
 
 The admin API is under `/v1/admin` and uses `Authorization: Bearer <ADMIN_TOKEN>`. It includes
 `POST /v1/admin/xparts/import` (load parts in bulk), `POST /v1/admin/xparts/sources/import` (buying links in
