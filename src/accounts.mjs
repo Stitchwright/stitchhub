@@ -39,6 +39,10 @@ const WRONG_PASSWORDS = 20_000;
 const WRONG_PER_ACCOUNT = 10;
 // Past WRONG_PER_ACCOUNT the right password still signs in (strangers can't lock the owner out); past this, nothing does.
 const WRONG_PER_ACCOUNT_HARD = 100;
+// The email to set a password carries the shop's name as the program sent it, to whatever address was typed, so besides
+// the limits per sender it is limited per address (a day: the program's "Send it again" twice) and for the whole hub.
+const SET_PASSWORD_MAILS_PER_ADDRESS = 3;
+const SET_PASSWORD_MAILS_PER_HOUR = 100;
 // The passwords everyone tries first. Refused however long they are.
 const COMMON = new Set(["123456", "password", "12345678", "qwerty", "123456789", "12345", "1234", "111111", "1234567", "dragon", "123123", "baseball", "abc123", "football", "monkey", "letmein", "shadow", "master", "696969", "mustang", "password1", "qwerty123", "iloveyou", "sunshine", "princess", "welcome", "stitchbench", "stitchhub", "stitchshop"]);
 const SCRYPT = { N: 2 ** 15, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
@@ -54,6 +58,21 @@ const str = (v, max) => {
 };
 const sha = (s) => crypto.createHash("sha256").update(s).digest("hex");
 const normCode = (code) => String(code ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+/**
+ * A shop's name as an email shows it. Anyone can start an account for any address under any name, so it is one short
+ * line of letters, digits, spaces and the marks shop names use: no line breaks, markup, "://" or "@", and a dot before a
+ * letter gets a space after it, so nothing in it can pass for a line of the email's own, a link or an address.
+ */
+function nameForMail(name) {
+  const s = String(name ?? "")
+    .normalize("NFKC")
+    .replace(/[^\p{L}\p{M}\p{N}&'.,()/#+\- ]+/gu, " ")
+    .replace(/\.(?=\p{L})/gu, ". ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return s.length > 60 ? `${s.slice(0, 59).trimEnd()}…` : s || "A shop";
+}
 
 /** Why accounts can't run on this hub yet (mail or its own address missing), or null. */
 export function accountsProblem() {
@@ -120,7 +139,7 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
     mail(
       email,
       `Set your ${hubName} password`,
-      `Hello,\n\n${shop.name}${shop.program ? ` (${shop.program})` : ""} asked for a ${hubName} account for ${email}. Set your password here; the link works once, for ${SET_PASSWORD_HOURS} hours:\n\n${link("set-password", shop.token)}\n\nIf you didn't ask for this, ignore this email and nothing happens.${signOff}`,
+      `Hello,\n\nA shop named "${nameForMail(shop.name)}"${shop.program ? ` (${shop.program})` : ""} asked for a ${hubName} account for ${email}. Set your password here; the link works once, for ${SET_PASSWORD_HOURS} hours:\n\n${link("set-password", shop.token)}\n\nIf you didn't ask for this, ignore this email and nothing happens.${signOff}`,
     );
   const verifyMail = (email, token) =>
     mail(
@@ -134,6 +153,35 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
       `Reset your ${hubName} password`,
       `Hello,\n\nSomeone asked to reset the password of the ${hubName} account for ${email}. If that was you, set a new one here; the link works once, for ${RESET_HOURS} hour:\n\n${link("set-password", token)}\n\nIf it wasn't you, ignore this email: your password hasn't changed.${signOff}`,
     );
+
+  // Set-password emails to each address in the last day; an address with a "+tag" is the same mailbox.
+  const toAddress = new Map();
+  setInterval(() => {
+    for (const [k, v] of toAddress) if (Date.now() - v.since > 86400_000) toAddress.delete(k);
+  }, 3600_000).unref();
+
+  /**
+   * One set-password email to `email`, taken from the address's day and the hub's hour before anything is awaited (so
+   * requests sent at once are all counted): { release } to give it back when nothing was sent, or { refused } in words.
+   */
+  function setPasswordSlot(email) {
+    const hub = bucket("acct-set-password-mails");
+    if (hub.n >= SET_PASSWORD_MAILS_PER_HOUR) return { refused: `${hubName} has sent a lot of account emails in the last hour. Try again in an hour.` };
+    const key = email.replace(/\+[^@]*(?=@)/, "");
+    let day = toAddress.get(key);
+    if (!day || Date.now() - day.since > 86400_000) toAddress.set(key, (day = { n: 0, since: Date.now() }));
+    if (day.n >= SET_PASSWORD_MAILS_PER_ADDRESS) {
+      return { refused: `We've already sent ${SET_PASSWORD_MAILS_PER_ADDRESS} emails to set a password to that address today. Look for them (check the spam folder too), or try again tomorrow.` };
+    }
+    day.n++;
+    if (++hub.n === SET_PASSWORD_MAILS_PER_HOUR) console.warn(`accounts: ${SET_PASSWORD_MAILS_PER_HOUR} set-password emails this hour; more wait until the hour is up`);
+    return {
+      release() {
+        day.n = Math.max(0, day.n - 1);
+        hub.n = Math.max(0, hub.n - 1);
+      },
+    };
+  }
 
   // ----- tokens (links and codes; only the hash is kept) -----
 
@@ -343,26 +391,34 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
     if (existing && (existing.verified_at || existing.password_hash)) {
       throw fail(409, "That address already has a StitchHub account. Choose \"I already have an account\" and connect this shop with a link code.");
     }
-    const out = await tx(async (client) => {
-      let made = null;
-      if (!install) {
-        made = await createInstall(client, shopName, str(body.contact, 200), "pending");
-        install = { id: made.id, name: shopName };
-      }
-      const shop = await upsertShop(client, install, body);
-      let accountId = existing?.id;
-      if (!accountId) {
-        accountId = newId();
-        await client.query(`INSERT INTO accounts (id, email) VALUES ($1, $2)`, [accountId, email]);
-        // The version the owner ticked in the program, as the program named it (an older program names its own
-        // constant; /account then asks for the version in force).
-        await recordAcceptance(client, { accountId, version: str(body.termsVersion, 40), via: "program" });
-      }
-      await tieShop(client, shop.id, accountId);
-      const token = await issueToken(client, "reset", { accountId }, SET_PASSWORD_HOURS * 3600_000);
-      return { shop, token, made };
-    });
-    await setPasswordMail(email, { ...out.shop, token: out.token });
+    const slot = setPasswordSlot(email);
+    if (slot.refused) throw fail(429, slot.refused);
+    let out;
+    try {
+      out = await tx(async (client) => {
+        let made = null;
+        if (!install) {
+          made = await createInstall(client, shopName, str(body.contact, 200), "pending");
+          install = { id: made.id, name: shopName };
+        }
+        const shop = await upsertShop(client, install, body);
+        let accountId = existing?.id;
+        if (!accountId) {
+          accountId = newId();
+          await client.query(`INSERT INTO accounts (id, email) VALUES ($1, $2)`, [accountId, email]);
+          // The version the owner ticked in the program, as the program named it (an older program names its own
+          // constant; /account then asks for the version in force).
+          await recordAcceptance(client, { accountId, version: str(body.termsVersion, 40), via: "program" });
+        }
+        await tieShop(client, shop.id, accountId);
+        const token = await issueToken(client, "reset", { accountId }, SET_PASSWORD_HOURS * 3600_000);
+        return { shop, token, made };
+      });
+      await setPasswordMail(email, { ...out.shop, token: out.token });
+    } catch (e) {
+      slot.release(); // nothing was sent
+      throw e;
+    }
     return c.json({
       ok: true,
       account: { email, verified: false },
@@ -612,14 +668,23 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
     return c.json(quiet);
   });
 
-  async function resendTo(a) {
+  async function resendTo(a, { byAdmin = false } = {}) {
     if (a.password_hash) {
       const token = await tx((client) => issueToken(client, "verify", { accountId: a.id }, SET_PASSWORD_HOURS * 3600_000));
       await verifyMail(a.email, token);
     } else {
-      const shop = (await one(`SELECT * FROM shops WHERE account_id = $1 ORDER BY created_at LIMIT 1`, [a.id])) ?? { name: "Your shop", program: null };
-      const token = await tx((client) => issueToken(client, "reset", { accountId: a.id }, SET_PASSWORD_HOURS * 3600_000));
-      await setPasswordMail(a.email, { ...shop, token });
+      // The program's set-password email, limited as at its start (quietly: these answers never say an address has an
+      // account); the hub admin's resend isn't.
+      const slot = byAdmin ? null : setPasswordSlot(a.email);
+      if (slot?.refused) return;
+      try {
+        const shop = (await one(`SELECT * FROM shops WHERE account_id = $1 ORDER BY created_at LIMIT 1`, [a.id])) ?? { name: "Your shop", program: null };
+        const token = await tx((client) => issueToken(client, "reset", { accountId: a.id }, SET_PASSWORD_HOURS * 3600_000));
+        await setPasswordMail(a.email, { ...shop, token });
+      } catch (e) {
+        slot?.release();
+        throw e;
+      }
     }
   }
 
@@ -743,7 +808,7 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
     const a = await one(`SELECT * FROM accounts WHERE id = $1`, [c.req.param("id")]);
     if (!a) throw fail(404, "No such account.");
     if (a.verified_at) throw fail(409, "That account is already verified.");
-    await resendTo(a);
+    await resendTo(a, { byAdmin: true });
     return c.json({ ok: true });
   });
 

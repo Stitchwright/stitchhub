@@ -188,7 +188,8 @@ The programs' Help button (and the errors they catch on their own) send items he
 page's **Help & ideas** section (`src/feedback.mjs`, migration 034, `StitchBench/docs/plans/help-feedback-design.md`).
 
 - `POST /v1/feedback` (install key, the company in `X-Shop-Ref`; a pending install and a partner-only install may send
-  too). Multipart: `item` (JSON `{ kind: "help" | "idea" | "rating" | "error", text?, stars?, quoteOk?, replyTo?,
+  too, but a pending install's picture is left off: its account's email isn't confirmed, and anyone can start one).
+  Multipart: `item` (JSON `{ kind: "help" | "idea" | "rating" | "error", text?, stars?, quoteOk?, replyTo?,
   fingerprint?, day?, count?, context: { program, version, path, role, desktop, userAgent, screen }, error?: { message,
   stack, digest, action } }`) and an optional `picture` (a JPEG, `image/jpeg`, checked by its first bytes, 1 MB at
   most); or the same item as a plain JSON body. Answers `{ ok, id }`. help and idea need `text` (4,000 characters at
@@ -209,10 +210,12 @@ page's **Help & ideas** section (`src/feedback.mjs`, migration 034, `StitchBench
   this install's and company's items, newest first, at most 50, `replied_at` after `since` (default 90 days ago) →
   `[{ id, kind, text, reply, repliedAt }]` (`text` = the first 200 characters of what they sent). The program asks at each sync.
 - `FEEDBACK_EMAIL` (optional): the owner's address. Each help, idea and rating is mailed at once (subject "Help: <shop> –
-  first 60 characters", everything in the body, a link to `/admin`); new errors go in one digest email at most every hour
-  ("3 new errors from 2 shops"; the wait is kept in memory, so a restart sends the next one at once). Unset: no email,
-  the admin page only. Mail goes through `src/mail.mjs` (needs `SMTP_URL` and `MAIL_FROM`; `MAIL_DEV_LOG=true` prints it on
-  a test hub).
+  first 60 characters", everything in the body, a link to `/admin`), up to `FEEDBACK_EMAIL_PER_HOUR` (20; 0 for none) an
+  hour for the whole hub; past that items are only saved, and one email at most every hour says "N more feedback items
+  are waiting on the admin page". Items from a pending install are never mailed one by one (they are counted in that
+  email). New errors go in one digest email at most every hour ("3 new errors from 2 shops"; the waits are kept in
+  memory, so a restart sends the next one at once). Unset: no email, the admin page only. Mail goes through
+  `src/mail.mjs` (needs `SMTP_URL` and `MAIL_FROM`; `MAIL_DEV_LOG=true` prints it on a test hub).
 - Retention: items are kept (they are the owner's product feedback); a picture is deleted 90 days after the item is
   marked done. **Feedback is not part of the hub's export or a company's move**: a rebuilt hub starts with an empty Help
   & ideas list.
@@ -260,9 +263,13 @@ itself (module `base`), signed by the hub; the key, not the words, is what the p
 Passwords are hashed with scrypt; links, codes and session ids are stored as SHA-256 hashes; sessions are HttpOnly
 cookies for 30 days; a password reset signs every browser out. Sign-ups are limited to 10 an hour per address and wrong
 sign-ins to 20 an hour per address and 10 an hour per account (after that only the right password gets in, up to 100
-tries an hour; a stranger can't lock the owner out), 20,000 an hour for the whole hub. A sign-up on an address that has an
-account changes nothing but mails the owner a link to set the password; on an account not yet confirmed it also takes off
-the password and confirm links (a stranger's sign-up may have set them).
+tries an hour; a stranger can't lock the owner out), 20,000 an hour for the whole hub. The email to set a password, which
+anyone can have sent to any address under any shop name, is limited to 3 a day per address (an address with a `+tag`
+counts as the same) and 100 an hour for the whole hub (429 in words; a Resend over the limit answers as always and sends
+nothing), on top of the 10 starts an hour per sender; the shop's name in it is one line of at most 60 letters, digits
+and ordinary marks, in quotes, with nothing that could pass for a link, an address or markup. A sign-up on an address
+that has an account changes nothing but mails the owner a link to set the password; on an account not yet confirmed it
+also takes off the password and confirm links (a stranger's sign-up may have set them).
 
 For the emails the hub needs three variables: `HUB_URL` (its own public address, for the links; on Railway the public
 domain is used when it is empty), `SMTP_URL` (`smtps://user:pass@host:465`, or `smtp://…:587` for STARTTLS) and
@@ -790,7 +797,7 @@ Members send `Authorization: Bearer <install key>`.
 | `POST /v1/shops/move` (key optional) | `{ shopRef, token, shopName, kind, program, version }`: the install the company moved to redeems the token from the move file; every row of that company (shop, partner links, unused partner codes, listings, orders, ratings, notes, link and part revisions, parts usage) moves to it in one transaction, and listings, notes and orders are numbered again in the feeds. → the claim's answer plus `{ moved: { table: rows }, partner: { shopRef, links }, hubName }`; without a key (a program on no hub yet) the hub makes it an install with the old install's scope and adds `{ installId, installKey, scope }`. 404 wrong token, 409 used (the same install asking again gets the same answer), 410 replaced, cancelled or expired; 429 after 20 wrong tokens in an hour from one address (that address only: a token can't be guessed, so there is no pause for the whole hub) |
 | `GET /v1/terms/current` (no key) | `{ version, draft, terms: "/terms/<version>", privacy: "/privacy/<version>", versions }`: the Terms and Privacy Policy version in force (404 when none is on file). The claim's `terms` carries the same `version` and the version the shop's account `accepted` |
 | `POST /v1/stripe` (no key: Stripe's webhook) | `Stripe-Signature` checked against `STRIPE_WEBHOOK_SECRET` (400 otherwise); the event id is kept, so a replay answers `{ ok, replay: true }` and does nothing; the object is re-read from Stripe before anything is written (502 when that fails, so Stripe sends the event again). Body up to 256 KB |
-| `POST /v1/accounts/start` | `{ shopRef, shopName, kind, program, version, email, termsVersion }` → `{ ok, account: { email, verified: false }, shop }`: the hub makes the account (or mails the link again for one not finished), ties the shop to it and mails a set-password link. 409 when the address already has a finished account (use a link code). Without an install key (an install on no hub yet; `contact` optional) the answer adds `{ installId, installKey, hubName, scope: "pending" }` |
+| `POST /v1/accounts/start` | `{ shopRef, shopName, kind, program, version, email, termsVersion }` → `{ ok, account: { email, verified: false }, shop }`: the hub makes the account (or mails the link again for one not finished), ties the shop to it and mails a set-password link. 409 when the address already has a finished account (use a link code); 429 past 10 starts an hour per sender, 3 set-password emails a day to one address, or 100 an hour for the whole hub. Without an install key (an install on no hub yet; `contact` optional) the answer adds `{ installId, installKey, hubName, scope: "pending" }` |
 | `GET /v1/shops/:ref/reset-grants` | `{ grants: [{ id, grant, expiresAt }] }`: the owner's password resets asked for on the account, `SBG1.<payload>.<signature>` (none while the program doesn't allow resets) |
 | `POST /v1/shops/:ref/reset-grants/:id/done` | `{ result: "allowed" \| "refused", why }`: what the program's window answered; the grant is spent |
 | `POST /v1/accounts/link-code` | `{ shopRef, shopName, kind, program, version }` → `{ code, expiresAt }`: a 10-character code the owner types in on the hub within 15 minutes (409 when the shop already has an account) |

@@ -1,7 +1,8 @@
 // Checks accounts end to end: starts a hub of its own on a free port against a scratch database, with a small SMTP
 // sink in this process standing in for the mailbox, and walks the three ways in (from the program, a link code, on the
 // hub first), sign in, forgot and reset, claim and standing, the admin's comp, the tenant rule (one account never sees
-// another's shops), the export, and the limits.
+// another's shops), the export, and the limits (the emails to set a password among them: per address, for the whole hub,
+// and the shop's name in them kept to one plain line).
 // usage: DATABASE_URL=postgresql://... (a scratch database) node test/accounts.mjs
 import assert from "node:assert/strict";
 import net from "node:net";
@@ -18,6 +19,7 @@ const ROOT = path.resolve(import.meta.dirname, "..");
 
 // ----- a mailbox: takes any message over plain SMTP and keeps it -----
 const mails = [];
+let setPasswordMails = 0; // every "Set your ... password" email the hub sent
 let woken = () => {};
 const decodeWord = (s) => s.replace(/=\?UTF-8\?B\?([^?]+)\?=/gi, (_, b) => Buffer.from(b, "base64").toString("utf8"));
 function keep(to, raw) {
@@ -25,6 +27,7 @@ function keep(to, raw) {
   const headers = Object.fromEntries(head.split("\r\n").map((l) => [l.slice(0, l.indexOf(":")).toLowerCase(), l.slice(l.indexOf(":") + 1).trim()]));
   const text = headers["content-transfer-encoding"] === "base64" ? Buffer.from(rest.join("\r\n\r\n").replace(/\s/g, ""), "base64").toString("utf8") : rest.join("\r\n\r\n");
   mails.push({ to, subject: decodeWord(headers.subject ?? ""), from: headers.from, text, link: /https?:\/\/\S+/.exec(text)?.[0] ?? null });
+  if (/^Set your .+ password$/.test(mails.at(-1).subject)) setPasswordMails++;
   woken();
 }
 const sink = net.createServer((sock) => {
@@ -94,7 +97,7 @@ const hub = spawn(process.execPath, ["src/server.mjs"], {
     JOIN_KEY: JOIN,
     PORT: String(port),
     LINK_CHECKER: "off",
-    TRUST_PROXY: "",
+    TRUST_PROXY: "true", // the limits per address see the test's addresses in X-Forwarded-For (none sent: 127.0.0.1)
     RAILWAY_ENVIRONMENT_ID: "",
     HUB_URL: HUB,
     SMTP_URL: `smtp://sink:not-a-secret@127.0.0.1:${sinkPort}`,
@@ -181,7 +184,7 @@ try {
   assert.match(m1.subject, /Set your Accounts Test Hub password/);
   assert.match(m1.from, /hub@stitchhub\.test/);
   assert.ok(m1.link.startsWith(`${HUB}/account/set-password?t=`), m1.link);
-  assert.ok(m1.text.includes("A Repair (StitchBench)"));
+  assert.ok(m1.text.includes('A shop named "A Repair" (StitchBench) asked for a Accounts Test Hub account for'), m1.text);
   // A sign-up on that address (a stranger's, say) never puts its password on the account the program started: the owner
   // is mailed the set-password link instead, and the answer is the one a new account gets.
   const stranger = browser();
@@ -385,6 +388,44 @@ try {
   for (let i = 0; i < 25 && !limited; i++) limited = (await page(browser(), "/signin", { email: emailA, password: "Wrong-password-9" })).status === 429;
   assert.ok(limited, "wrong sign-ins were not limited");
   console.log("limits: ok");
+
+  // The email to set a password goes to whatever address a program types, under whatever shop name it sends: the name
+  // is one plain line in it, and the emails are limited per address (3 a day) and for the whole hub (100 an hour). Each
+  // start here comes from an address of its own, in X-Forwarded-For.
+  let sender = 0;
+  const from = (n) => ({ "X-Forwarded-For": `10.4.${n >> 8}.${n & 255}` });
+  const startAs = (email, shopName) => call("/v1/accounts/start", { json: { shopRef: `start-${++sender}`, shopName, kind: "repair", program: "StitchBench", email }, headers: from(sender) });
+  const emailE = `owner-e-${RUN}@stitchhub.test`;
+  await ok(await startAs(emailE, `Evil\r\nBcc: victim@example.test\n<a href="http://evil.example/x">Click</a>\u2028www.evil.example call now ${"x".repeat(200)}`));
+  const mE = await mailTo(emailE);
+  assert.equal(mE.subject, "Set your Accounts Test Hub password");
+  const named = /^A shop named "([^"\n]*)" \(StitchBench\) asked for a Accounts Test Hub account for /m.exec(mE.text);
+  assert.ok(named, `the shop's name sits in quotes on the email's own line: ${mE.text}`);
+  assert.ok(named[1].startsWith("Evil Bcc victim example. test a href http //evil. example") && named[1].length <= 60, named[1]);
+  assert.ok(!/[<>@:"\r\n\u2028]|\.\p{L}/u.test(named[1]), `no markup, link, address or line of its own: ${named[1]}`);
+  assert.equal(mE.text.split("\n").filter((l) => /Bcc|Click/.test(l)).length, 1, "the name added no line to the email");
+  await ok(await startAs(emailE, "E Repair"));
+  await mailTo(emailE);
+  await ok(await startAs(emailE, "E Repair"));
+  await mailTo(emailE);
+  const fourth = await startAs(emailE, "E Repair");
+  assert.equal(fourth.status, 429, "a fourth email to set a password to one address in a day");
+  assert.match((await fourth.json()).error, /already sent 3 emails to set a password to that address today/);
+  assert.equal((await startAs(emailE.replace("@", "+again@"), "E Repair")).status, 429, "the same mailbox with a +tag");
+  assert.equal((await ok(await page(browser(), "/resend", { email: emailE }, { headers: from(++sender) }))).message, quiet, "Resend answers as always");
+  await new Promise((r) => setTimeout(r, 300));
+  assert.ok(!mails.some((m) => m.to === emailE || m.to === "victim@example.test"), "and sends no fourth email");
+  // The whole hub: 100 an hour, whoever they go to (the log says so once).
+  let hubFull = null;
+  for (let i = 0; i < 150 && !hubFull; i++) {
+    const r = await startAs(`many-${i}-${RUN}@stitchhub.test`, `Many ${i}`);
+    if (r.status === 429) hubFull = (await r.json()).error;
+    else await ok(r);
+  }
+  assert.match(hubFull ?? "", /has sent a lot of account emails in the last hour/);
+  assert.equal(setPasswordMails, 100, "100 emails to set a password in the hour, all told");
+  assert.match(hubLog, /100 set-password emails this hour/);
+  console.log("set-password emails: ok (the name one plain line, 3 a day per address, 100 an hour for the hub)");
 
   // Clean up: the accounts go (their shops stay); the test installs are blocked.
   for (const id of [accA.id, accC.id]) await ok(await adminCall(`/accounts/${id}`, undefined, "DELETE"));
