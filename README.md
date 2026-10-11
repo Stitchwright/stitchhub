@@ -532,6 +532,11 @@ placeholders and open questions are listed). Never edit a published version: add
   (an earlier one says so and links the current one). The pages run no script and allow none (a strict CSP); the
   markdown renderer knows headings, paragraphs, lists, quotes, tables, rules, links (http, https, mailto and paths on the
   hub only), bold, italic and code, and escapes everything else.
+- The pages leave out the reviewers' notes the drafts carry (`[LAWYER: ...]`, `[OWNER: ...]` and `[OWNER/LAWYER: ...]`,
+  over several lines too; the files keep them), and show `LEGAL_NAME` (the business's legal name; the hub's name when
+  it is unset) where a draft says `[OWNER LEGAL NAME]`. The drafts' other placeholders (`[CONTACT EMAIL]`, `[ADDRESS]`,
+  `[HUB ADDRESS]`, `[STATE OF GOVERNING LAW]`, the version date, the numbers in brackets) show as written until a
+  published version fills them in.
 - The version in force is `TERMS_VERSION`, or when it is unset the newest pair on file (drafts don't count once a
   published version exists). Set `TERMS_VERSION` when you publish, so a pair committed ahead of its date stays out of
   force. A `TERMS_VERSION` with no files is logged and the default is used.

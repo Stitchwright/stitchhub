@@ -1,14 +1,16 @@
 // Checks the Terms of Service and Privacy Policy pages and the acceptance record (src/terms.mjs; StitchBench
 // docs/plans/hub-accounts-billing-design.md 4.2, package terms-launch). Starts a hub of its own on a free port against a
 // scratch database, with the Stripe mock (test/stripe-mock.mjs) and a legal folder of its own (LEGAL_DIR): an older
-// published version full of things that must come out escaped, the repository's drafts as a newer version, and files
-// that aren't a version. Walks:
+// published version full of things that must come out escaped and reviewers' notes that must not show, the repository's
+// drafts as a newer version, and files that aren't a version. Walks:
 //   1. the version in force by default (the newest published one: a draft committed early doesn't count), the pages,
-//      versions old and not yet in force, 404s, the markdown and its escaping, GET /v1/terms/current;
+//      versions old and not yet in force, 404s, the markdown and its escaping, the reviewers' notes left out and the
+//      owner's name filled in, the footer's Source code link and GET /source, GET /v1/terms/current;
 //   2. acceptance at an account started from the program, at sign-up on the hub (the tick, a page left open over a new
 //      version), in the claim answer, at Checkout (no tick needed while current; the version in Stripe's metadata);
 //   3. TERMS_VERSION moved to the drafts: the DRAFT banner, "We updated our terms" on /account (me.terms.needsAccept),
 //      accepted there; Checkout refused without the tick and recorded with it; the export carries terms_acceptances;
+//      LEGAL_NAME as the owner's name, and SOURCE_URL at a deployed commit;
 //   4. a TERMS_VERSION with no files: the newest published version, and the log says why.
 // usage: DATABASE_URL=postgresql://... (a fresh scratch database) node test/terms.mjs
 import assert from "node:assert/strict";
@@ -69,6 +71,28 @@ a [local one](/privacy) and an [anchor](#2-lists). Mail [us](mailto:owner@exampl
 | Col <i>A</i> | Col B |
 |---|---|
 | a1 | [x](https://example.com/x) |
+
+## 3. Notes
+
+Who we are: [OWNER LEGAL NAME]. Shown to readers. [LAWYER: a question
+over two lines, with [a link](https://example.com/n) inside.] Still shown.
+[OWNER: a note on a line of its own]
+The same paragraph goes on. Notes are written \`[LAWYER: ...]\` in the files.
+
+- an item [OWNER: in a list] that goes on
+  [LAWYER: a whole continuation line]
+- a second item
+
+| Who | What |
+|---|---|
+| us | kept [OWNER/LAWYER: in a cell] |
+
+**[OWNER: a value to fill in]**: the rest of the line.
+
+Never closed: [LAWYER: this runs to the end
+of its paragraph
+
+After the paragraph.
 
 ---
 `;
@@ -210,7 +234,18 @@ try {
   assert.ok(b.includes(`<a href="https://example.com/a?b=1&amp;c=2" rel="noopener noreferrer">good link</a>`));
   assert.ok(b.includes(`<a href="/privacy">local one</a>`) && b.includes(`<a href="#2-lists">anchor</a>`) && b.includes(`<a href="mailto:owner@example.com">us</a>`));
   assert.ok(b.includes("<strong>Bold</strong>") && b.includes("<em>italic</em>") && b.includes("<code>&lt;code&gt;</code>"));
-  assert.ok(b.includes("[OWNER: a note, not a link]"), "a bracketed note stays as it is");
+  // The reviewers' notes never reach the page (over several lines, with brackets inside, in a list, a table cell or a
+  // bold, never closed); one written in inline code is words about notes and stays; the owner's name is filled in.
+  assert.ok(!b.includes("a note, not a link") && b.includes("<code>&lt;code&gt;</code> and."), "a note at the end of a sentence goes, with the space before it");
+  assert.ok(
+    b.includes("<p>Who we are: Terms Test Hub. Shown to readers. Still shown. The same paragraph goes on. Notes are written <code>[LAWYER: ...]</code> in the files.</p>"),
+    "notes over two lines, with brackets inside, and on a line of their own go without splitting the paragraph; [OWNER LEGAL NAME] is the hub's name",
+  );
+  assert.ok(b.includes("<ul><li>an item that goes on</li><li>a second item</li></ul>"), "a note in a list item, and one on a continuation line");
+  assert.ok(b.includes("<td>us</td><td>kept</td>"), "a note in a table cell");
+  assert.ok(b.includes("<p>: the rest of the line.</p>") && !b.includes("****"), "a note that was all of a bold goes with the bold");
+  assert.ok(b.includes("<p>Never closed:</p>") && b.includes("<p>After the paragraph.</p>") && !b.includes("runs to the end"), "a note never closed goes to the end of its paragraph");
+  assert.ok(!/LAWYER|OWNER/.test(b.replace("<code>[LAWYER: ...]</code>", "")), "no other note or placeholder of the reviewers' shows");
   assert.ok(b.includes(`<h1 id="old-terms">Old terms</h1>`) && b.includes(`<h2 id="1-links">1. Links</h2>`) && b.includes(`<h2 id="2-lists">`));
   assert.ok(b.includes("<ul><li>one</li><li>two, which goes on over a second line<ul><li>nested &lt;b&gt;three&lt;/b&gt;</li></ul></li><li>four</li></ul>"), "a list with a wrapped item and a nested list");
   assert.ok(b.includes(`<ol start="3"><li>three</li><li>four</li></ol>`));
@@ -225,6 +260,13 @@ try {
   assert.ok(ahead.includes("DRAFT, not yet in force"), "the draft banner on a draft version");
   assert.ok(ahead.includes(`This version (${DRAFT}) isn't in force yet. The version in force now is ${OLD}`));
   assert.ok(ahead.includes("Terms of Service: StitchBench, StitchShop and StitchHub"), "the repository's draft renders");
+  // The repository's drafts are full of reviewers' notes (most over several lines); none shows, only the banner's words about them.
+  const noteMarks = (h) => h.match(/\[(?:OWNER|LAWYER)[^\]]*?:/g);
+  assert.deepEqual(noteMarks(ahead), ["[LAWYER:", "[OWNER:"], "the terms draft shows no reviewers' notes");
+  assert.ok(!ahead.includes("[OWNER LEGAL NAME]") && ahead.includes("We are Terms Test Hub (&quot;we&quot;, &quot;us&quot;)"), "the owner's name is the hub's when LEGAL_NAME is unset");
+  const aheadPrivacy = (await html(`/privacy/${DRAFT}`)).body;
+  assert.deepEqual(noteMarks(aheadPrivacy), ["[LAWYER:", "[OWNER:"], "the privacy draft shows no reviewers' notes");
+  assert.ok(!aheadPrivacy.includes("[OWNER LEGAL NAME]"));
   for (const p of ["/terms/2026-12-01-draft", "/terms/notaversion", "/terms/2026-13-01", "/privacy/2026-12-01-draft", "/terms/..%2F..%2Fpackage.json", "/terms/README"]) await html(p, 404);
   const home = (await html("/")).body;
   assert.ok(home.includes(`<a href="/terms">Terms</a>`) && home.includes(`<a href="/privacy">Privacy</a>`), "the hub's front page links both");
@@ -292,7 +334,7 @@ try {
   await stopHub();
   // Also: a hub running changed code names its own repository, and on Railway the commit it was deployed from is linked.
   const COMMIT = "0123456789abcdef0123456789abcdef01234567";
-  await startHub({ ...ENV, TERMS_VERSION: DRAFT, SOURCE_URL: "https://git.example.test/someone/hub/", RAILWAY_GIT_COMMIT_SHA: COMMIT });
+  await startHub({ ...ENV, TERMS_VERSION: DRAFT, SOURCE_URL: "https://git.example.test/someone/hub/", RAILWAY_GIT_COMMIT_SHA: COMMIT, LEGAL_NAME: "Thread & Needle Repair, LLC" });
   assert.deepEqual(await ok(call("/v1/terms/current")), { version: DRAFT, draft: true, terms: `/terms/${DRAFT}`, privacy: `/privacy/${DRAFT}`, versions: [OLD, DRAFT] });
   const t3 = (await html("/terms")).body;
   assert.ok(t3.includes(`<a href="https://git.example.test/someone/hub/tree/${COMMIT}">Source code</a>`), "the footer links SOURCE_URL at the deployed commit");
@@ -304,6 +346,8 @@ try {
   assert.ok(!t3.includes("2026-12-01-draft"), "half a pair isn't listed");
   const p3 = (await html("/privacy")).body;
   assert.ok(p3.includes("DRAFT, not yet in force") && p3.includes("<table>") && p3.includes("Privacy Policy: StitchBench, StitchShop and StitchHub"));
+  for (const page of [t3, p3]) assert.ok(page.includes("We are Thread &amp; Needle Repair, LLC (&quot;we&quot;, &quot;us&quot;)") && !page.includes("[OWNER LEGAL NAME]"), "LEGAL_NAME is the owner's name, shown as typed");
+  assert.ok((await html(`/terms/${OLD}`)).body.includes("Who we are: Thread &amp; Needle Repair, LLC."), "in every version");
   const old3 = (await html(`/terms/${OLD}`)).body;
   assert.ok(old3.includes(`This is an earlier version (${OLD}). The version in force now is ${DRAFT}: <a href="/terms">read it</a>.`));
   assert.ok(old3.includes(`<a href="/privacy/${OLD}">Privacy Policy</a>`), "an old version links the privacy policy of the same version");
