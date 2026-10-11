@@ -1,3 +1,6 @@
+// Since 11 Oct 2026 every shop has the five add-ons free, for good (StitchBench docs/plans/free-software-design.md):
+// addonKeysFor gives every shop what the admin's comp of everything gave (one key, plan c, all five, through 2099-12-31).
+//
 // Selling the trade add-ons (StitchBench pricing-review-2026-10.md; migration 032): Vac Shop $10, Small Appliance Repair $5,
 // Scheduling $15, Marketing $10 and Maker Shop $10 a month, yearly ten times monthly, or all five for $30 a month ($300 a
 // year). Each add-on, and the bundle, is its own Stripe subscription per shop, the way the Assistant's is
@@ -16,7 +19,7 @@
 //   STRIPE_PRICE_MAKER_MONTHLY, _YEARLY          $10 / $100
 //   STRIPE_PRICE_BUNDLE_MONTHLY, _YEARLY         $30 / $300 (all five)
 //   STRIPE_PRICE_STORE_MONTHLY, _YEARLY          $25 / $250 for each store after the first, a quantity on the base plan
-import { one, q, tx } from "./db.mjs";
+import { one, q } from "./db.mjs";
 import * as stripe from "./stripe.mjs";
 import { signer as hubSigner, signKey, NO_END } from "./license.mjs";
 
@@ -160,7 +163,6 @@ export function addonStatus(sub, t = day(new Date())) {
   else if (!paidThrough) status = "none";
   return { status, paidThrough };
 }
-const runs = (st) => st.status === "active" || st.status === "ending" || st.status === "past_due";
 /** Still billed by Stripe (a new Checkout for it would bill twice). */
 export const stillBilled = (row, st) => st.status === "on_hold" || st.status === "active" || st.status === "past_due" || (st.status === "ending" && RUNNING.has(row?.status));
 
@@ -176,15 +178,10 @@ export async function addonStandings(shopId) {
   return out;
 }
 
-/** The modules a shop has from its add-ons now (a running subscription, or the comp): for the account and admin pages. */
-export function modulesOn(standings, shop) {
-  const on = new Set();
-  for (const p of PRODUCTS) if (runs(standings[p])) for (const m of modulesOf(p)) on.add(m);
-  if (compCovers(shop)) for (const m of ADDON_IDS) on.add(m);
-  return [...on];
+/** The modules a shop has from its add-ons now, for the account and admin pages: all five, for every shop. */
+export function modulesOn() {
+  return [...ADDON_IDS];
 }
-// A shop the admin lapsed ("Lapse now") has no comp of the add-ons either, until the comp is set again or it pays.
-const compCovers = (shop) => Boolean(shop?.comp_addons && shop.comp_until && new Date(shop.comp_until).getTime() > Date.now() && !shop.lapsed_at);
 
 const storedKey = (shopId, modules, plans) =>
   one(
@@ -195,87 +192,40 @@ const storedKey = (shopId, modules, plans) =>
   );
 
 /**
- * The add-on keys the program should hold: one per add-on subscription (the stored one while it fits the paid-through
- * day, a new one when it changed), and the comp's when it covers the add-ons; a subscription that ended sends its last
- * key until it runs out. A past_due one signs nothing new (Stripe has already moved its period on to the unpaid one):
- * its key from the last paid period runs out with its grace, and one that ends unpaid has it revoked (syncAddonSub).
- * Written to license_issues.
+ * The add-on key the program should hold: what the admin's comp of everything signed, for every shop (plan c, all five,
+ * through 2099-12-31), the stored one while it is live, else a fresh one written to license_issues. Its first day is
+ * yesterday, so it has started in every time zone when it arrives. The add-on subscriptions' own keys aren't sent any
+ * more: this one covers every module they name, and the program drops a stored add-on key the list leaves out.
  */
 export async function addonKeysFor(shop) {
   const { signer } = hubSigner();
-  const t = day(new Date());
-  const keys = [];
-  // The comp: plan c, all five, through the comp's last day.
-  if (compCovers(shop)) {
-    const forever = new Date(shop.comp_until).getTime() >= Date.parse(`${NO_END}T00:00:00Z`);
-    const until = forever ? NO_END : day(shop.comp_until);
-    const stored = await storedKey(shop.id, ADDON_IDS, ["c"]);
-    if (stored && stored.last_day === until) keys.push(stored.key);
-    else if (signer) {
-      const made = signKey(signer, { shopId: shop.shop_ref, shopName: shop.name, modules: [...ADDON_IDS], plan: "c", firstDay: t, lastDay: until, graceDays: ADDON_GRACE_DAYS });
-      await q(`INSERT INTO license_issues (key_id, shop_id, kid, plan, modules, first_day, last_day, grace_days, key, tier, founding) VALUES ($1, $2, $3, 'c', $4, $5, $6, $7, $8, NULL, false)`, [
-        made.id,
-        shop.id,
-        signer.kid,
-        made.payload.m,
-        t,
-        until,
-        ADDON_GRACE_DAYS,
-        made.key,
-      ]);
-      keys.push(made.key);
-    } else if (stored) keys.push(stored.key);
-  }
-  const standings = await addonStandings(shop.id);
-  // While the bundle runs it covers every add-on: the singles' keys (revoked at the switch) aren't sent.
-  const bundleRuns = runs(standings.bundle);
-  for (const product of ["bundle", ...ADDON_IDS]) {
-    const st = standings[product];
-    if (!st.row || (bundleRuns && product !== "bundle")) continue;
-    const modules = modulesOf(product);
-    const stored = await storedKey(shop.id, modules, ["m", "y"]);
-    // A cancelled subscription gets no new key (one cut short, as at the bundle switch, ended when it ended): its last runs
-    // out. Nor does a past_due one: its paid-through day is the period not paid yet.
-    if (!signer || !runs(st) || !st.paidThrough || st.row.status === "canceled" || st.row.status === "past_due") {
-      if (stored) keys.push(stored.key);
-      continue;
-    }
-    const until = st.paidThrough;
-    if (stored && stored.last_day === until && stored.grace_days === ADDON_GRACE_DAYS) {
-      keys.push(stored.key);
-      continue;
-    }
-    const first = until < t ? until : t;
-    const plan = st.row.plan === "y" ? "y" : "m";
-    const made = signKey(signer, { shopId: shop.shop_ref, shopName: shop.name, modules, plan, firstDay: first, lastDay: until, graceDays: ADDON_GRACE_DAYS });
-    // Written while the row is held and only while no refund or chargeback has taken its period back (as the Assistant's).
-    const written = await tx(async (client) => {
-      const held = (await client.query(`SELECT unpaid_since FROM addon_subscriptions WHERE shop_id = $1 AND product = $2 FOR SHARE`, [shop.id, product])).rows[0];
-      if (!held || held.unpaid_since) return false;
-      await client.query(`INSERT INTO license_issues (key_id, shop_id, kid, plan, modules, first_day, last_day, grace_days, key, tier, founding) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULL, false)`, [
-        made.id,
-        shop.id,
-        signer.kid,
-        plan,
-        made.payload.m,
-        first,
-        until,
-        ADDON_GRACE_DAYS,
-        made.key,
-      ]);
-      return true;
-    });
-    if (written) keys.push(made.key);
-  }
-  return { keys };
+  const stored = await storedKey(shop.id, ADDON_IDS, ["c"]);
+  if (stored && stored.last_day === NO_END) return { keys: [stored.key] };
+  if (!signer) return { keys: stored ? [stored.key] : [] };
+  const first = day(Date.now() - 86400_000);
+  const made = signKey(signer, { shopId: shop.shop_ref, shopName: shop.name, modules: [...ADDON_IDS], plan: "c", firstDay: first, lastDay: NO_END, graceDays: ADDON_GRACE_DAYS });
+  await q(`INSERT INTO license_issues (key_id, shop_id, kid, plan, modules, first_day, last_day, grace_days, key, tier, founding) VALUES ($1, $2, $3, 'c', $4, $5, $6, $7, $8, NULL, false)`, [
+    made.id,
+    shop.id,
+    signer.kid,
+    made.payload.m,
+    first,
+    NO_END,
+    ADDON_GRACE_DAYS,
+    made.key,
+  ]);
+  return { keys: [made.key] };
 }
 
 /** A product's keys (exactly its modules, paid plans) are revoked: the program drops them at its next sync. */
 export const revokeAddonKeys = (client, shopId, product) =>
   client.query(`UPDATE license_issues SET revoked_at = now() WHERE shop_id = $1 AND revoked_at IS NULL AND modules = $2::text[] AND plan IN ('m', 'y')`, [shopId, modulesOf(product)]);
-/** The comp's add-on keys are revoked (the comp was taken away, or no longer covers the add-ons). */
+/**
+ * The comp's add-on keys are revoked (the comp was taken away, or no longer covers the add-ons). Never the one through
+ * 2099-12-31: every shop's since 11 Oct 2026, which a 1.7.x program must never lose.
+ */
 export const revokeCompAddonKeys = (client, shopId) =>
-  client.query(`UPDATE license_issues SET revoked_at = now() WHERE shop_id = $1 AND revoked_at IS NULL AND modules = $2::text[] AND plan = 'c'`, [shopId, ADDON_IDS]);
+  client.query(`UPDATE license_issues SET revoked_at = now() WHERE shop_id = $1 AND revoked_at IS NULL AND modules = $2::text[] AND plan = 'c' AND last_day < $3::date`, [shopId, ADDON_IDS, NO_END]);
 
 /** The add-on row a Stripe subscription id is stored under, or null. */
 export const addonRowOf = async (client, subId, lock = false) =>

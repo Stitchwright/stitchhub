@@ -153,17 +153,18 @@ try {
   // The pages are served.
   for (const p of ["/account", "/account/shops", "/account/set-password", "/admin"]) assert.equal((await call(p)).status, 200, p);
 
-  // A shop claims itself: a row and a 30-day trial, no account yet. Standing is the same answer without the claim.
+  // A shop claims itself: a row, free with every add-on (no key here: this hub signs none), no account yet. Standing is the
+  // same answer without the claim.
   const keyA = await register("Accounts Test Shop A");
   const claimA = await ok(await call("/v1/shops/claim", { key: keyA, json: { shopRef: "shopA", shopName: "A Repair", kind: "repair", program: "StitchBench", version: "1.6.1", sole: true } }));
   assert.equal(claimA.ok, true);
   assert.equal(claimA.listings, 0);
   assert.equal(claimA.account, null);
-  assert.deepEqual([claimA.standing, claimA.lastDay, claimA.key, claimA.revokeKeyIds], ["trial", plusDays(30), null, []]);
+  assert.deepEqual([claimA.standing, claimA.lastDay, claimA.message, claimA.key, claimA.moduleKeys, claimA.revokeKeyIds], ["comped", null, "Free, with every add-on.", null, [], []]);
   assert.deepEqual([claimA.shop.name, claimA.shop.kind, claimA.shop.program, claimA.shop.version], ["A Repair", "repair", "StitchBench", "1.6.1"]);
   const standingA = await ok(await call("/v1/shops/shopA/standing", { key: keyA }));
   assert.equal(standingA.shop.id, claimA.shop.id);
-  assert.equal(standingA.standing, "trial");
+  assert.equal(standingA.standing, "comped");
   assert.equal((await call("/v1/shops/never/standing", { key: keyA })).status, 404);
   // Claimed again with only the ref (an older program): the name stays, the shop is the same.
   const again = await ok(await call("/v1/shops/claim", { key: keyA, json: { shopRef: "shopA" } }));
@@ -206,7 +207,7 @@ try {
   await status(await page(a, "/set-password", { token: tokenOf(m2), password: "Good-password-2" }), 410, "a link works once");
   let me = await ok(await page(a, "/me"));
   assert.deepEqual([me.account.email, me.account.verified, me.account.termsVersion], [emailA, true, "2026-10-02"]);
-  assert.deepEqual(me.shops.map((s) => [s.name, s.installName, s.standing]), [["A Repair", "Accounts Test Shop A", "trial"]]);
+  assert.deepEqual(me.shops.map((s) => [s.name, s.installName, s.standing]), [["A Repair", "Accounts Test Shop A", "comped"]]);
   assert.deepEqual((await ok(await call("/v1/shops/shopA/standing", { key: keyA }))).account, { email: emailA, verified: true });
   // The address now has a finished account: the program is told to use a link code instead.
   await status(await call("/v1/accounts/start", { key: keyA, json: { shopRef: "shopA", shopName: "A Repair", email: emailA } }), 409, "start for a finished account");
@@ -323,17 +324,19 @@ try {
   assert.deepEqual(accA.shops.map((s) => s.name), ["A Repair", "B Quilts"]);
   assert.deepEqual(accC.shops.map((s) => s.name), ["A Second Company"]);
   const shopA = list.shops.find((s) => s.id === claimA.shop.id);
-  assert.deepEqual([shopA.installName, shopA.accountEmail, shopA.standing], ["Accounts Test Shop A", emailA, "trial"]);
+  assert.deepEqual([shopA.installName, shopA.accountEmail, shopA.standing], ["Accounts Test Shop A", emailA, "comped"]);
+  // A comp is written down (it gives the company backup space of its own) and changes nothing the shop is told: every shop
+  // is free since 11 Oct 2026.
   await status(await adminCall(`/shops/${shopA.id}/comp`, { until: "soon" }), 400, "bad comp date");
-  await ok(await adminCall(`/shops/${shopA.id}/comp`, { until: "forever", note: "founding member" }));
+  const comped = await ok(await adminCall(`/shops/${shopA.id}/comp`, { until: "forever", note: "founding member" }));
+  assert.deepEqual([comped.shop.compUntil.slice(0, 10), comped.shop.compNote, comped.shop.standing], ["2099-12-31", "founding member", "comped"]);
   let st = await ok(await call("/v1/shops/shopA/standing", { key: keyA }));
-  assert.deepEqual([st.standing, st.lastDay], ["comped", null]);
-  assert.match(st.message, /compliments/);
+  assert.deepEqual([st.standing, st.lastDay, st.message], ["comped", null, "Free, with every add-on."]);
   await ok(await adminCall(`/shops/${shopA.id}/comp`, { until: plusDays(10) }));
   st = await ok(await call("/v1/shops/shopA/standing", { key: keyA }));
-  assert.deepEqual([st.standing, st.lastDay], ["comped", plusDays(10)]);
+  assert.deepEqual([st.standing, st.lastDay], ["comped", null], "a comp with a last day doesn't give the shop one");
   await ok(await adminCall(`/shops/${shopA.id}/comp`, { until: "" }));
-  assert.equal((await ok(await call("/v1/shops/shopA/standing", { key: keyA }))).standing, "trial");
+  assert.equal((await ok(await call("/v1/shops/shopA/standing", { key: keyA }))).standing, "comped", "the comp taken away: still free");
   await status(await adminCall(`/accounts/${accC.id}/resend`, {}), 409, "resend for a verified account");
   await ok(await adminCall(`/accounts/${accC.id}/disable`, { disabled: true }));
   await status(await page(d, "/me"), 401, "switched off");
@@ -351,7 +354,7 @@ try {
   assert.equal((await ok(await call("/v1/me", { key: fresh.installKey }))).scope, "pending");
   assert.equal((await call("/v1/changes?since=0", { key: fresh.installKey })).status, 403, "pending: not a member yet");
   assert.equal((await call("/v1/partners/links", { key: fresh.installKey })).status, 403);
-  assert.equal((await ok(await call("/v1/shops/fresh/standing", { key: fresh.installKey }))).standing, "trial");
+  assert.equal((await ok(await call("/v1/shops/fresh/standing", { key: fresh.installKey }))).standing, "comped");
   const mD = await mailTo(emailD);
   const e = browser();
   await ok(await page(e, "/set-password", { token: tokenOf(mD), password: "Good-password-4" }));

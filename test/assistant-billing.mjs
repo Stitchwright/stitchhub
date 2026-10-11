@@ -1,11 +1,14 @@
 // Checks selling the Assistant (src/assistant-billing.mjs; the Stripe mock stands in for Stripe, the Anthropic mock for the
 // model): the account page offers "Add the Assistant" and, once it is on, "Buy 300 more"; the Assistant is its own
-// subscription (the shop's base standing, its key and its base subscription are untouched, and a base Checkout afterwards
-// doesn't cancel it); paying signs a key for the module "assistant" for the company's own id (the proxy accepts it) and the
-// claim answer carries it as moduleKeys; a renewal signs the next one; a cancelled subscription is paid through its day and
-// an ended one gets no new key; the 300-call allowance runs out (402) and a paid top-up Checkout, credited by the webhook
-// once (a replayed event adds nothing), gives 300 more that month; a top-up needs the Assistant; another account can't buy
-// for this shop; a hub without the Assistant prices refuses and offers nothing. Fresh scratch database, dropped at the end.
+// subscription (the shop's base standing, free since 11 Oct 2026, its key and the five add-ons' key are untouched, and a
+// base Checkout afterwards doesn't cancel it); paying signs a key for the module "assistant" for the company's own id (the
+// proxy accepts it) and the claim answer carries it as moduleKeys, before the add-ons' key; a renewal signs the next one;
+// a cancelled subscription is paid through its day and an ended one gets no new key; the 300-call allowance runs out
+// (402) and a paid top-up Checkout, credited by the webhook once (a replayed event adds nothing), gives 300 more that
+// month, and one refunded before its credit lands is taken back when it does; a top-up needs the Assistant; keys owed
+// (past_due keeps the paid period's key, a key run out isn't sent, ended unpaid is revoked); another account can't buy
+// for this shop; a hub without the Assistant prices refuses and offers nothing.
+// Fresh scratch database, dropped at the end.
 // usage: DATABASE_URL=postgresql://... node test/assistant-billing.mjs
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
@@ -202,7 +205,11 @@ try {
   const installKey = await register("Assistant Billing Test Shop");
   const claimA = await claim(installKey, { shopRef: "shopA", shopName: "A Repair", kind: "repair", program: "StitchBench", version: "1.7.0", sole: true });
   const shopA = claimA.shop.id;
-  assert.deepEqual(claimA.moduleKeys, [], "no Assistant key before it is bought");
+  // Every shop has the five add-ons' key (src/addons.mjs, since 11 Oct 2026); no Assistant key before it is bought.
+  assert.equal(claimA.moduleKeys.length, 1);
+  const addonsKey = claimA.moduleKeys[0];
+  const fiveKey = keyPayload(addonsKey, "shopA", "the add-ons' key");
+  assert.deepEqual([fiveKey.m, fiveKey.p, fiveKey.u], [["vac", "appliance", "scheduling", "marketing", "maker"], "c", "2099-12-31"], "no Assistant key before it is bought");
   const instId = (await db.query(`SELECT id FROM installs WHERE name = $1`, ["Assistant Billing Test Shop"])).rows[0].id;
   const emailA = `owner-a-${RUN}@stitchhub.test`;
   await ok(await call("/v1/accounts/start", { key: installKey, json: { shopRef: "shopA", shopName: "A Repair", kind: "repair", program: "StitchBench", email: emailA, termsVersion: "2026-10-02" } }));
@@ -240,15 +247,16 @@ try {
   const row = (await db.query(`SELECT * FROM assistant_subscriptions WHERE shop_id = $1`, [shopA])).rows[0];
   assert.deepEqual([row.stripe_subscription_id, row.plan, row.status, row.price_id], [sub.id, "m", "active", P.aMonthly]);
   let st = await standing(installKey, "shopA");
-  assert.equal(st.standing, "trial", "the base standing is still the trial");
+  assert.equal(st.standing, "comped", "the base standing is free, as every shop's");
   assert.equal(keyPayload(st.key, "shopA", "base key").m.join(), "base", "the base key is the base key (both keys name the company's own id, shop_ref, since hub-accounts)");
-  assert.equal(st.moduleKeys.length, 1);
+  assert.equal(st.moduleKeys.length, 2);
+  assert.equal(st.moduleKeys[1], addonsKey, "the Assistant's key first, then the add-ons' (the same one as before)");
   const firstKey = st.moduleKeys[0];
   const ak = keyPayload(firstKey, "shopA", "Assistant key");
   assert.deepEqual(ak.m, ["assistant"]);
   assert.equal(ak.u, day(sub.current_period_end * 1000), "paid through the period's end");
   assert.equal(ak.g, 14);
-  assert.deepEqual((await standing(installKey, "shopA")).moduleKeys, [st.moduleKeys[0]], "asked again: the same key");
+  assert.deepEqual((await standing(installKey, "shopA")).moduleKeys, st.moduleKeys, "asked again: the same keys");
   assert.equal((await db.query(`SELECT count(*)::int AS n FROM license_issues WHERE shop_id = $1 AND 'assistant' = ANY(modules)`, [shopA])).rows[0].n, 1);
   me = await ok(await page(a, "/me"));
   assert.deepEqual(me.shops[0].assistant, { status: "active", paidThrough: ak.u, plan: "m", canAdd: false, canTopUp: true });
@@ -308,16 +316,41 @@ try {
   assert.equal((await ask(installKey, "shopA", st.moduleKeys[0], 7)).status, 402, "the month is used up again");
   console.log("top-up: ok (credited once, taken back on a refund)");
 
-  // ----- 6. the base plan afterwards: its own subscription and key; the Assistant is not cancelled as "older" -----
+  // ----- 5b. a top-up refunded before its Checkout credit lands: held, then taken back when it does -----
+  // The mock delivers checkout.session.completed at once; to see the other order (the refund's webhook first, as when the
+  // completed event failed and Stripe retries it later), the credit is taken back out of the database as if it had never
+  // landed, the refund goes, and then the completed event is delivered again.
+  const tu2 = await ok(await page(a, `/shops/${shopA}/assistant/topup`, {}));
+  await mockPost(`/__pay/${tu2.sessionId}`);
+  const ts2 = stripeMock.sessions.get(tu2.sessionId);
+  const completed2 = stripeMock.events.filter((e) => e.type === "checkout.session.completed" && e.data.object.id === tu2.sessionId).at(-1);
+  await db.query(`DELETE FROM assistant_topups WHERE stripe_session_id = $1`, [tu2.sessionId]);
+  await db.query(`UPDATE assistant_usage SET bonus = 0 WHERE install_id = $1 AND shop_ref = $2`, [instId, "shopA"]);
+  await db.query(`DELETE FROM stripe_events WHERE id = $1`, [completed2.id]);
+  await mockApi("/v1/refunds", { charge: ts2.charge });
+  const pend = (await db.query(`SELECT share FROM assistant_topup_pending WHERE stripe_payment_intent = $1`, [ts2.payment_intent])).rows[0];
+  assert.equal(Number(pend.share), 1, "the refund waits for the credit");
+  await mockPost(`/__replay/${completed2.id}`);
+  assert.equal((await usage(instId, "shopA")).bonus, 0, "credited and taken back at once");
+  assert.equal((await db.query(`SELECT calls_taken FROM assistant_topups WHERE stripe_session_id = $1`, [tu2.sessionId])).rows[0].calls_taken, 5);
+  assert.equal((await db.query(`SELECT count(*)::int AS n FROM assistant_topup_pending`)).rows[0].n, 0, "the pending row is used up");
+  // A refunded charge with no invoice that isn't a top-up's (its payment says nothing of one) isn't held as one.
+  const bareCharge = (await mockPost("/__charges", { amount: 700 })).charge;
+  await mockApi("/v1/refunds", { charge: bareCharge.id });
+  assert.equal((await db.query(`SELECT count(*)::int AS n FROM assistant_topup_pending`)).rows[0].n, 0, "another app's refund isn't parked as a top-up");
+  console.log("a top-up refunded before its credit: ok");
+
+  // ----- 6. the base plan afterwards: its own subscription, the standing and keys as they were; the Assistant is not
+  // cancelled as "older" -----
   await db.query(`UPDATE shops SET created_at = now() - interval '40 days' WHERE id = $1`, [shopA]);
   const baseCo = await ok(await page(a, `/shops/${shopA}/checkout`, { plan: "solo", interval: "monthly", acceptTerms: true }));
   allDelivered(await mockPost(`/__pay/${baseCo.sessionId}`), "base payment");
   const assistantSub = stripeMock.subscriptions.get(sub.id);
   assert.notEqual(assistantSub.status, "canceled", "the Assistant subscription survives a base Checkout");
   st = await standing(installKey, "shopA");
-  assert.equal(st.standing, "active");
+  assert.equal(st.standing, "comped", "still free: a subscription changes nothing");
   assert.equal(keyPayload(st.key, "shopA", "base key after paying").m.join(), "base");
-  assert.deepEqual(st.moduleKeys, [firstKey], "the Assistant key is unchanged");
+  assert.deepEqual(st.moduleKeys, [firstKey, addonsKey], "the Assistant key is unchanged");
   assert.equal((await db.query(`SELECT count(*)::int AS n FROM subscriptions WHERE shop_id = $1`, [shopA])).rows[0].n, 1);
   assert.equal((await db.query(`SELECT status FROM assistant_subscriptions WHERE shop_id = $1`, [shopA])).rows[0].status, "active");
   console.log("base plan beside the Assistant: ok");
@@ -364,7 +397,7 @@ try {
   r = await ask(installKey, "shopA", st.moduleKeys[0], 2);
   assert.equal(r.status, 402, "the refunded key is refused at the proxy at once");
   st = await standing(installKey, "shopA");
-  assert.deepEqual(st.moduleKeys, [], "no Assistant key after the refund");
+  assert.deepEqual(st.moduleKeys, [addonsKey], "no Assistant key after the refund: the add-ons' alone");
   assert.ok(st.revokeKeyIds.includes(yearlyKey.id), "the refunded key is named for removal");
   me = await ok(await page(a, "/me"));
   assert.equal(me.shops[0].assistant.status, "ended");
@@ -412,6 +445,31 @@ try {
   assert.equal(ar.unpaid_since, null, "nor does its loss");
   assert.equal(stripeMock.subscriptions.get(sub2).status, "canceled", "lost: the subscription is cancelled");
   console.log("an Assistant chargeback acted on once: ok");
+
+  // ----- 8f. keys owed: past_due keeps the paid period's key (Stripe has moved the period on to the unpaid one, so nothing
+  // new is signed), a key run out isn't sent, and one that ends unpaid has its key revoked -----
+  const assistantOf = (keys) => keys.map((k) => keyPayload(k, "shopA", "module key")).find((x) => x.m.includes("assistant"));
+  const co4 = await ok(await page(a, `/shops/${shopA}/assistant/checkout`, { interval: "monthly" }));
+  const paid4 = await mockPost(`/__pay/${co4.sessionId}`);
+  allDelivered(paid4, "the Assistant again");
+  const owed = assistantOf((await standing(installKey, "shopA")).moduleKeys);
+  await mockPost(`/__subscriptions/${paid4.subscription.id}`, { status: "past_due", current_period_end: stripeMock.subscriptions.get(paid4.subscription.id).current_period_end + 30 * 86400 });
+  st = await standing(installKey, "shopA");
+  assert.deepEqual([assistantOf(st.moduleKeys)?.id, assistantOf(st.moduleKeys)?.u], [owed.id, owed.u], "past_due: the paid period's key, none for the unpaid one");
+  // A key that ran out isn't sent (an Assistant key of 2020 stored as the newest, its subscription past_due).
+  const oldPayload = { v: 1, k: "hub1", id: "OLDKEY2020", s: "shopA", n: "A Repair", m: ["assistant"], p: "m", f: "2020-01-01", u: "2020-01-31", g: 14, t: new Date().toISOString() };
+  const oldBytes = Buffer.from(JSON.stringify(oldPayload), "utf8");
+  const oldKey = `SB1.${oldBytes.toString("base64url")}.${crypto.sign(null, oldBytes, privateKey).toString("base64url")}`;
+  await db.query(`INSERT INTO license_issues (key_id, shop_id, kid, plan, modules, first_day, last_day, grace_days, key, tier, founding) VALUES ($1, $2, 'hub1', 'm', '{assistant}', '2020-01-01', '2020-01-31', 14, $3, NULL, false)`, [oldPayload.id, shopA, oldKey]);
+  st = await standing(installKey, "shopA");
+  assert.deepEqual(st.moduleKeys, [addonsKey], "a key past its grace isn't sent");
+  await db.query(`DELETE FROM license_issues WHERE key_id = $1`, [oldPayload.id]);
+  // Ended unpaid (dunning gave up): its key is revoked and not sent again.
+  await mockPost(`/__subscriptions/${paid4.subscription.id}/cancel`, {});
+  st = await standing(installKey, "shopA");
+  assert.deepEqual(st.moduleKeys, [addonsKey], "no key for a subscription that ended unpaid");
+  assert.ok(st.revokeKeyIds.includes(owed.id), "and it is named for removal");
+  console.log("keys owed: ok");
 
   // ----- 9. a hub without the Assistant prices -----
   await stopHub();

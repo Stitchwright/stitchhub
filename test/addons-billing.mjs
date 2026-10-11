@@ -18,6 +18,14 @@ import { spawn } from "node:child_process";
 import pg from "pg";
 import { startStripeMock } from "./stripe-mock.mjs";
 
+// Parked since 11 Oct 2026 (StitchBench docs/plans/free-software-design.md, package 1): every shop has the five add-ons
+// free, for good: every claim carries their key, so the walk below no longer holds. test/billing.mjs checks
+// every shop's add-ons key (and that no comp, "Lapse now" or webhook takes it) and a price id given to two products;
+// test/assistant-billing.mjs has the Assistant's parts that were here (a top-up refunded before its credit, the keys
+// owed). Package 3 removes src/addons.mjs and this test.
+console.log("add-on billing: skipped (parked since 11 Oct 2026: every shop has the five add-ons free; package 3 removes src/addons.mjs and this test)");
+process.exit(0);
+
 const BASE_DB = process.env.DATABASE_URL || "postgresql://stitchbench:stitchbench@127.0.0.1:5433/postgres";
 const ADMIN = "addons-billing-test-admin-0123456789";
 const JOIN = "join-addons-billing-test";

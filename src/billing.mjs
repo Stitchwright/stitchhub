@@ -1,3 +1,10 @@
+// Since 11 Oct 2026 the software is free (the owner's decision; StitchBench docs/plans/free-software-design.md): every
+// shop has the program and every add-on free, for good, on Windows, self-hosted or hosted. standingOf answers that for
+// every shop (the admin's "comp forever, everything": standing comped, keys of plan c through 2099-12-31 for the program
+// and the five add-ons) and nothing ends it: not a trial, the waiver, a refund, a chargeback or "Lapse now". The
+// webhook, refunds, disputes and dunning stay for hosting billing (package 4). The Assistant is still sold as before.
+// The rest of this note is the plan billing as it was built:
+//
 // Billing on the hub (hub-accounts-billing-design.md section 3; the price list of pricing-recommendation.md section 12,
 // decided 3 Oct 2026): two plans per shop through Stripe Billing, Solo (up to two people signed in, $25 a month or $250
 // a year) and Shop (everyone, $45 or $450), the same features on both; the first 25 founding shops pay $15 / $30 a month
@@ -68,6 +75,9 @@ export const addDays = (ymd, n) => new Date(Date.parse(`${ymd}T00:00:00Z`) + n *
 const today = () => day(new Date());
 const earlier = (a, b) => (a < b ? a : b);
 
+/** What every shop is told, and what a 1.7.x program shows beside "Free, with the hub admin's compliments" (standing comped). */
+export const FREE_WORDS = "Free, with every add-on.";
+
 // ----- plans and prices -----
 
 export const TIERS = ["solo", "shop"];
@@ -114,7 +124,7 @@ export const planOfPrice = (priceId) => (priceId ? (priceBook().byId.get(priceId
 export const billingOpen = () => billingProblem() === null;
 /** Why they can't, for the admin page; null when billing is open. */
 export function billingProblem() {
-  if (!process.env.STRIPE_SECRET_KEY?.trim()) return "STRIPE_SECRET_KEY isn't set: subscriptions aren't open, and every shop runs free (a trial that ended changes nothing).";
+  if (!process.env.STRIPE_SECRET_KEY?.trim()) return "STRIPE_SECRET_KEY isn't set: subscriptions aren't open.";
   if (!stripe.stripeConfigured()) return "STRIPE_SECRET_KEY doesn't look like a Stripe secret key (sk_live_… or sk_test_…).";
   const missing = PRICE_VARS.filter((v) => !v.founding && !priceFor(v.tier, v.interval, false)).map((v) => v.env);
   if (missing.length) {
@@ -295,7 +305,10 @@ function cutKey(shop, plan, t, tier = "shop", founding = false) {
   return { plan, f: yesterday, u: yesterday, g: 0, cut: true, tier, founding };
 }
 
-/** What a subscription row says today, or null when it says nothing yet (Checkout never finished). */
+/**
+ * What a subscription row says today, or null when it says nothing yet (Checkout never finished). Parked: standingOf
+ * doesn't ask while every shop is free; hosting billing (package 4) builds on it.
+ */
 function fromSubscription(shop, sub, t) {
   const periodEnd = sub.current_period_end ? day(sub.current_period_end) : null;
   const plan = sub.plan ?? "m";
@@ -368,6 +381,7 @@ function fromSubscription(shop, sub, t) {
 }
 
 // ----- the real-partnership rule -----
+// No longer consulted since 11 Oct 2026: every shop is free, partnered or not. Kept until package 3 removes it.
 // A partnered quilt shop's free plan holds while BOTH (1) its repair partner is a paying subscriber (standing "active"
 // by a subscription: paid, or trialing with a card; not a free trial, a comp, a lapse, or itself waived) and (2) a repair
 // passed between the two shops in the last calendar quarter or the current one (partner_messages the hub already relays:
@@ -446,97 +460,29 @@ export function graceMessage(w) {
   return `Your free StitchShop comes with your repair partnership with ${w.shopName}. Subscribe to keep going after ${w.grace.end}; nothing is locked or lost. ${why}`;
 }
 
-/** The repair shop whose ACTIVE partner link waives this retail shop (or holds it in grace), or null. */
-const waiverFor = waiverRule;
-
 /**
- * Where a shop stands today. `want` is the key the program should hold for it (null: leave what it has), `source` says
- * which rule decided, `subscription` is the row as the account page shows it, `waivedBy` the repair shop (waived, or a
- * subscriber who could cancel and stay free).
+ * Where a shop stands today: free, with every add-on, for good (since 11 Oct 2026), whatever its trial, subscription,
+ * partnership, comp or lapse says. It is the admin's "comp forever, everything" for every shop: standing comped (a 1.7.x
+ * program reads it as "Free, with the hub admin's compliments"), the login plan Shop, and `want` the program's own key,
+ * plan c through 2099-12-31 (addonKeysFor signs the five add-ons' the same way). The key's first day is yesterday, so it
+ * has started in every time zone when it arrives. Nothing is written for it: comp_until stays the admin's own comp, which
+ * now only gives a company backup space and free plate reads of its own (db.mjs paysOwnWay). `source` "free" tells this
+ * rule from that comp; `subscription` is the row as the admin page shows it.
  */
-export async function standingOf(shop, { noWaiver = false } = {}) {
-  const t = today();
+export async function standingOf(shop) {
   const sub = await one(`SELECT * FROM subscriptions WHERE shop_id = $1`, [shop.id]);
-  const subState = sub ? fromSubscription(shop, sub, t) : null;
-  // The login plan: Shop unless a subscription's own words say otherwise (set below for those); a lapsed shop keeps
-  // its last plan, which is its subscription's when it ever had one.
-  const lastTier = sub?.stripe_subscription_id ? subTier(sub) : "shop";
-  const lastFounding = sub?.stripe_subscription_id ? Boolean(sub.founding) : false;
-  const out = (fields) => ({ lastDay: null, waivedBy: null, plan: "shop", interval: null, founding: false, ...fields, subscription: subOut(sub) });
-  const fromSub = (fields) => out({ ...fields, plan: subTier(sub), interval: PLAN_WORDS[sub.plan] ?? null, founding: Boolean(sub.founding) });
-  const trialLast = day(new Date(trialEndMs(shop)));
-  const trialKey = { plan: "t", f: day(shop.created_at), u: trialLast, g: GRACE_DAYS, tier: "shop" };
-  // The whole first payment was refunded while the trial still ran (and not charged back): the subscription is set aside
-  // and the shop is back on its trial through the trial's original last day, then a trial that ended.
-  const trialRefund = Boolean(sub?.unpaid_since && sub.refunded_in_trial && !sub.disputed_at);
-
-  // 1. The admin ended it.
-  if (shop.lapsed_at) {
-    const d = day(shop.lapsed_at);
-    return out({
-      standing: "lapsed",
-      source: "admin",
-      lastDay: d,
-      plan: lastTier,
-      founding: lastFounding,
-      message: `The hub admin ended this shop's standing on ${d}, so the program is read-only. Ask the hub admin.`,
-      want: cutKey(shop, "t", t, lastTier, lastFounding),
-    });
-  }
-  // 2. A subscription that is paid, or in its grace.
-  if (subState && subState.standing !== "lapsed") {
-    const waiver = noWaiver ? null : await waiverFor(shop);
-    const note = waiver && !waiver.grace ? ` You're partnered with ${waiver.shopName}, so this shop would be free without a subscription: you can cancel under Manage billing and stay free.` : "";
-    return fromSub({ ...subState, source: "subscription", message: subState.message + note, waivedBy: waiver });
-  }
-  // 3. The admin's comp.
-  if (shop.comp_until && shop.comp_until.getTime() > Date.now()) {
-    const forever = shop.comp_until.getTime() >= FOREVER.getTime();
-    const last = forever ? NO_END : day(shop.comp_until);
-    return out({
-      standing: "comped",
-      source: "comp",
-      lastDay: forever ? null : last,
-      message: forever ? "Free, with the hub admin's compliments." : `Free through ${last}, with the hub admin's compliments.`,
-      want: { plan: "c", f: t, u: last, g: GRACE_DAYS, tier: "shop" },
-    });
-  }
-  // 4. Free while partnered: a retail shop whose repair shop is in good standing.
-  const waiver = noWaiver ? null : await waiverFor(shop);
-  if (waiver) {
-    // In grace (the rule broke, see waiverRule): still waived, the key never runs past the grace, the last day is its end.
-    const last = waiver.grace ? earlier(addDays(t, WAIVER_DAYS - 1), waiver.grace.end) : addDays(t, WAIVER_DAYS - 1);
-    return out({
-      standing: "waived",
-      source: "waiver",
-      waivedBy: waiver,
-      lastDay: waiver.grace ? waiver.grace.end : null,
-      message: waiver.grace ? graceMessage(waiver) : `Free while you're partnered with ${waiver.shopName}.`,
-      want: billingOpen() ? { plan: "w", f: t, u: last, g: GRACE_DAYS, tier: "shop" } : null,
-    });
-  }
-  // 5. A subscription that ended (unless the trial is still running; a refund or chargeback lapses the shop even then,
-  // except a full refund of the first payment inside the trial, which goes back to the trial).
-  if (subState && !trialRefund && (trialLast < t || sub.unpaid_since)) return fromSub({ ...subState, source: "subscription" });
-  // 6. A waiver that ended while its last key still runs: notice, then lapsed (the key the program holds does the rest).
-  if (!noWaiver) {
-    const w = await one(`SELECT last_day::text AS last_day FROM license_issues WHERE shop_id = $1 AND plan = 'w' AND revoked_at IS NULL ORDER BY issued_at DESC LIMIT 1`, [shop.id]);
-    if (w && w.last_day >= t && trialLast < t) {
-      return out({ standing: "trial", source: "waiver-ended", lastDay: w.last_day, message: `Your free use through a partner repair shop has ended. Subscribe by ${w.last_day} to keep working.`, want: null });
-    }
-  }
-  // 7. The trial, running or over.
-  if (trialLast >= t) {
-    const message = trialRefund
-      ? `The payment for this shop was refunded on ${day(sub.unpaid_since)}, so it's back on its free trial through ${trialLast}. Subscribe on your StitchHub account page to keep working after that.`
-      : `Free trial through ${trialLast}.`;
-    return out({ standing: "trial", source: "trial", lastDay: trialLast, message, want: billingOpen() ? trialKey : null });
-  }
-  if (!billingOpen()) {
-    // Nobody can pay yet, so nothing lapses for want of payment: the words say so and no key is signed.
-    return out({ standing: "trial", source: "trial", lastDay: trialLast, message: `The free trial ended on ${trialLast}. Subscriptions aren't open yet, so nothing changes until they are.`, want: null });
-  }
-  return out({ standing: "lapsed", source: "trial", lastDay: trialLast, message: `The free trial ended on ${trialLast}, so the program is read-only. Subscribe on your StitchHub account page to keep working.`, want: trialKey });
+  return {
+    standing: "comped",
+    source: "free",
+    lastDay: null,
+    message: FREE_WORDS,
+    plan: "shop",
+    interval: null,
+    founding: false,
+    waivedBy: null,
+    want: { plan: "c", f: addDays(today(), -1), u: NO_END, g: GRACE_DAYS, tier: "shop" },
+    subscription: subOut(sub),
+  };
 }
 
 // ----- keys -----
@@ -614,12 +560,12 @@ export async function claimAnswer(shop) {
   const { key, revokeKeyIds } = await keyFor(shop, st);
   // The Assistant's keys (module "assistant", its own subscription: src/assistant-billing.mjs), apart from the program's.
   const { keys: assistantKeys } = await assistantKeysFor(shop);
-  // The trade add-ons' keys (src/addons.mjs: each add-on, or the bundle, its own subscription; the comp's for "everything").
+  // The five add-ons' key, every shop's since 11 Oct 2026 (src/addons.mjs: plan c through 2099-12-31).
   const { keys: addonKeys } = await addonKeysFor(shop);
   // Only keys that still hold (their last day plus grace not past: a key run out is no use and takes a place), the paid
   // ones first, then the comp's; at most MAX_MODULE_KEYS, as many as the program takes (it drops a stored hub add-on key
-  // missing from a non-empty list, so a key owed must never be cut off: the Assistant, five singles in their grace, the
-  // bundle and the comp are eight).
+  // missing from a non-empty list, so a key owed must never be cut off: there are two at most, the Assistant's and the
+  // add-ons').
   const t = today();
   const moduleKeys = [...assistantKeys, ...addonKeys]
     .map((k) => ({ k, p: keyPayloadOf(k) }))
@@ -630,11 +576,14 @@ export async function claimAnswer(shop) {
   return { standing: st.standing, lastDay: st.lastDay, message: st.message, plan: st.plan, interval: st.interval, founding: st.founding, key, moduleKeys, revokeKeyIds };
 }
 
-/** Every live key of a shop is revoked (the program is told to drop them at its next sync). */
+/**
+ * Every live key of a shop is revoked (the program is told to drop them at its next sync), of `plans` only when named.
+ * Never one that runs to 2099-12-31: every shop's key since 11 Oct 2026, which a 1.7.x program must never lose.
+ */
 export async function revokeLiveKeys(client, shopId, plans = null) {
   await client.query(
-    `UPDATE license_issues SET revoked_at = now() WHERE shop_id = $1 AND revoked_at IS NULL AND 'base' = ANY(modules) AND last_day + grace_days >= current_date AND ($2::text[] IS NULL OR plan = ANY($2))`,
-    [shopId, plans],
+    `UPDATE license_issues SET revoked_at = now() WHERE shop_id = $1 AND revoked_at IS NULL AND 'base' = ANY(modules) AND last_day + grace_days >= current_date AND last_day < $3::date AND ($2::text[] IS NULL OR plan = ANY($2))`,
+    [shopId, plans, NO_END],
   );
 }
 
@@ -945,6 +894,10 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
   }
 
   // ----- webhooks -----
+  // Kept for hosting billing (package 4). What they write about a shop's own subscription (a failed payment, a refund or
+  // chargeback taking a period back, an ended subscription) no longer reaches its standing, so none of it can make a shop
+  // read-only, and the keys they revoke are a period's own (plans m and y), never the forever ones. The Assistant's
+  // subscription is handled as before.
 
   /**
    * Whether the shop's stored subscription stays when another one (`s`) for the same shop comes in: it is replaced when
@@ -1524,16 +1477,19 @@ ${hubUrl}`,
   // ----- admin -----
 
   // "Lapse now": the shop's standing ends at this moment, whatever else holds, and its live keys are revoked; the program
-  // is read-only from its next sync. { lapsed: false } takes it back; a comp or a payment does too.
+  // is read-only from its next sync. { lapsed: false } takes it back; a comp or a payment does too. Parked until hosting
+  // billing (package 4) brings it back for hosted shops: every shop is free, so a lapse is refused before anything is
+  // written or revoked. "Undo lapse" still clears a mark made before.
   admin.post("/shops/:id/lapse", async (c) => {
     const body = await c.req.json().catch(() => ({}));
     const lapsed = body.lapsed !== false;
+    if (lapsed) throw fail(410, "Lapse now is parked: every shop is free, with every add-on, for good.");
     const shop = await tx(async (client) => {
       const r = await client.query(`UPDATE shops SET lapsed_at = CASE WHEN $2 THEN coalesce(lapsed_at, now()) ELSE NULL END WHERE id = $1 RETURNING *`, [c.req.param("id"), lapsed]);
       if (!r.rowCount) throw fail(404, "No such shop.");
       if (lapsed) {
         await revokeLiveKeys(client, r.rows[0].id);
-        // The comp's add-on key goes too (no new one is signed while the shop is lapsed: addons.mjs compCovers).
+        // The comp's add-on key goes too.
         await revokeCompAddonKeys(client, r.rows[0].id);
       }
       return r.rows[0];

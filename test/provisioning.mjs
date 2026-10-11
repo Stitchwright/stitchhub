@@ -197,7 +197,7 @@ try {
   const row = await one(`SELECT s.*, a.email FROM shops s JOIN accounts a ON a.id = s.account_id WHERE s.shop_ref = $1`, [started.shopRef]);
   assert.ok(row, "the company is on the hub, tied to the account");
   assert.deepEqual([row.install_id, row.email, row.program, row.kind, row.reset_opt_in], [X.installId, emailA, "StitchShop", "retail", false]);
-  // The service's first claim finds it under the account (its trial runs from the start).
+  // The service's first claim finds it under the account.
   const claimed = await ok(await call("/v1/shops/claim", { key: X.installKey, json: { shopRef: started.shopRef, shopName: `Ann's Quilts ${RUN}`, kind: "retail", program: "StitchShop", version: "x", sole: false } }));
   assert.deepEqual(claimed.account, { email: emailA, verified: true });
   assert.equal(claimed.shop.id, row.id);

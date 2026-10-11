@@ -213,7 +213,7 @@ try {
   assert.equal(moved.ok, true);
   assert.equal(moved.shop.id, claimA.shop.id, "the same hub shop, with its account and standing");
   assert.equal(moved.shop.version, "1.8.0");
-  assert.equal(moved.standing, "waived", "a sewing shop partnered with a repair shop in good standing, as before the move");
+  assert.equal(moved.standing, "comped", "free, as every shop is, as before the move");
   assert.equal(moved.installKey, undefined, "an install with a key gets no other");
   assert.deepEqual(moved.partner, { shopRef: "a", links: [L1] });
   assert.ok(moved.moved.listings >= 1 && moved.moved.orders === 2 && moved.moved.posts === 1, JSON.stringify(moved.moved));

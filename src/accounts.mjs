@@ -6,8 +6,8 @@
 //      and gets an install key back (scope "pending" until the email is verified, then "member").
 //   2. The program shows a link code (/v1/accounts/link-code); the owner signs in here and types it under "Connect a shop".
 //   3. On the hub first: /account sign-up, verify by email, then connect a shop with a code.
-// Standing is answered for every claimed shop (src/billing.mjs works it out: trial, subscription, comp, the waiver for a
-// partnered retail shop, lapsed) with the key the program should hold for it.
+// Standing is answered for every claimed shop (src/billing.mjs: since 11 Oct 2026 free, with every add-on, for good) with
+// the keys the program should hold for it.
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -16,7 +16,7 @@ import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { one, q, tx } from "./db.mjs";
 import { sendMail, mailProblem } from "./mail.mjs";
 import { assistantOffer, assistantPriceList, assistantStanding } from "./assistant-billing.mjs";
-import { addonPriceList, addonProblem, addonsForSale, addonStandings, ADDON_IDS, extraStores, MAX_SINGLES, modulesOn, revokeCompAddonKeys, stillBilled, storesForSale } from "./addons.mjs";
+import { addonPriceList, addonProblem, addonsForSale, addonStandings, ADDON_IDS, extraStores, MAX_SINGLES, modulesOn, stillBilled, storesForSale } from "./addons.mjs";
 import { registered as billingHooks, standingOf, claimAnswer, billingOpen, billingProblem, FOREVER, FOUNDING_LIMIT, foundingMissing, foundingUsed, priceList, refreshFounding, SOLO_LOGINS, trialChargeStart } from "./billing.mjs";
 import { signer as hubSigner } from "./license.mjs";
 import { stripeMode } from "./stripe.mjs";
@@ -275,11 +275,11 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
     if (!allow(`shops:${c.get("install").id}`, 3000)) throw fail(429, "Too many shop requests in the last hour. Try again later.");
   };
 
-  // Every company on an install says who it is at every sync: its name, kind, program and version. The first time
-  // starts its trial. On an install with one company (`sole: true`, or an older program, which sent only shopRef and
-  // only for its one company), what the install listed, ordered and shared before it named its company becomes that
-  // company's (market.mjs); on an install with several, nothing is handed to whichever company claims first. The answer
-  // carries the standing, so the program needs no second request.
+  // Every company on an install says who it is at every sync: its name, kind, program and version. On an install with
+  // one company (`sole: true`, or an older program, which sent only shopRef and only for its one company), what the
+  // install listed, ordered and shared before it named its company becomes that company's (market.mjs); on an install
+  // with several, nothing is handed to whichever company claims first. The answer carries the standing, so the program
+  // needs no second request.
   member.post("/shops/claim", async (c) => {
     shopsLimit(c);
     const body = await c.req.json().catch(() => ({}));
@@ -712,6 +712,9 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
   });
 
   // "Free until <date>" or for good, with a note; an empty `until` takes the comp away. A comp also takes back "Lapse now".
+  // Since 11 Oct 2026 every shop is free with every add-on whatever its comp, so a comp changes no key and none is revoked
+  // (the forever keys must never be); it still gives a company backup space and free plate reads of its own (db.mjs
+  // paysOwnWay).
   admin.post("/shops/:id/comp", async (c) => {
     const body = await c.req.json();
     let until = null;
@@ -721,19 +724,13 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
       if (Number.isNaN(until.getTime())) throw fail(400, "Give the last free day as YYYY-MM-DD, or \"forever\".");
     }
     // { addons: true }: the comp covers the five trade add-ons too ("everything"; the Assistant has its own comp). Left out,
-    // what was chosen before stays. Any change revokes the add-ons' comp key: a comp taken away, no longer covering the
-    // add-ons, or given a new last day (one in the past, or sooner than the key's) must not leave the old key live; while
-    // the comp still covers them the next claim signs one for the new last day.
+    // what was chosen before stays.
     const addons = typeof body.addons === "boolean" ? body.addons : null;
-    const r = await tx(async (client) => {
-      const res = await client.query(
-        `UPDATE shops SET comp_until = $2, comp_note = $3, lapsed_at = CASE WHEN $2::timestamptz IS NULL THEN lapsed_at ELSE NULL END,
-           comp_addons = CASE WHEN $2::timestamptz IS NULL THEN false ELSE coalesce($4, comp_addons) END WHERE id = $1 RETURNING comp_addons`,
-        [c.req.param("id"), until, until ? str(body.note, 300) : null, addons],
-      );
-      if (res.rowCount) await revokeCompAddonKeys(client, c.req.param("id"));
-      return res;
-    });
+    const r = await q(
+      `UPDATE shops SET comp_until = $2, comp_note = $3, lapsed_at = CASE WHEN $2::timestamptz IS NULL THEN lapsed_at ELSE NULL END,
+         comp_addons = CASE WHEN $2::timestamptz IS NULL THEN false ELSE coalesce($4, comp_addons) END WHERE id = $1 RETURNING comp_addons`,
+      [c.req.param("id"), until, until ? str(body.note, 300) : null, addons],
+    );
     if (!r.rowCount) throw fail(404, "No such shop.");
     return c.json({ ok: true, shop: await adminShop((await shopRows("WHERE s.id = $1", [c.req.param("id")]))[0]) });
   });

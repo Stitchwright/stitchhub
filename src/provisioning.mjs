@@ -127,7 +127,7 @@ export function registerProvisioning({ member, acct, fail, newId, allow, clientI
     const link = typeof answer?.setPasswordUrl === "string" && answer.setPasswordUrl.startsWith(`${target.origin}/reset?t=`) ? answer.setPasswordUrl : null;
     if (!shopRef || !link) throw await failed(502, "an answer the hub doesn't understand", `The hosted ${program} answered in a way the hub doesn't understand. Ask the hub admin.`);
     // The company on the hub, tied to this account now, when the service is an install of this hub: its first claim
-    // then finds it here, under the account, and its trial starts from this moment.
+    // then finds it here, under the account.
     const installId = typeof answer.hub?.installId === "string" ? answer.hub.installId : null;
     const inst = installId ? await one(`SELECT id FROM installs WHERE id = $1 AND NOT blocked`, [installId]) : null;
     let shop = null;
