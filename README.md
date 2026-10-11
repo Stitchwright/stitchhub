@@ -862,3 +862,8 @@ figure a shop shared).
 ## License
 
 AGPL-3.0. You can run, change and share it. If you run a changed version for other people, share your changes too.
+
+Every public page's footer has a **Source code** link, and `GET /source` redirects to the same address: `SOURCE_URL` (the
+repository; `https://github.com/sitesentrix/stitchhub` when it is unset), at the commit being run (`<SOURCE_URL>/tree/<commit>`)
+when Railway sets `RAILWAY_GIT_COMMIT_SHA` (it does for a deploy from GitHub). If you run a changed version, set
+`SOURCE_URL` to the public repository that has your changes.

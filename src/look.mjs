@@ -120,6 +120,12 @@ hr{border:0;border-top:2px dashed var(--line);margin:24px 0}
 
 export const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
 
+// Where the code this hub runs can be had (AGPL-3.0: everyone who uses the hub may get it). SOURCE_URL is the repository
+// (a hub running changed code points it at its own); on Railway the deployed commit is linked, so the code is what runs.
+const SOURCE_REPO = (/^https?:\/\/\S+$/i.test(process.env.SOURCE_URL?.trim() ?? "") ? process.env.SOURCE_URL.trim() : "https://github.com/sitesentrix/stitchhub").replace(/\/+$/, "");
+const COMMIT = process.env.RAILWAY_GIT_COMMIT_SHA?.trim() ?? "";
+export const SOURCE_URL = /^[0-9a-f]{7,64}$/i.test(COMMIT) ? `${SOURCE_REPO}/tree/${COMMIT}` : SOURCE_REPO;
+
 // The bar at the top. `active` is the path of the current page; `nav: false` shows the name only (the shoppers' pages).
 export function header(hubName, { active = "", nav = true } = {}) {
   const links = [
@@ -132,7 +138,7 @@ export function header(hubName, { active = "", nav = true } = {}) {
 }
 
 export function footer(hubName) {
-  return `<footer class="foot"><div class="in"><span class="stitch" aria-hidden="true"></span><span>${esc(hubName)}, the community hub for StitchBench and StitchShop</span><a href="/terms">Terms</a><a href="/privacy">Privacy</a><a href="/copyright">Copyright</a></div></footer>`;
+  return `<footer class="foot"><div class="in"><span class="stitch" aria-hidden="true"></span><span>${esc(hubName)}, the community hub for StitchBench and StitchShop</span><a href="/terms">Terms</a><a href="/privacy">Privacy</a><a href="/copyright">Copyright</a><a href="${esc(SOURCE_URL)}">Source code</a></div></footer>`;
 }
 
 // A whole page: the shared look, then any page-specific CSS, then the header, the body and the footer.
