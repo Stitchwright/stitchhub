@@ -86,7 +86,7 @@
 
     <section>
       <h2>Accounts</h2>
-      <p class="muted">Shop owners' StitchHub accounts (<a href="/account">/account</a>): email, whether the address is confirmed, and the shops each one owns. "Resend" mails the set-password or confirmation link again. "Delete" is for an owner who asks: the account goes, its shops stay on the hub with no account. "Founding shop" gives the account the founding prices ($15 Solo, $30 Shop a month; $150 / $300 a year) when it subscribes or switches: the first 25 only, kept while its subscription runs without a gap of more than 60 days (after that the mark goes by itself).</p>
+      <p class="muted">Shop owners' StitchHub accounts (<a href="/account">/account</a>): email, whether the address is confirmed, and the shops each one owns. "Resend" mails the set-password or confirmation link again. "Delete" is for an owner who asks: the account goes, its shops stay on the hub with no account.</p>
       <p id="accountsProblem" class="bad" hidden></p>
       <p id="foundingPlaces" class="muted"></p>
       <div class="scroll"><table><thead><tr><th>Email</th><th>Confirmed</th><th>Shops</th><th>Founding</th><th>Made</th><th>Last sign-in</th><th></th></tr></thead><tbody id="accounts"></tbody></table></div>
@@ -94,7 +94,7 @@
 
     <section>
       <h2>Shops</h2>
-      <p class="muted">Every company that has told the hub about itself, with its standing: a 30-day trial from its first sync, a subscription through Stripe (Solo, up to 2 people signed in, $25 a month or $250 a year; Shop, everyone, $45 or $450; founding prices for founding accounts), free while partnered with a repair shop in good standing (a sewing or quilt shop), or free with your compliments ("Comp": a last free day, or for good). "Lapse now" ends a shop's standing at once (the program is read-only from its next sync); a comp, a payment or "Undo lapse" takes it back. "Open in Stripe" shows the owner's customer, or the subscription, in your Stripe dashboard.</p>
+      <p class="muted">Every company that has told the hub about itself, with its standing. Since 11 Oct 2026 every shop is free, with every add-on, for good: each claim carries keys that never run out, and nothing ends that (plan billing and "Lapse now" are parked until hosting billing). "Comp" now only gives a company off-site backup space and free plate reads of its own; "Undo lapse" clears a mark made before. "Open in Stripe" shows the owner's customer, or the subscription, in your Stripe dashboard.</p>
       <p id="billingState" class="muted"></p>
       <div class="scroll"><table><thead><tr><th>Shop</th><th>Member (install)</th><th>Kind</th><th>Program</th><th>Account</th><th>Standing</th><th>Last seen</th><th></th></tr></thead><tbody id="shops"></tbody></table></div>
     </section>
@@ -463,7 +463,6 @@
     const extra = [s.compNote && s.standing === "comped" ? s.compNote : null, sub ? `Stripe: ${sub.plan === "solo" ? "Solo" : "Shop"}, ${sub.interval || "unknown interval"}${sub.founding ? ", founding price" : ""}, ${sub.status}${sub.cancelAtPeriodEnd ? ", cancels at period end" : ""}${sub.periodEnd ? `, period ends ${sub.periodEnd}` : ""}${sub.unpaidSince ? `, ${sub.disputedAt ? "CHARGEBACK" : "refunded"} ${sub.unpaidSince}` : ""}${sub.inquiryAt ? `, INQUIRY ${sub.inquiryAt}${sub.inquiries > 1 ? ` (${sub.inquiries} open)` : ""} (the card company is asking; no chargeback yet, the shop keeps working)` : ""}` : null].filter(Boolean);
     if (s.standing === "waived" && s.waivedBy) extra.push(`partner ${s.waivedBy.name} (${s.waivedBy.partnerStanding || "?"}); ${s.waivedBy.repairs} repair${s.waivedBy.repairs === 1 ? "" : "s"} last quarter and this; last repair ${s.waivedBy.lastRepair || "none yet"}${s.waivedBy.graceEnd ? `; GRACE ends ${s.waivedBy.graceEnd} (${s.waivedBy.graceReason === "activity" ? "no repairs" : s.waivedBy.graceReason === "partner" ? "partner not subscribed" : "partner not subscribed, no repairs"})` : ""}`);
     // The trade add-ons (each its own Stripe subscription, or all five) and the stores the program reported.
-    if (s.addons?.on?.length) extra.push(`add-ons: ${s.addons.on.join(", ")}${s.compAddons && s.standing === "comped" ? " (comped)" : ""}`);
     for (const x of s.addons?.subs || []) if (x.status !== "none") extra.push(`${x.product}: ${x.status}${x.paidThrough ? ` through ${x.paidThrough}` : ""}`);
     if (s.stores && s.stores.reported > 1) extra.push(`${s.stores.reported} stores (${s.stores.extra} extra${s.stores.billed != null ? `, ${s.stores.billed} billed` : ", not billed: no subscription"})`);
     return `${s.standing}: ${s.message}${extra.length ? ` (${extra.join("; ")})` : ""}`;
@@ -487,14 +486,13 @@
     return a;
   }
   function compButton(s) {
-    const b = document.createElement("button"); b.className = "plain"; b.textContent = s.standing === "comped" ? "Change comp" : "Comp";
+    const b = document.createElement("button"); b.className = "plain"; b.textContent = s.compUntil ? "Change comp" : "Comp";
     b.onclick = async () => {
       const until = prompt(`Free until (YYYY-MM-DD), "forever", or empty to take the comp away:`, s.compUntil ? (s.compUntil.startsWith("2099") ? "forever" : s.compUntil.slice(0, 10)) : "forever");
       if (until === null) return;
       const note = until ? prompt("A note for yourself (why):", s.compNote || "") : null;
-      // "Everything": the comp covers the five add-ons too (Vac Shop, Small Appliance, Scheduling, Marketing, Maker Shop); the Assistant has its own comp below.
-      const addons = until.trim() ? confirm("Comp the five add-ons too (everything but the Assistant)? OK for everything, Cancel for the program only.") : false;
-      try { await post(`/shops/${s.id}/comp`, { until: until.trim(), note, addons }); say(until.trim() ? "Comp saved." : "Comp taken away."); loadAccounts(); } catch (err) { say(err.message, true); }
+      // Every shop has the five add-ons free (since 11 Oct 2026), so the comp no longer asks about them.
+      try { await post(`/shops/${s.id}/comp`, { until: until.trim(), note }); say(until.trim() ? "Comp saved." : "Comp taken away."); loadAccounts(); } catch (err) { say(err.message, true); }
     };
     return b;
   }
@@ -504,11 +502,8 @@
     stripeMode = a.billing?.stripeMode ?? null;
     window.hubShops = a.shops;
     const signing = a.billing?.signing ? `Keys are signed as ${a.billing.signing.kid} (public x ${a.billing.signing.x}: this line must be in license-keys.ts in both programs).` : a.billing?.signingProblem || "";
-    const addonGap = a.billing?.addonProblem ? ` Add-ons and extra stores: ${a.billing.addonProblem}` : "";
-    const foundingGap = a.billing?.foundingMissing?.length ? ` Founding prices not set yet (a founding shop can't take that plan until they are): ${a.billing.foundingMissing.join(", ")}.` : "";
-    $("billingState").textContent = `${a.billing?.open ? `Subscriptions are open (Stripe ${a.billing.stripeMode} mode).` : a.billing?.problem || ""}${foundingGap}${addonGap} ${signing}`;
+    $("billingState").textContent = `Every shop is free, with every add-on: plans and add-ons aren't sold. ${a.billing?.open ? `Stripe is open (${a.billing.stripeMode} mode) for the Assistant.` : a.billing?.problem || ""} ${signing}`;
     const places = a.foundingPlaces || { used: 0, limit: 25 };
-    $("foundingPlaces").textContent = `Founding shops: ${places.used} of ${places.limit} places used.`;
     $("accounts").replaceChildren(...a.accounts.map((x) => {
       const tr = document.createElement("tr");
       const f = x.founding || {};
@@ -521,7 +516,7 @@
         if (f.on && !confirm(`Take the founding mark off ${x.email}? A subscription already on a founding price keeps it in Stripe until it is changed there.`)) return;
         try { await post(`/accounts/${x.id}/founding`, { founding: !f.on }); say(f.on ? "Founding mark taken off." : "Marked as a founding shop."); loadAccounts(); } catch (err) { say(err.message, true); }
       };
-      c.append(fb, " ");
+      // "Founding shop" (fb) is parked with the plans, every shop being free: it isn't shown.
       if (!x.verified) { const r = document.createElement("button"); r.className = "plain"; r.textContent = "Resend"; r.onclick = async () => { try { await post(`/accounts/${x.id}/resend`, {}); say("Email sent again."); } catch (err) { say(err.message, true); } }; c.append(r, " "); }
       const off = document.createElement("button"); off.className = "plain"; off.textContent = x.disabled ? "Switch on" : "Switch off";
       off.onclick = async () => { try { await post(`/accounts/${x.id}/disable`, { disabled: !x.disabled }); loadAccounts(); } catch (err) { say(err.message, true); } };
@@ -532,7 +527,9 @@
     $("shops").replaceChildren(...a.shops.map((s) => {
       const tr = document.createElement("tr");
       tr.append(td(s.name), td(s.installName), td(s.kind), td([s.program, s.version].filter(Boolean).join(" ")), td(s.accountEmail || "none"), td(standingText(s)), td(when(s.lastSeenAt)));
-      const c = document.createElement("td"); c.append(compButton(s), " ", lapseButton(s));
+      // "Lapse now" is parked until hosting billing: only "Undo lapse", for a mark made before.
+      const c = document.createElement("td"); c.append(compButton(s));
+      if (s.lapsedAt) c.append(" ", lapseButton(s));
       const link = stripeLink(s); if (link) c.append(" ", link);
       tr.append(c); return tr;
     }));

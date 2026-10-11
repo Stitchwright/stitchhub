@@ -184,14 +184,14 @@
     const offered = Object.entries(me.hosted || {}).filter(([, on]) => on).map(([name]) => name);
     $("hosted").hidden = !me.account.verified || !offered.length;
     $("hsProgram").replaceChildren(...offered.map((name) => Object.assign(document.createElement("option"), { value: name, textContent: name === "StitchShop" ? "StitchShop (a sewing or quilt shop counter)" : "StitchBench (a repair bench)" })));
-    $("billingNote").textContent = me.billing.open ? billingWords(me.billing) : "Subscriptions aren't open yet. Every shop is free while the hub is in its community period.";
+    $("billingNote").textContent = billingWords(me.billing);
     show("app", where === "settings" ? "settings" : where === "manuals" ? "manuals" : where === "repository" ? "repository" : "shops");
     if (where === "manuals") searchManuals(0);
     if (where === "repository") loadRepo();
   }
 
   // "We updated our terms" (or, for an account that never ticked, "Please accept our terms"): shown while the version in
-  // force is newer than the one this account accepted. Subscribe needs the same tick.
+  // force is newer than the one this account accepted. Buying the Assistant needs the same tick.
   let termsNow = null;
   function showTermsPrompt(t) {
     termsNow = t || null;
@@ -201,37 +201,28 @@
     $("tpVersion").textContent = t.current + (t.draft ? " (a draft, not yet in force)" : "");
     $("tpTerms").href = `/terms/${encodeURIComponent(t.current)}`; $("tpPrivacy").href = `/privacy/${encodeURIComponent(t.current)}`;
     $("tpText").textContent = t.accepted
-      ? `This account accepted version ${t.accepted}${t.acceptedAt ? ` on ${new Date(t.acceptedAt).toLocaleDateString()}` : ""}. Please read the new version and accept it; subscribing a shop needs it.`
-      : "This account hasn't accepted the current Terms of Service and Privacy Policy yet. Please read them and accept them; subscribing a shop needs it.";
+      ? `This account accepted version ${t.accepted}${t.acceptedAt ? ` on ${new Date(t.acceptedAt).toLocaleDateString()}` : ""}. Please read the new version and accept it; buying the Assistant for a shop needs it.`
+      : "This account hasn't accepted the current Terms of Service and Privacy Policy yet. Please read them and accept them; buying the Assistant for a shop needs it.";
     $("tpTick").checked = false;
   }
 
-  // The two plans in words, under the shops table: what each costs for this account, and the founding mark.
+  // Under the shops table: every shop is free, with every add-on (since 11 Oct 2026: plans and add-ons aren't sold), and
+  // the Assistant's price while it is for sale.
   function billingWords(billing) {
-    const p = billing.prices || {};
-    const cost = (x) => [x?.monthly, x?.yearly].filter(Boolean).join(" or ");
-    const lines = [
-      `Two plans, the same program and every feature on both: Solo, for up to ${billing.soloLogins} people signed in, ${cost(p.solo)}; Shop, for everyone at the shop, ${cost(p.shop)}. Yearly is ten times monthly: two months free.`,
-      "Switch between Solo and Shop at any time: moving up to Shop charges the difference for the rest of the period now, moving down to Solo credits it on the next invoice. A sewing or quilt shop partnered with a repair shop in good standing gets Shop free.",
-    ];
-    const f = billing.founding;
-    if (f?.on) lines.push(f.losesOn ? `This account is a founding shop: subscribe again by ${f.losesOn} to keep the founding prices (they stay while a subscription runs without a gap of more than 60 days).` : "This account is a founding shop: these are the founding prices, locked while a subscription runs without a gap of more than 60 days.");
+    const lines = ["StitchBench and StitchShop are free for every shop, with every add-on."];
     const ap = billing.assistantPrices;
-    if (ap) lines.push(`The Assistant (drafts, likely causes, plate reads, parts and manuals help; 300 calls a month) is a separate add-on for any shop: ${[ap.monthly, ap.yearly].filter(Boolean).join(" or ")}${ap.topup ? `; ${ap.topUpCalls} more calls this month for ${ap.topup}` : ""}.`);
-    const xp = billing.addonPrices;
-    if (xp) {
-      const names = ["vac", "appliance", "scheduling", "marketing", "maker"].filter((k) => xp[k]).map((k) => `${xp[k].label} ${xp[k].monthly}`);
-      if (names.length) lines.push(`Add-ons, each for any shop: ${names.join(", ")}${xp.bundle ? `, or all five for ${xp.bundle.monthly} (${xp.bundle.yearly})` : ""}; yearly is ten times monthly.`);
-      if (xp.store) lines.push(`Each store after the first: ${xp.store.monthly} (${xp.store.yearly}), added to the shop's plan from the stores the program reports.`);
+    if (ap) {
+      lines.push(`The Assistant (drafts, likely causes, plate reads, parts and manuals help; 300 calls a month) is a separate add-on for any shop: ${[ap.monthly, ap.yearly].filter(Boolean).join(" or ")}${ap.topup ? `; ${ap.topUpCalls} more calls this month for ${ap.topup}` : ""}.`);
+      lines.push("Cards, cancelling and invoices are handled on Stripe's pages; the hub never sees your card.");
     }
-    lines.push("Cards, cancelling and invoices are handled on Stripe's pages; the hub never sees your card.");
     return lines.join(" ");
   }
   const TIER = { solo: "Solo", shop: "Shop" };
 
   // Subscribe (Stripe Checkout) and Manage billing (Stripe's Customer Portal): the hub answers with the page to go to.
   // Checkout names the terms version the page showed, and the tick when the account must accept it first. Switch moves a
-  // running subscription between Solo and Shop (same interval) with Stripe's proration.
+  // running subscription between Solo and Shop (same interval) with Stripe's proration. Parked until package 3 removes
+  // them: the hub offers no plan, Switch or add-on since 11 Oct 2026 (every shop has them free); the Assistant stays.
   function billingCell(s, billing, terms) {
     const c = document.createElement("td");
     const go = (path, body, label) => {
@@ -322,7 +313,8 @@
       }
       if (box.childNodes.length) c.append(box);
     }
-    if (s.stores?.extra > 0) c.append(Object.assign(document.createElement("div"), { className: "muted", textContent: `${s.stores.reported} stores: ${s.stores.extra} extra on the plan${s.stores.billed != null && s.stores.billed !== s.stores.extra ? ` (billed now: ${s.stores.billed}; it follows at the next sync)` : ""}.` }));
+    // Extra stores are billed only while plans are sold (parked: every store is free).
+    if (billing.prices && s.stores?.extra > 0) c.append(Object.assign(document.createElement("div"), { className: "muted", textContent: `${s.stores.reported} stores: ${s.stores.extra} extra on the plan${s.stores.billed != null && s.stores.billed !== s.stores.extra ? ` (billed now: ${s.stores.billed}; it follows at the next sync)` : ""}.` }));
     if (s.canManage) c.append(go("/portal", {}, "Manage billing"));
     if (!c.childNodes.length) { c.textContent = s.standing === "comped" ? "free" : ""; c.className = "muted"; }
     return c;
