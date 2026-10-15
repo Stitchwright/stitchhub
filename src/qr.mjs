@@ -3,6 +3,33 @@
 // That is all the passport needs, so the hub takes no QR library. Built after ISO/IEC 18004 (and Project Nayuki's
 // QR Code generator, MIT, for the layout): data, Reed-Solomon check words, finder and timing patterns, format bits, and
 // the mask with the lowest penalty. Returns an SVG.
+//
+// Adapted from Project Nayuki's QR Code generator library (its TypeScript version; the notice below covers these parts):
+// - the Reed-Solomon math: gfMul, rsDivisor and rsRemainder (its reedSolomonMultiply, reedSolomonComputeDivisor and
+//   reedSolomonComputeRemainder);
+// - in build(): the timing and finder patterns (drawFunctionPatterns, drawFinderPattern), the format bits
+//   (drawFormatBits), and the zigzag placement of the code words with the masks applied (drawCodewords, applyMask);
+// - in codewords(): the pad bytes 0xEC and 0x11 taking turns (encodeSegments).
+//
+// QR Code generator library
+// Copyright (c) Project Nayuki. (MIT License)
+// https://www.nayuki.io/page/qr-code-generator-library
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy of
+// this software and associated documentation files (the "Software"), to deal in
+// the Software without restriction, including without limitation the rights to
+// use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software is furnished to do so,
+// subject to the following conditions:
+// - The above copyright notice and this permission notice shall be included in
+//   all copies or substantial portions of the Software.
+// - The Software is provided "as is", without warranty of any kind, express or
+//   implied, including but not limited to the warranties of merchantability,
+//   fitness for a particular purpose and noninfringement. In no event shall the
+//   authors or copyright holders be liable for any claim, damages or other
+//   liability, whether in an action of contract, tort or otherwise, arising from,
+//   out of or in connection with the Software or the use or other dealings in the
+//   Software.
 
 const ALNUM = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:";
 const SIZE = 21;

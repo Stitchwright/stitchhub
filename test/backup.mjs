@@ -6,7 +6,8 @@
 // get, delete (gone from the bucket and the list), the quota (pictures wait, the company file still goes), a second company
 // and a second install unable to touch the first's objects, the 410 for a company that moved away, a missing bucket setup
 // answered in words, and the restore code: minted from the account, listing and fetching with no install key, wrong,
-// expired and replaced codes refused, then the move that follows carries the store to the new install.
+// expired and replaced codes refused, wrong ones limited per address (and never for every shop at once), then the move that
+// follows carries the store to the new install.
 // usage: DATABASE_URL=postgresql://... (a fresh scratch database) node test/backup.mjs
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
@@ -110,7 +111,7 @@ async function startHub(extraEnv = {}) {
       JOIN_KEY: JOIN,
       PORT: String(port),
       LINK_CHECKER: "off",
-      TRUST_PROXY: "",
+      TRUST_PROXY: "true", // the limits per address see the test's addresses in X-Forwarded-For (none sent: 127.0.0.1)
       RAILWAY_ENVIRONMENT_ID: "",
       HUB_NAME: "Backup Test Hub",
       SMTP_URL: "smtp://127.0.0.1:9", // never used: the account routes only need mail to be set up
@@ -287,6 +288,19 @@ try {
   await status(await call("/v1/backup/restore/list", { json: { code: code2.code } }), 403, "an expired code");
   const code3 = await okJson(await call(`/account/api/shops/${shopA}/restore-code`, { method: "POST", json: {}, headers: cookie }));
   console.log("  ok  the restore code: minted from the account for its own shop, 24 hours, lists and fetches with no install key; wrong, replaced and expired codes refused");
+
+  // ----- wrong restore codes: limited per address, never a pause for every shop -----
+  const from = (ip) => ({ "X-Forwarded-For": ip });
+  const listWith = (code, ip) => call("/v1/backup/restore/list", { json: { code }, headers: from(ip) });
+  const wrongCode = () => `shr_${crypto.randomBytes(24).toString("base64url")}`;
+  for (let i = 0; i < 20; i++) await status(await listWith(wrongCode(), "10.9.0.1"), 403, `wrong code ${i + 1} from one address`);
+  assert.match((await status(await listWith(wrongCode(), "10.9.0.1"), 429, "the 21st from that address")).error, /from this address/);
+  await status(await listWith(code3.code, "10.9.0.1"), 429, "that address waits out the hour, even with the right code");
+  // More wrong codes than the hub-wide pause there used to be (100), from six addresses: the right code still works.
+  for (let a = 2; a <= 7; a++) for (let i = 0; i < 20; i++) await status(await listWith(wrongCode(), `10.9.0.${a}`), 403, "wrong codes from many addresses");
+  assert.equal((await okJson(await listWith(code3.code, "10.9.0.99"), "the right code from another address")).shop.shopRef, "a");
+  for (let i = 0; i < 25; i++) await okJson(await listWith(code3.code, "10.9.0.98"), "the right code doesn't use up its address's tries");
+  console.log("  ok  wrong restore codes: 20 an hour per address, and no pause for every shop however many addresses try");
 
   // ----- the move the code starts: the new install holds the company and its store follows -----
   const Z = await register(`New PC ${RUN}`);

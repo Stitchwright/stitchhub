@@ -43,9 +43,6 @@ SPKI DER; `fingerprint(key)` is the first 10 bytes of the key's sha256 as five g
   and marks the message `verified`. A bad signature or a key other than the one on file is a 400; an unsigned message
   from a side that has a key on file is a 400 too. Unsigned messages from older programs are still stored (unverified).
   The feed gives each message's `sig` so the receiving program verifies it itself.
-- The real-partnership rule (`waiverRule`, billing.mjs) counts plain `job.new` / `pickup.done` messages only while a
-  side of the link has no key. With a key on both sides it counts only what the repair shop signed and the hub
-  verified: its `job.update` and `pickup.done`.
 
 ## Messages
 

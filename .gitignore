@@ -1,3 +1,4 @@
 node_modules/
 .env
 *.ndjson.gz
+duplicate-xparts.json

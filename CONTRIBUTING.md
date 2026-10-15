@@ -1,15 +1,14 @@
-# Contributing to StitchHub
+# Contributing
 
-Thanks for helping. StitchHub is the community server for StitchBench, a repair-shop app for sewing, embroidery and
-quilting machine technicians. Bug reports, fixes, tests and docs are all welcome.
+Bug reports, ideas and pull requests are welcome.
 
-## Before you start
-
-- **Security problems:** don't open an issue. See [SECURITY.md](SECURITY.md).
+- **Bugs and ideas:** open an issue. Say which program (StitchBench, StitchShop or StitchHub), Windows or hosted, the
+  version, what you did and what happened.
+- **Security problems:** see SECURITY.md, and please don't post them as issues.
 - **Bigger changes** (new endpoints, new tables, billing or license rules): open an issue first so we can agree on the
-  approach before you spend time on it. The hub's API is used by shipped programs, so changes must stay compatible
-  with older StitchBench versions.
-- **Questions:** use the Discussions tab, or the issue tracker if that's off.
+  approach. The hub's API is used by shipped programs, so changes must stay compatible with older StitchBench versions.
+- **Code:** fork the repository, make your change on a branch and open a pull request. Keep each pull request to one
+  change, follow the house rules (AGENTS.md where there is one), and make sure CI is green.
 
 ## Setting up
 
@@ -29,7 +28,7 @@ Stripe and R2 credentials don't belong in a test hub; the tests use mocks (`test
 
 ## Checks that must pass
 
-CI runs these on every pull request ([.github/workflows/ci.yml](.github/workflows/ci.yml)):
+CI runs these on every pull request (`.github/workflows/ci.yml`):
 
 ```sh
 npm run check                       # syntax check of every source file
@@ -49,15 +48,7 @@ that alters behavior. A new file under `src/` or `test/` also goes into the `che
   `src/transfer.mjs` (the export) must carry it; `npm run test:db` checks this.
 - Don't log tokens, keys, passwords or install keys.
 
-## Pull requests
+## License of contributions
 
-1. Fork, then branch from `main`.
-2. Keep each pull request to one change, with a description of what and why.
-3. Make sure CI is green.
-4. By submitting a pull request you agree to license your contribution under the project's license,
-   **AGPL-3.0-only**, and confirm you wrote it or have the right to submit it. Add a `Signed-off-by:` line to your
-   commits (`git commit -s`) to say so (the [Developer Certificate of Origin](https://developercertificate.org/)).
-
-## Code of conduct
-
-Be kind and assume good intent. Harassment or personal attacks get you removed from the project.
+This project is licensed under the GNU Affero General Public License, version 3 (LICENSE). By sending a contribution you agree that it is licensed
+under the same terms, and that you have the right to send it.

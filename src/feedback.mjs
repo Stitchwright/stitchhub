@@ -1,16 +1,20 @@
 // Help, ideas, ratings and error alerts from the programs (StitchBench docs/plans/help-feedback-design.md, section 4;
 // migration 034). A shop taps "Ask for help" in StitchBench or StitchShop, or the program records an error it hit, and
 // the item comes here under the install key with the company in X-Shop-Ref. The owner reads them on the admin page
-// ("Help & ideas") and, when FEEDBACK_EMAIL is set, gets an email: one at once for each help, idea or rating, and a
-// digest at most every hour for errors. A pending install (an account started, not yet confirmed) may send too.
+// ("Help & ideas") and, when FEEDBACK_EMAIL is set, gets an email: one at once for each help, idea or rating (up to
+// FEEDBACK_EMAIL_PER_HOUR for the whole hub, then one email an hour at most saying how many more wait), and a digest at
+// most every hour for errors. A pending install (an account started, not yet confirmed) may send words too, but not a
+// picture, and its items are never mailed one by one.
 //
 // Everything the program sends is capped and stored as data; nothing here is ever rendered as HTML (the admin page
-// uses textContent, the email is plain text). A picture is optional, a JPEG of at most 1 MB, and is cleared 90 days
-// after the owner marks the item done. Feedback is not part of the hub's export or of a company's move.
+// uses textContent, the email is plain text). A picture is optional, a JPEG of at most 1 MB, kept while the shop has
+// room for pictures on the hub (src/media.mjs; without it the item is kept with no picture), and cleared 90 days after
+// the owner marks the item done. Feedback is not part of the hub's export or of a company's move.
 import crypto from "node:crypto";
 import { bodyLimit } from "hono/body-limit";
-import { one, q } from "./db.mjs";
+import { one, q, tx } from "./db.mjs";
 import { sendMail } from "./mail.mjs";
+import { mediaChanged, mediaFull, mediaKept } from "./media.mjs";
 
 const KINDS = new Set(["help", "idea", "rating", "error"]);
 const STATUSES = new Set(["new", "seen", "done"]);
@@ -19,6 +23,8 @@ const PER_COMPANY_HOUR = 60; // items (any kind) an hour for one company, and te
 const ERRORS_PER_DAY = 200; // error posts a day for one install (over: 429; the program keeps them and tries later)
 const PICTURE_DAYS = 90;
 const DIGEST_MS = 3600_000;
+// Help, ideas and ratings mailed to the owner one by one in an hour, for the whole hub (0: none, only the hourly count).
+const MAILS_PER_HOUR = /^\d+$/.test(process.env.FEEDBACK_EMAIL_PER_HOUR?.trim() ?? "") ? Number(process.env.FEEDBACK_EMAIL_PER_HOUR.trim()) : 20;
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
 const str = (v, max) => {
@@ -117,6 +123,44 @@ export function registerFeedback({ member, admin, fail, newId, allow, hubName, h
     );
   }
 
+  // Mailed one by one up to MAILS_PER_HOUR an hour for the whole hub, so a flood of items can't fill the owner's mailbox;
+  // past that an item is only saved, and one email at most every hour says how many more are waiting. An item from a
+  // pending install (an account started from a program, its email not confirmed: anyone can start one) is never mailed
+  // on its own; it is counted in that email too. The counts are kept in memory, like the errors' digest below.
+  let mailedThisHour = { n: 0, since: 0 };
+  let held = 0;
+  let lastHeldMail = 0;
+  let heldTimer = null;
+  function heldMail() {
+    heldTimer = null;
+    const n = held;
+    held = 0;
+    if (!n) return;
+    lastHeldMail = Date.now();
+    tell(
+      `${n} more feedback item${n === 1 ? " is" : "s are"} waiting on the admin page`,
+      [
+        `${n} more help request${n === 1 ? ", idea or rating" : "s, ideas or ratings"} came in that ${n === 1 ? "wasn't" : "weren't"} emailed one by one: this hub emails ${MAILS_PER_HOUR} an hour at most, and none from a shop whose StitchHub account isn't confirmed yet.`,
+        "",
+        `Read them on the admin page: ${adminLink()} (Help & ideas)`,
+      ].join("\n"),
+    );
+  }
+  function mailOrHold(item, shopName, id, hasPicture, pending) {
+    if (!ownerEmail()) return;
+    const now = Date.now();
+    if (now - mailedThisHour.since > 3600_000) mailedThisHour = { n: 0, since: now };
+    if (!pending && mailedThisHour.n < MAILS_PER_HOUR) {
+      mailedThisHour.n++;
+      mailItem(item, shopName, id, hasPicture);
+      return;
+    }
+    held++;
+    if (heldTimer) return;
+    heldTimer = setTimeout(heldMail, Math.max(0, lastHeldMail + 3600_000 - now));
+    heldTimer.unref();
+  }
+
   // New errors wait here and go in one email at most every hour ("3 new errors from 2 shops").
   let waiting = [];
   let lastDigest = 0;
@@ -160,7 +204,9 @@ export function registerFeedback({ member, admin, fail, newId, allow, hubName, h
       } catch {
         throw fail(400, "The item must be JSON.");
       }
-      if (form.picture instanceof File && form.picture.size > 0) {
+      // A pending install (its account's email not confirmed yet: anyone can start one) sends words only: a picture is
+      // left off, and the item kept.
+      if (form.picture instanceof File && form.picture.size > 0 && inst.scope !== "pending") {
         if (form.picture.size > MAX_PICTURE) throw fail(413, "The picture must be under 1 MB.");
         picture = Buffer.from(await form.picture.arrayBuffer());
         if (form.picture.type !== "image/jpeg" || !isJpeg(picture)) throw fail(415, "The picture must be a JPEG.");
@@ -177,9 +223,16 @@ export function registerFeedback({ member, admin, fail, newId, allow, hubName, h
     const { fingerprint = null, day = null, count = 1, ...body } = item;
     const id = newId();
 
-    if (item.kind === "error") {
+    const saved = await tx(async (client) => {
+      // Room for the picture: the company's, the install's and the hub's (src/media.mjs). With none left the item is
+      // kept without it: a refusal would hold up the program's other items, and the words are what matter.
+      if (picture && (await mediaFull(client, { installId: inst.id, ref: shopRef, bytes: picture.length }))) picture = null;
+      if (item.kind !== "error") {
+        await client.query(`INSERT INTO feedback (id, install_id, shop_ref, shop_name, kind, body, picture) VALUES ($1,$2,$3,$4,$5,$6,$7)`, [id, inst.id, shopRef, shopName, item.kind, body, picture]);
+        return { id, inserted: true };
+      }
       // The same error on the same day is one row; the sent count is added.
-      const r = await one(
+      const r = await client.query(
         `INSERT INTO feedback (id, install_id, shop_ref, shop_name, kind, body, picture, fingerprint, day, count)
          VALUES ($1,$2,$3,$4,'error',$5,$6,$7,$8,$9)
          ON CONFLICT (install_id, shop_ref, fingerprint, day) WHERE kind = 'error'
@@ -188,11 +241,14 @@ export function registerFeedback({ member, admin, fail, newId, allow, hubName, h
          RETURNING id, (xmax = 0) AS inserted`,
         [id, inst.id, shopRef, shopName, body, picture, fingerprint, day, count],
       );
-      if (r.inserted) queueError(shopName, body.error.message);
-      return c.json({ ok: true, id: r.id });
+      return r.rows[0];
+    });
+    if (picture) mediaKept(picture.length);
+    if (item.kind === "error") {
+      if (saved.inserted) queueError(shopName, body.error.message);
+      return c.json({ ok: true, id: saved.id });
     }
-    await q(`INSERT INTO feedback (id, install_id, shop_ref, shop_name, kind, body, picture) VALUES ($1,$2,$3,$4,$5,$6,$7)`, [id, inst.id, shopRef, shopName, item.kind, body, picture]);
-    mailItem(item, shopName, id, Boolean(picture));
+    mailOrHold(item, shopName, id, Boolean(picture), inst.scope === "pending");
     return c.json({ ok: true, id });
   });
 
@@ -345,6 +401,7 @@ export function registerFeedback({ member, admin, fail, newId, allow, hubName, h
   // Pictures go 90 days after the owner marks an item done; the words stay.
   async function sweep() {
     const r = await q(`UPDATE feedback SET picture = NULL WHERE picture IS NOT NULL AND done_at < now() - make_interval(days => $1)`, [PICTURE_DAYS]);
+    if (r.rowCount) mediaChanged();
     return r.rowCount;
   }
   setInterval(() => sweep().catch((e) => console.error("feedback sweep:", e.message)), 6 * 3600_000).unref();
