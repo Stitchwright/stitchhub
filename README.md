@@ -1,9 +1,11 @@
 # StitchHub
 
-The community server for **StitchBench**, a repair-shop app for sewing, embroidery and quilting machine technicians.
+The community hub for **StitchBench** and **StitchShop**, the open-source programs for sewing machine repair shops and
+the sewing and quilt shops they work with ([SiteSentrix/StitchBench](https://github.com/SiteSentrix/StitchBench)).
+Anyone can run their own hub.
 
-StitchBench runs in each shop, on the shop's own PC, and its customers, machines, tickets and prices stay there.
-StitchHub is the one small shared server that the shops sync with. It holds only what they choose to share:
+Each shop's program keeps its customers, machines, tickets and prices on the shop's own PC or server. StitchHub is the
+one small shared server the shops sync with. It holds only what they choose to share:
 
 - **Manual links.** Where each service, parts or operator manual can be downloaded, with a status (working, dead,
   or blocks robots) that the hub rechecks every week. Anyone can fix a dead link. Every change is kept and can be
@@ -164,8 +166,9 @@ with the join key, keeping its partner links).
 What goes through the hub is only what the two shops need: the sewing shop's tag number, the customer's first name
 and last initial, the machine and the problem, intake photos, the repair bill and status, orders, consignment counts
 and sales, and settlements. Customer phone numbers and addresses stay in the sewing shop. Messages are kept for a
-year so a shop that was offline catches up. They are not encrypted or signed: the hub admin can read them in the
-database, like everything else on the hub, and could send one as either shop.
+year so a shop that was offline catches up. They aren't encrypted, so whoever runs the hub can read them, but they are
+signed: each program checks every message against the key it holds for its partner, so the hub can't make one up
+(docs/partners.md; messages from older programs, which don't sign, are still accepted and marked unverified).
 
 ## Shop hops
 Paper passports stamped at each shop, on the hub (`src/hops.mjs`, migration 031; StitchBench's
@@ -891,7 +894,15 @@ figure a shop shared).
 
 ## License
 
-AGPL-3.0. You can run, change and share it. If you run a changed version for other people, share your changes too.
+Copyright (C) 2026 SiteSentrix.
+
+StitchHub is free software under the GNU Affero General Public License, version 3 (LICENSE): you can run, change and
+share it. If you run a changed copy for other people, the license asks you to offer them its source: the "Source code"
+link in every page's footer and `GET /source` do that (set `SOURCE_URL` to your copy's address).
+
+- **Names and logos:** StitchHub, StitchBench and StitchShop aren't covered by the license (TRADEMARKS.md).
+- **Security problems:** SECURITY.md. **Contributing:** CONTRIBUTING.md.
+- `src/qr.mjs` adapts Project Nayuki's QR Code generator (MIT License; its notice is in the file).
 
 Every public page's footer has a **Source code** link, and `GET /source` redirects to the same address: `SOURCE_URL` (the
 repository; `https://github.com/sitesentrix/stitchhub` when it is unset), at the commit being run (`<SOURCE_URL>/tree/<commit>`)
