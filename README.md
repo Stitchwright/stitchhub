@@ -52,6 +52,12 @@ To let shops reach it from outside your network, put it behind a tunnel or rever
 Cloudflare Tunnel or Tailscale Funnel), and set `TRUST_PROXY=true` in `.env` so the limits on joining see each shop's
 own address. (On Railway that's already the default.)
 
+### A released image
+Each version tag (`v1.0.0`) publishes a Docker image for amd64 and arm64 to `ghcr.io/stitchwright/stitchhub:<version>`
+(`latest` is the newest release that is not a pre-release), with a GitHub release. To run one instead of building from
+source, set `image: ghcr.io/stitchwright/stitchhub:1.0.0` in `docker-compose.yml` in place of `build: .`. Maintainers: tag
+a commit that is on `main` and push the tag; **Actions → Release → Run workflow** builds without publishing, to try it.
+
 ### Without Docker
 Node 20.12+ (22 recommended) and PostgreSQL: `npm ci`, copy `.env.example` to `.env` and fill it in (or set the same
 variables in the environment; a variable that is set wins over the file), `npm start`. The database tables are
