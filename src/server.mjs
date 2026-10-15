@@ -31,7 +31,8 @@ import { registerRepository } from "./repository.mjs";
 import { registerTakedown } from "./takedown.mjs";
 import { registerAssistant } from "./assistant.mjs";
 import { discordBody } from "./discord.mjs";
-import { shell, esc, LOGO, ICONS } from "./look.mjs";
+import { mediaChanged, mediaFull, mediaKept, mediaUse } from "./media.mjs";
+import { shell, esc, LOGO, ICONS, SOURCE_URL } from "./look.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const HUB_NAME = process.env.HUB_NAME ?? "StitchHub";
@@ -134,20 +135,30 @@ function clientIp(c) {
   return getConnInfo(c).remote.address ?? "unknown";
 }
 
-// Wrong join keys from everywhere together are limited too, so guessing from many addresses stays slow. When they run
-// out, joining pauses for the rest of the hour; shops already on the hub carry on.
-const WRONG_JOIN_KEYS = 100;
-async function checkJoinKey(joinKey) {
+// Wrong join keys are limited per address first (that address waits out the hour), so one address can't use up the
+// hub's allowance alone; and from everywhere together, so guessing from many addresses stays slow (a join key can be a
+// phrase a person chose). When the hub's allowance runs out, joining pauses for the rest of the hour; shops already on
+// the hub carry on. Every try is counted before the key is checked (tries sent at once are all counted) and given back
+// when the key is right. /v1/register and /v1/upgrade (partner-only and pending installs) both come through here.
+const WRONG_JOIN_KEYS_PER_ADDRESS = 20;
+const WRONG_JOIN_KEYS = 1000;
+async function checkJoinKey(c, joinKey) {
+  const byIp = bucket(`join-key:wrong:${clientIp(c)}`);
+  if (byIp.n >= WRONG_JOIN_KEYS_PER_ADDRESS) throw fail(429, "Too many wrong join keys from this address. Wait an hour, then check the key with the hub admin.");
   const wrong = bucket("join-key:wrong");
   if (wrong.n >= WRONG_JOIN_KEYS) throw fail(429, "Too many wrong join keys were tried lately. Try again in an hour.");
+  byIp.n++;
+  wrong.n++;
   // Compared without spaces around them: StitchBench trims what a member types, and a key pasted from an email often
   // carries one (an admin-saved key may too, from before it was trimmed on saving).
   const expected = ((await getSetting("join_key")) ?? process.env.JOIN_KEY ?? "").trim();
   const given = String(joinKey ?? "").trim();
   if (!expected || !given || !same(sha(given), sha(expected))) {
-    if (++wrong.n === WRONG_JOIN_KEYS) console.warn(`join: ${WRONG_JOIN_KEYS} wrong join keys this hour; joining is paused until the hour is up`);
+    if (wrong.n === WRONG_JOIN_KEYS) console.warn(`join: ${WRONG_JOIN_KEYS} wrong join keys this hour; joining is paused until the hour is up`);
     throw fail(403, "That join key isn't right. Ask the hub admin for the current one.");
   }
+  byIp.n = Math.max(0, byIp.n - 1);
+  wrong.n = Math.max(0, wrong.n - 1);
 }
 
 const app = new Hono();
@@ -236,6 +247,9 @@ app.use("*", async (c, next) => {
 
 app.get("/health", (c) => c.json({ ok: true }));
 
+// The code this hub runs (the footer of every public page links the same place; src/look.mjs).
+app.get("/source", (c) => c.redirect(SOURCE_URL, 302));
+
 app.get("/", async (c) => {
   const s = await one(`SELECT (SELECT count(*) FROM links WHERE NOT deleted) links, (SELECT count(*) FROM posts WHERE NOT deleted) posts,
     (SELECT count(*) FROM installs WHERE NOT blocked) installs, (SELECT count(*) FROM manuals WHERE status = 'published') manuals`);
@@ -279,7 +293,7 @@ registerTerms({ app, hubName: HUB_NAME });
 app.post("/v1/register", async (c) => {
   if (!allow(`register:${clientIp(c)}`, 10)) throw fail(429, "Too many tries. Wait an hour.");
   const { joinKey, name, contact } = await c.req.json();
-  await checkJoinKey(joinKey);
+  await checkJoinKey(c, joinKey);
   const shop = String(name ?? "").trim().slice(0, 120);
   if (!shop) throw fail(400, "Give your shop's name.");
   const { id, key } = await createInstall(pool, shop, String(contact ?? "").slice(0, 200) || null, "member");
@@ -366,7 +380,7 @@ member.get("/me", async (c) =>
 member.post("/upgrade", async (c) => {
   if (!allow(`upgrade:${c.get("install").id}`, 10)) throw fail(429, "Too many tries. Wait an hour.");
   const { joinKey } = await c.req.json().catch(() => ({}));
-  await checkJoinKey(joinKey);
+  await checkJoinKey(c, joinKey);
   if (c.get("install").scope !== "member") {
     await q(`UPDATE installs SET scope = 'member' WHERE id = $1`, [c.get("install").id]);
     notify`👋 ${c.get("install").name} joined ${HUB_NAME}.`;
@@ -678,6 +692,7 @@ member.post("/posts", async (c) => {
     const had = await one(`SELECT id FROM posts WHERE install_id = $1 AND client_id = $2`, [inst.id, clientId]);
     if (had) return c.json({ id: had.id });
   }
+  const bytes = files.reduce((n, f) => n + f.size, 0);
   const made = await tx(async (client) => {
     const r = await client.query(
       `INSERT INTO posts (id, install_id, shop_name, author_name, brand, model, model_key, kind, title, body, client_id, shop_ref)
@@ -685,6 +700,10 @@ member.post("/posts", async (c) => {
       [id, inst.id, shopName, String(p.authorName ?? "").slice(0, 80) || null, brand, model, model.toUpperCase().replace(/[^A-Z0-9]/g, ""), kind, title, body, clientId, shopRef],
     );
     if (!r.rowCount) return false; // the same upload, made by a retry a moment ago
+    // Room for the photos: the company's, the install's and the hub's (src/media.mjs). Without it the note waits too,
+    // so the program sends it again with its photos once there is room.
+    const full = files.length ? await mediaFull(client, { installId: inst.id, ref: shopRef, bytes }) : null;
+    if (full) throw fail(507, full);
     for (const [i, f] of files.entries()) {
       const m = meta[i] ?? {};
       await client.query(`INSERT INTO photos (id, post_id, kind, caption, mime, data, sort_order) VALUES ($1,$2,$3,$4,$5,$6,$7)`, [
@@ -700,6 +719,7 @@ member.post("/posts", async (c) => {
     return true;
   });
   if (!made) return c.json({ id: (await one(`SELECT id FROM posts WHERE install_id = $1 AND client_id = $2`, [inst.id, clientId])).id });
+  mediaKept(bytes);
   notify`🛠️ ${shopName}: **${title}** (${brand} ${model})${files.length ? ` · ${files.length} photo${files.length > 1 ? "s" : ""}` : ""}\n${body.slice(0, 400)}`;
   return c.json({ id });
 });
@@ -709,7 +729,7 @@ member.post("/posts", async (c) => {
  * only its id stays, so installs drop their copy.
  */
 async function removePost(id, installId, acting) {
-  return tx(async (client) => {
+  const removed = await tx(async (client) => {
     // One company on an install can't remove another company's note (when the request says which company it is).
     if (acting) {
       const p = (await client.query(`SELECT shop_ref FROM posts WHERE id = $1 AND install_id = $2 FOR UPDATE`, [id, installId])).rows[0];
@@ -723,6 +743,8 @@ async function removePost(id, installId, acting) {
     if (r.rowCount) await client.query(`DELETE FROM photos WHERE post_id = $1`, [id]);
     return r.rowCount;
   });
+  if (removed) mediaChanged();
+  return removed;
 }
 
 member.delete("/posts/:id", async (c) => {
@@ -757,14 +779,27 @@ member.put("/figures/:id", async (c) => {
   // shared again by anyone. stored: false means another shop's copy is already here and this one was not kept.
   // Which company on the install shared it comes from X-Shop-Ref (null from installs that don't say); it is kept for
   // the record, and ownership stays by install.
-  const r = await q(
-    `INSERT INTO figures (id, mime, data, width, height, install_id, shop_ref) VALUES ($1,$2,$3,$4,$5,$6,$7)
-     ON CONFLICT (id) DO UPDATE SET mime = EXCLUDED.mime, data = EXCLUDED.data, width = EXCLUDED.width, height = EXCLUDED.height,
-       install_id = EXCLUDED.install_id, shop_ref = EXCLUDED.shop_ref, deleted = false, seq = nextval('change_seq')
-     WHERE figures.install_id = EXCLUDED.install_id OR figures.deleted`,
-    [id, mime, data, Number(c.req.query("w")) || null, Number(c.req.query("h")) || null, c.get("install").id, actingShop(c, null) || null],
-  );
-  return c.json({ ok: true, stored: r.rowCount > 0 });
+  const installId = c.get("install").id;
+  const shopRef = actingShop(c, null) || null;
+  const out = await tx(async (client) => {
+    // Room for it (src/media.mjs), unless another shop's copy is kept instead; a redraw's old copy doesn't count.
+    const had = (await client.query(`SELECT install_id, deleted, octet_length(data) AS bytes FROM figures WHERE id = $1`, [id])).rows[0];
+    const replaced = had && !had.deleted && had.install_id === installId ? Number(had.bytes) : 0;
+    if (!had || had.deleted || had.install_id === installId) {
+      const full = await mediaFull(client, { installId, ref: shopRef ?? "", bytes: data.length, figure: id });
+      if (full) throw fail(507, full);
+    }
+    const r = await client.query(
+      `INSERT INTO figures (id, mime, data, width, height, install_id, shop_ref) VALUES ($1,$2,$3,$4,$5,$6,$7)
+       ON CONFLICT (id) DO UPDATE SET mime = EXCLUDED.mime, data = EXCLUDED.data, width = EXCLUDED.width, height = EXCLUDED.height,
+         install_id = EXCLUDED.install_id, shop_ref = EXCLUDED.shop_ref, deleted = false, seq = nextval('change_seq')
+       WHERE figures.install_id = EXCLUDED.install_id OR figures.deleted`,
+      [id, mime, data, Number(c.req.query("w")) || null, Number(c.req.query("h")) || null, installId, shopRef],
+    );
+    return { stored: r.rowCount > 0, added: r.rowCount ? data.length - replaced : 0 };
+  });
+  mediaKept(out.added);
+  return c.json({ ok: true, stored: out.stored });
 });
 
 // ----- data sets the admin publishes (e.g. "specs") -----
@@ -803,6 +838,8 @@ admin.get("/summary", async (c) => {
   return c.json({
     hubName: HUB_NAME,
     counts,
+    // The members' pictures the hub keeps, against MEDIA_QUOTA_HUB_GB (src/media.mjs).
+    media: await mediaUse(),
     joinKey: ((await getSetting("join_key")) ?? process.env.JOIN_KEY ?? "").trim() || null,
     discordWebhook: Boolean(await getSetting("discord_webhook")),
     discordInvite: await getSetting("discord_invite"),
@@ -852,8 +889,13 @@ admin.delete("/posts/:id", async (c) => {
 // A wrong or unwanted figure snapshot, or every one a shop shared: gone from the hub, installs drop their copy, and
 // any shop can share the figure again.
 const REMOVE_FIGURE = `UPDATE figures SET deleted = true, data = ''::bytea, seq = nextval('change_seq') WHERE NOT deleted AND`;
-admin.delete("/figures/:id", async (c) => c.json({ removed: (await q(`${REMOVE_FIGURE} id = $1`, [c.req.param("id")])).rowCount }));
-admin.delete("/installs/:id/figures", async (c) => c.json({ removed: (await q(`${REMOVE_FIGURE} install_id = $1`, [c.req.param("id")])).rowCount }));
+async function removeFigures(where, id) {
+  const removed = (await q(`${REMOVE_FIGURE} ${where}`, [id])).rowCount;
+  if (removed) mediaChanged();
+  return removed;
+}
+admin.delete("/figures/:id", async (c) => c.json({ removed: await removeFigures("id = $1", c.req.param("id")) }));
+admin.delete("/installs/:id/figures", async (c) => c.json({ removed: await removeFigures("install_id = $1", c.req.param("id")) }));
 
 // Seed or add many links at once: a JSON array of { brand, models, docType, title, url, fileName, category, status, checked }.
 admin.post("/links/import", async (c) => {
@@ -907,7 +949,11 @@ admin.get("/export", (c) =>
   }),
 );
 
-admin.post("/import", async (c) => c.json(await importStream(c.req.raw.body)));
+admin.post("/import", async (c) => {
+  const out = await importStream(c.req.raw.body);
+  mediaChanged(); // its pictures count from now on
+  return c.json(out);
+});
 
 // Parts cross-reference, marketplace and parts usage (src/parts.mjs, src/market.mjs, src/usage.mjs; docs/parts-and-marketplace.md).
 registerParts({ member, admin, fail, newId, writeLimit, validUrl });
@@ -934,7 +980,7 @@ registerTakedown({ app, admin, acct: accounts.acct, fail, newId, allow, clientIp
 // Off-site backup storage: upload and download addresses for the programs, and the restore code from the account page
 // (src/backups.mjs, src/s3.mjs; BACKUP_S3_* in the environment).
 // (before the account routes are mounted: Hono copies a router's routes when it is mounted)
-registerBackups({ app, member, acct: accounts.acct, fail, newId, allow, bucket, requireAccount: accounts.requireAccount });
+registerBackups({ app, member, acct: accounts.acct, fail, newId, allow, bucket, clientIp, requireAccount: accounts.requireAccount });
 // Help, ideas, ratings and error alerts from the programs, and the admin page's "Help & ideas" (src/feedback.mjs).
 registerFeedback({ member, admin, fail, newId, allow, hubName: HUB_NAME, hubUrl: accounts.hubUrl });
 // Program updates: the latest release per program, its download, and the owner publish routes (src/releases.mjs).

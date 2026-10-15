@@ -2,8 +2,9 @@
 // the 1 MB limit), caps on the text, errors upserting on (install, company, fingerprint, day) and adding the count, the
 // rate limits (60 items an hour per company, 200 errors a day per install), a pending and a partner-only install being
 // let in, the company's name as the hub knows it, the admin list, filters, status, note and picture, the picture sweep
-// 90 days after done, one install's items never answering to another's key, the owner's email (MAIL_DEV_LOG) and the
-// errors digest. Starts a hub of its own on a scratch database it creates and drops (127.0.0.1:5433,
+// 90 days after done, one install's items never answering to another's key, the owner's email (MAIL_DEV_LOG), the
+// errors digest, the cap on emails to the owner (FEEDBACK_EMAIL_PER_HOUR) and a pending install's items (words only, never
+// mailed one by one). Starts a hub of its own on a scratch database it creates and drops (127.0.0.1:5433,
 // stitchbench/stitchbench; or DATABASE_URL to use one you made).
 // usage: node test/feedback.mjs
 import assert from "node:assert/strict";
@@ -180,6 +181,13 @@ try {
   assert.equal(pend.shopName, "Pending Quilts", "the name from the context when the hub doesn't know the company");
   const part = (await list("kind=idea")).items.find((i) => i.text === "from a partner install");
   assert.equal(part.shopName, "Install Partner", "else the install's name");
+  // A pending install sends words, not pictures (anyone can start one): the item is kept, its picture left off. A
+  // partner-only install was brought on by a member and may send both.
+  const pendPic = await ok(await sendForm(P, "p1", { kind: "help", text: "pending, with a picture", context: ctx() }, jpeg()));
+  const partPic = await ok(await sendForm(R, "r1", { kind: "help", text: "partner, with a picture", context: ctx() }, jpeg()));
+  const helps = (await list("kind=help")).items;
+  assert.equal(helps.find((i) => i.id === pendPic.id).hasPicture, false, "a pending install's picture is left off");
+  assert.equal(helps.find((i) => i.id === partPic.id).hasPicture, true);
   console.log("pending and partner installs: ok");
 
   // ----- the admin list: filters, status, note, another install's key -----
@@ -224,6 +232,8 @@ try {
   assert.ok(hubLog.includes("to owner@example.test"));
   assert.ok(hubLog.includes("https://hub.example.test/admin"), "a link to the admin page");
   assert.equal((hubLog.match(/subject: \d+ new errors? from/g) ?? []).length, 1, "one digest, not one per error");
+  assert.ok(!hubLog.includes("from a pending install") && !hubLog.includes("pending, with a picture"), "a pending install's items aren't mailed one by one");
+  assert.ok(hubLog.includes("subject: Idea: Install Partner – from a partner install"), "a partner-only install's are");
   console.log("email: ok");
 
   // ----- limits -----
@@ -316,6 +326,9 @@ try {
   console.log("replies: ok");
   }
 
+  // ----- the owner's mailbox: a cap for the whole hub, then one email an hour at most -----
+  await capped();
+
   // ----- a hub with no FEEDBACK_EMAIL sends nothing -----
   await stop2();
   console.log("feedback tests passed");
@@ -325,6 +338,33 @@ try {
   process.exitCode = 1;
 } finally {
   await stop();
+}
+
+// Help, ideas and ratings are mailed one by one up to FEEDBACK_EMAIL_PER_HOUR an hour for the whole hub (2 on this hub),
+// then only saved, with one email at most every hour saying how many more wait; a pending install's never one by one.
+async function capped() {
+  await new Promise((r) => (hub.proc.once("exit", r), hub.proc.kill()));
+  hubLog = "";
+  await startHub({ FEEDBACK_EMAIL_PER_HOUR: "2" });
+  const A = await register("Install Capped A");
+  const B = await register("Install Capped B");
+  const P = await register("Install Capped Pending");
+  await db.query(`UPDATE installs SET scope = 'pending' WHERE name = 'Install Capped Pending'`);
+  await ok(await sendJson(P, "p1", { kind: "help", text: "capped, from a pending install", context: ctx() }));
+  await waitFor(() => hubLog.includes("subject: 1 more feedback item is waiting on the admin page"), "the email that items wait");
+  assert.ok(hubLog.includes("this hub emails 2 an hour at most") && hubLog.includes("Read them on the admin page: https://hub.example.test/admin (Help & ideas)"));
+  for (const [key, shop, text] of [[A, "a1", "capped one"], [B, "b1", "capped two"], [A, "a2", "capped three"], [B, "b2", "capped four"]]) {
+    await ok(await sendJson(key, shop, { kind: "help", text, context: ctx() }));
+  }
+  await waitFor(() => (hubLog.match(/subject: Help: /g) ?? []).length === 2, "two items mailed");
+  await new Promise((r) => setTimeout(r, 500));
+  assert.deepEqual(
+    hubLog.match(/subject: .*/g),
+    ["subject: 1 more feedback item is waiting on the admin page", "subject: Help: Install Capped A – capped one", "subject: Help: Install Capped B – capped two"],
+    "two mailed one by one for the whole hub, then nothing more within the hour",
+  );
+  assert.equal((await list("kind=help&limit=500")).items.filter((i) => /^capped/.test(i.text)).length, 5, "every item is saved");
+  console.log("mail cap: ok");
 }
 
 // A restart on the same database keeps what was stored (and a hub with no FEEDBACK_EMAIL stays silent).
