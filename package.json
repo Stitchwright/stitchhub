@@ -37,7 +37,7 @@
   },
   "dependencies": {
     "@hono/node-server": "^2.1.1",
-    "@napi-rs/canvas": "^1.0.10",
+    "@napi-rs/canvas": "^1.0.11",
     "@tesseract.js-data/eng": "^1.0.0",
     "hono": "^4.13.9",
     "pdfjs-dist": "^6.4.299",
