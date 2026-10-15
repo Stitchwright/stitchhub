@@ -19,6 +19,7 @@ import { registerMarket, listingsByIds, sellerBlocked, claimListings, actingShop
 import { registerUsage } from "./usage.mjs";
 import { registerPartners } from "./partners.mjs";
 import { registerHops } from "./hops.mjs";
+import { registerBugReports } from "./bugreports.mjs";
 import { registerFeedback } from "./feedback.mjs";
 import { registerReleases } from "./releases.mjs";
 import { registerAccounts } from "./accounts.mjs";
@@ -186,7 +187,7 @@ const MB = 1024 * KB;
 const ADMIN_UPLOAD = (Number(process.env.ADMIN_UPLOAD_MB) || 1024) * MB; // bulk imports, data sets, moving the hub
 
 function maxBody(p) {
-  if (p === "/v1/register" || p === "/v1/partners/join" || p === "/v1/accounts/start" || p === "/v1/shops/move" || p === "/copyright/notice") return 16 * KB; // no key needed: a join key, code, move token or email and a name
+  if (p === "/v1/register" || p === "/v1/partners/join" || p === "/v1/accounts/start" || p === "/v1/shops/move" || p === "/copyright/notice" || p === "/v1/bug-report") return 16 * KB; // no key needed: a join key, code, move token or email and a name
   if (p === "/v1/assistant") return 256 * KB; // a question for the Assistant with its context (a plate photo is about 150 KB)
   if (p === "/v1/feedback") return MB + 128 * KB; // an item with a JPEG of the screen (1 MB at most)
   if (p === "/v1/stripe") return 256 * KB; // a Stripe webhook event (an invoice with its lines)
@@ -983,6 +984,8 @@ registerTakedown({ app, admin, acct: accounts.acct, fail, newId, allow, clientIp
 registerBackups({ app, member, acct: accounts.acct, fail, newId, allow, bucket, clientIp, requireAccount: accounts.requireAccount });
 // Help, ideas, ratings and error alerts from the programs, and the admin page's "Help & ideas" (src/feedback.mjs).
 registerFeedback({ member, admin, fail, newId, allow, hubName: HUB_NAME, hubUrl: accounts.hubUrl });
+// Bug reports as GitHub issues, for the open-source programs and the hub's own pages: no key, limited by address (src/bugreports.mjs).
+registerBugReports({ app, fail, allow, clientIp, hubName: HUB_NAME });
 // Program updates: the latest release per program, its download, and the owner publish routes (src/releases.mjs).
 registerReleases({ app, admin, fail, newId, allow, clientIp, hubUrl: accounts.hubUrl });
 app.route("/account/api", accounts.acct);
