@@ -271,7 +271,7 @@ try {
   const home = (await html("/")).body;
   assert.ok(home.includes(`<a href="/terms">Terms</a>`) && home.includes(`<a href="/privacy">Privacy</a>`), "the hub's front page links both");
   // The code the hub runs (AGPL): the footer's Source code link and GET /source, the repository when nothing else is set.
-  const SOURCE = "https://github.com/sitesentrix/stitchhub";
+  const SOURCE = "https://github.com/Stitchwright/stitchhub";
   assert.ok(home.includes(`<a href="${SOURCE}">Source code</a>`) && b.includes(`<a href="${SOURCE}">Source code</a>`), "every public page's footer links the source code");
   const toSource = await fetch(`${HUB}/source`, { redirect: "manual" });
   assert.deepEqual([toSource.status, toSource.headers.get("location")], [302, SOURCE], "GET /source redirects to the same address");
