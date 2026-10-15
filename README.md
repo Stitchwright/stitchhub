@@ -905,6 +905,6 @@ link in every page's footer and `GET /source` do that (set `SOURCE_URL` to your 
 - `src/qr.mjs` adapts Project Nayuki's QR Code generator (MIT License; its notice is in the file).
 
 Every public page's footer has a **Source code** link, and `GET /source` redirects to the same address: `SOURCE_URL` (the
-repository; `https://github.com/sitesentrix/stitchhub` when it is unset), at the commit being run (`<SOURCE_URL>/tree/<commit>`)
+repository; `https://github.com/Stitchwright/stitchhub` when it is unset), at the commit being run (`<SOURCE_URL>/tree/<commit>`)
 when Railway sets `RAILWAY_GIT_COMMIT_SHA` (it does for a deploy from GitHub). If you run a changed version, set
 `SOURCE_URL` to the public repository that has your changes.
