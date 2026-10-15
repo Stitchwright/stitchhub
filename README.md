@@ -65,6 +65,20 @@ above 1, `docker compose up --scale hub=2`, a manual `npm start` beside the cont
 finishes the requests it is on before it stops.) Starting several hubs on one database at the same moment is safe for
 the migrations: they take turns.
 
+### Room for pictures
+Members' pictures are kept in the database: note photos, listing photos, figure snapshots and the screens sent with
+Help (`src/media.mjs`). Besides the hourly request limits, what is kept is limited, counted over the pictures on the hub
+now (a removed note or listing takes its photos with it):
+- `MEDIA_QUOTA_COMPANY_MB` (1024): one company (an install and the company it names);
+- `MEDIA_QUOTA_INSTALL_MB` (10240): one install, all its companies together (a hosted program serves many);
+- `MEDIA_QUOTA_HUB_GB` (50): the whole hub. Past it nobody's new pictures are taken, and the hub's log says so at most
+  once an hour; the admin page shows the total against this limit (Hub → Pictures). Raise it when the database's disk
+  has room.
+
+Past a limit a note, listing or figure with pictures is refused with `507` and the reason in words ("This shop's photos
+on the hub have reached 1 GB. Remove old notes or listings to make room."); notes and listings without pictures still
+go, and a Help item is kept without its picture.
+
 ## Moving or rebuilding a hub
 
 The **/admin** page exports everything to one `.ndjson.gz` file, and imports that file into another StitchHub. That
@@ -188,7 +202,8 @@ The programs' Help button (and the errors they catch on their own) send items he
 page's **Help & ideas** section (`src/feedback.mjs`, migration 034, `StitchBench/docs/plans/help-feedback-design.md`).
 
 - `POST /v1/feedback` (install key, the company in `X-Shop-Ref`; a pending install and a partner-only install may send
-  too). Multipart: `item` (JSON `{ kind: "help" | "idea" | "rating" | "error", text?, stars?, quoteOk?, replyTo?,
+  too, but a pending install's picture is left off: its account's email isn't confirmed, and anyone can start one).
+  Multipart: `item` (JSON `{ kind: "help" | "idea" | "rating" | "error", text?, stars?, quoteOk?, replyTo?,
   fingerprint?, day?, count?, context: { program, version, path, role, desktop, userAgent, screen }, error?: { message,
   stack, digest, action } }`) and an optional `picture` (a JPEG, `image/jpeg`, checked by its first bytes, 1 MB at
   most); or the same item as a plain JSON body. Answers `{ ok, id }`. help and idea need `text` (4,000 characters at
@@ -197,7 +212,8 @@ page's **Help & ideas** section (`src/feedback.mjs`, migration 034, `StitchBench
   `context.shopName`, else the install's name. An error is one row per (install, company, fingerprint, day): sending it
   again adds `count`. Limits: 60 items an hour per company (600 per install, since a hosted program serves many
   companies) and 200 errors a day per install; over, 429 and the program keeps the item and tries later. 413 for a
-  picture over 1 MB, 415 for one that isn't a JPEG.
+  picture over 1 MB, 415 for one that isn't a JPEG. With no room for pictures left (Room for pictures, above) the item
+  is kept without its picture.
 - Admin (Bearer admin token): `GET /v1/admin/feedback?status=new|seen|done&kind=&shop=<install id>/<shop ref>&limit=`
   → `{ items, more, counts, shops }` (each item has `reply` and `repliedAt`); `POST /v1/admin/feedback/:id { status?, note?, reply? }`
   (`reply`, up to 4000 characters: saved with the time, the item becomes done, and it is emailed to the item's reply address
@@ -209,10 +225,12 @@ page's **Help & ideas** section (`src/feedback.mjs`, migration 034, `StitchBench
   this install's and company's items, newest first, at most 50, `replied_at` after `since` (default 90 days ago) →
   `[{ id, kind, text, reply, repliedAt }]` (`text` = the first 200 characters of what they sent). The program asks at each sync.
 - `FEEDBACK_EMAIL` (optional): the owner's address. Each help, idea and rating is mailed at once (subject "Help: <shop> –
-  first 60 characters", everything in the body, a link to `/admin`); new errors go in one digest email at most every hour
-  ("3 new errors from 2 shops"; the wait is kept in memory, so a restart sends the next one at once). Unset: no email,
-  the admin page only. Mail goes through `src/mail.mjs` (needs `SMTP_URL` and `MAIL_FROM`; `MAIL_DEV_LOG=true` prints it on
-  a test hub).
+  first 60 characters", everything in the body, a link to `/admin`), up to `FEEDBACK_EMAIL_PER_HOUR` (20; 0 for none) an
+  hour for the whole hub; past that items are only saved, and one email at most every hour says "N more feedback items
+  are waiting on the admin page". Items from a pending install are never mailed one by one (they are counted in that
+  email). New errors go in one digest email at most every hour ("3 new errors from 2 shops"; the waits are kept in
+  memory, so a restart sends the next one at once). Unset: no email, the admin page only. Mail goes through
+  `src/mail.mjs` (needs `SMTP_URL` and `MAIL_FROM`; `MAIL_DEV_LOG=true` prints it on a test hub).
 - Retention: items are kept (they are the owner's product feedback); a picture is deleted 90 days after the item is
   marked done. **Feedback is not part of the hub's export or a company's move**: a rebuilt hub starts with an empty Help
   & ideas list.
@@ -260,9 +278,13 @@ itself (module `base`), signed by the hub; the key, not the words, is what the p
 Passwords are hashed with scrypt; links, codes and session ids are stored as SHA-256 hashes; sessions are HttpOnly
 cookies for 30 days; a password reset signs every browser out. Sign-ups are limited to 10 an hour per address and wrong
 sign-ins to 20 an hour per address and 10 an hour per account (after that only the right password gets in, up to 100
-tries an hour; a stranger can't lock the owner out), 20,000 an hour for the whole hub. A sign-up on an address that has an
-account changes nothing but mails the owner a link to set the password; on an account not yet confirmed it also takes off
-the password and confirm links (a stranger's sign-up may have set them).
+tries an hour; a stranger can't lock the owner out), 20,000 an hour for the whole hub. The email to set a password, which
+anyone can have sent to any address under any shop name, is limited to 3 a day per address (an address with a `+tag`
+counts as the same) and 100 an hour for the whole hub (429 in words; a Resend over the limit answers as always and sends
+nothing), on top of the 10 starts an hour per sender; the shop's name in it is one line of at most 60 letters, digits
+and ordinary marks, in quotes, with nothing that could pass for a link, an address or markup. A sign-up on an address
+that has an account changes nothing but mails the owner a link to set the password; on an account not yet confirmed it
+also takes off the password and confirm links (a stranger's sign-up may have set them).
 
 For the emails the hub needs three variables: `HUB_URL` (its own public address, for the links; on Railway the public
 domain is used when it is empty), `SMTP_URL` (`smtps://user:pass@host:465`, or `smtp://…:587` for STARTTLS) and
@@ -518,7 +540,8 @@ Batch API (about $1.30 for the whole cross-reference, `ANTHROPIC_API_KEY` needed
 `BACKUP_QUOTA_GB` (25); over it new pictures wait and the company file still goes, up to a fifth over. The companies of one
 install that don't pay their own way (no running subscription, no comp) share `BACKUP_INSTALL_QUOTA_GB` (250) besides, since
 a company claim is cheap; a paying company has only its own quota, so a hosted service's paying companies never share one
-install's space. An upload address never confirmed is swept after 6 hours (`BACKUP_SWEEP_MS`, every 30 minutes): the object
+install's space. Wrong restore codes are limited to 20 an hour per address (that address only; there is no pause for the
+whole hub). An upload address never confirmed is swept after 6 hours (`BACKUP_SWEEP_MS`, every 30 minutes): the object
 first, then the row, so a failed delete is tried again at the next sweep. `npm run test:backup` (a fresh database).
 
 ## Terms of Service and Privacy Policy
@@ -532,6 +555,11 @@ placeholders and open questions are listed). Never edit a published version: add
   (an earlier one says so and links the current one). The pages run no script and allow none (a strict CSP); the
   markdown renderer knows headings, paragraphs, lists, quotes, tables, rules, links (http, https, mailto and paths on the
   hub only), bold, italic and code, and escapes everything else.
+- The pages leave out the reviewers' notes the drafts carry (`[LAWYER: ...]`, `[OWNER: ...]` and `[OWNER/LAWYER: ...]`,
+  over several lines too; the files keep them), and show `LEGAL_NAME` (the business's legal name; the hub's name when
+  it is unset) where a draft says `[OWNER LEGAL NAME]`. The drafts' other placeholders (`[CONTACT EMAIL]`, `[ADDRESS]`,
+  `[HUB ADDRESS]`, `[STATE OF GOVERNING LAW]`, the version date, the numbers in brackets) show as written until a
+  published version fills them in.
 - The version in force is `TERMS_VERSION`, or when it is unset the newest pair on file (drafts don't count once a
   published version exists). Set `TERMS_VERSION` when you publish, so a pair committed ahead of its date stays out of
   force. A `TERMS_VERSION` with no files is logged and the default is used.
@@ -751,7 +779,7 @@ Members send `Authorization: Bearer <install key>`.
 
 | | |
 |---|---|
-| `POST /v1/register` | `{ joinKey, name, contact }` → `{ installId, installKey }` |
+| `POST /v1/register` | `{ joinKey, name, contact }` → `{ installId, installKey }`. 10 tries an hour per address; wrong join keys (here and at `/v1/upgrade`) are limited to 20 an hour per address, then 1,000 an hour for the whole hub, after which joining pauses until the hour is up (429) |
 | `GET /v1/changes?since=N&limit=1000` | links, notes (photo info), figure ids, parts and listings changed after `N`; `next` is the new `N`. A removed note is only `{ id, deleted: true }`; a figure id that comes again was redrawn; `removedFigures` are figures the hub admin took down. `since` must be digits (400 otherwise); `limit` is kept between 1 and 2000 |
 | `POST /v1/links`, `PUT /v1/links/:id`, `DELETE /v1/links/:id`, `POST /v1/links/:id/restore` | add, fix, remove, restore a link (a link into a private network is refused). The body may name who did it: `byName` (the person) and `shopRef` + `shopName` (the company, see **Companies** below) |
 | `GET /v1/links/:id/history`, `POST /v1/links/:id/revert` | a link's versions (`byShop` is the company's name when its install named one, else the install's; `shopRef`); go back to one |
@@ -781,10 +809,10 @@ Members send `Authorization: Bearer <install key>`.
 | `POST /v1/shops/claim` | `{ shopRef, shopName, kind: "repair" \| "retail" \| "both", program: "StitchBench" \| "StitchShop", version, sole }` → `{ ok, listings, shop, account: { email, verified } \| null, terms: { version, draft, accepted }, standing: "trial" \| "active" \| "past_due" \| "waived" \| "comped" \| "lapsed", lastDay, message, plan: "solo" \| "shop", interval: "monthly" \| "yearly" \| null, founding, key: "SB1.…" \| null, revokeKeyIds: [] }`. Sent for every company at every sync; the first time starts its trial. `key` is the hub-signed key for the module `base` the program should hold (its current one, or a fresh one when the standing changed; null when the hub has no signing key, or billing is closed and the shop is on its trial); `revokeKeyIds` names hub keys to drop (a refund, a chargeback, "Lapse now"). `sole: true` (or a body with only `shopRef`, as older programs send) hands what the install listed, ordered and shared before it named its company to that company. `stores` (an integer, 1 to 100: the company's stores; each after the first is billed on its base subscription) is kept on the shop, left as it was when not sent; `moduleKeys` carries the Assistant's key and the add-ons' (five at most); `resetOptIn` (the Windows program's "allow a reset from my StitchHub account") is kept on the shop; left as it was when not sent; `false` withdraws a reset request still waiting |
 | `GET /v1/shops/:ref/standing` | the same answer without the claim (404 until the shop has claimed itself). For a company that moved to another install, the install it left gets `410 { error, moved: true, to: <the install's name>, at }` here and at the claim |
 | `POST /v1/shops/:ref/move-token`, `DELETE` | the install the company is on, making a move file: `{ shopName, kind, program, version }` → `{ token, expiresAt, shopRef }`, answered once (only its hash is kept), one use, 14 days; a second call replaces the first. `DELETE` cancels it (the owner cancelled the move) |
-| `POST /v1/shops/move` (key optional) | `{ shopRef, token, shopName, kind, program, version }`: the install the company moved to redeems the token from the move file; every row of that company (shop, partner links, unused partner codes, listings, orders, ratings, notes, link and part revisions, parts usage) moves to it in one transaction, and listings, notes and orders are numbered again in the feeds. → the claim's answer plus `{ moved: { table: rows }, partner: { shopRef, links }, hubName }`; without a key (a program on no hub yet) the hub makes it an install with the old install's scope and adds `{ installId, installKey, scope }`. 404 wrong token, 409 used (the same install asking again gets the same answer), 410 replaced, cancelled or expired |
+| `POST /v1/shops/move` (key optional) | `{ shopRef, token, shopName, kind, program, version }`: the install the company moved to redeems the token from the move file; every row of that company (shop, partner links, unused partner codes, listings, orders, ratings, notes, link and part revisions, parts usage) moves to it in one transaction, and listings, notes and orders are numbered again in the feeds. → the claim's answer plus `{ moved: { table: rows }, partner: { shopRef, links }, hubName }`; without a key (a program on no hub yet) the hub makes it an install with the old install's scope and adds `{ installId, installKey, scope }`. 404 wrong token, 409 used (the same install asking again gets the same answer), 410 replaced, cancelled or expired; 429 after 20 wrong tokens in an hour from one address (that address only: a token can't be guessed, so there is no pause for the whole hub) |
 | `GET /v1/terms/current` (no key) | `{ version, draft, terms: "/terms/<version>", privacy: "/privacy/<version>", versions }`: the Terms and Privacy Policy version in force (404 when none is on file). The claim's `terms` carries the same `version` and the version the shop's account `accepted` |
 | `POST /v1/stripe` (no key: Stripe's webhook) | `Stripe-Signature` checked against `STRIPE_WEBHOOK_SECRET` (400 otherwise); the event id is kept, so a replay answers `{ ok, replay: true }` and does nothing; the object is re-read from Stripe before anything is written (502 when that fails, so Stripe sends the event again). Body up to 256 KB |
-| `POST /v1/accounts/start` | `{ shopRef, shopName, kind, program, version, email, termsVersion }` → `{ ok, account: { email, verified: false }, shop }`: the hub makes the account (or mails the link again for one not finished), ties the shop to it and mails a set-password link. 409 when the address already has a finished account (use a link code). Without an install key (an install on no hub yet; `contact` optional) the answer adds `{ installId, installKey, hubName, scope: "pending" }` |
+| `POST /v1/accounts/start` | `{ shopRef, shopName, kind, program, version, email, termsVersion }` → `{ ok, account: { email, verified: false }, shop }`: the hub makes the account (or mails the link again for one not finished), ties the shop to it and mails a set-password link. 409 when the address already has a finished account (use a link code); 429 past 10 starts an hour per sender, 3 set-password emails a day to one address, or 100 an hour for the whole hub. Without an install key (an install on no hub yet; `contact` optional) the answer adds `{ installId, installKey, hubName, scope: "pending" }` |
 | `GET /v1/shops/:ref/reset-grants` | `{ grants: [{ id, grant, expiresAt }] }`: the owner's password resets asked for on the account, `SBG1.<payload>.<signature>` (none while the program doesn't allow resets) |
 | `POST /v1/shops/:ref/reset-grants/:id/done` | `{ result: "allowed" \| "refused", why }`: what the program's window answered; the grant is spent |
 | `POST /v1/accounts/link-code` | `{ shopRef, shopName, kind, program, version }` → `{ code, expiresAt }`: a 10-character code the owner types in on the hub within 15 minutes (409 when the shop already has an account) |
@@ -852,7 +880,9 @@ others'. Parts-usage reports have their own allowance.
 Prices and shipping are up to $1,000,000.00 (100,000,000 cents) and quantities up to 1,000,000; more is a 400 with the reason. A body that isn't JSON is a 400 too.
 
 Request bodies are limited per route: 16 KB to join, 2 MB for a figure, a part or a month of parts usage, 37 MB for a
-note with photos, 25 MB for a listing, 4 MB for a partner message and 64 KB for the rest. A larger one gets 413.
+note with photos, 25 MB for a listing, 4 MB for a partner message and 64 KB for the rest. A larger one gets 413. The
+pictures a company, an install and the whole hub keep are limited too (Room for pictures, above): past a limit a note,
+listing or figure with pictures gets 507 with the reason.
 
 The admin API is under `/v1/admin` and uses `Authorization: Bearer <ADMIN_TOKEN>`. It includes
 `POST /v1/admin/xparts/import` (load parts in bulk), `POST /v1/admin/xparts/sources/import` (buying links in
@@ -862,3 +892,8 @@ figure a shop shared).
 ## License
 
 AGPL-3.0. You can run, change and share it. If you run a changed version for other people, share your changes too.
+
+Every public page's footer has a **Source code** link, and `GET /source` redirects to the same address: `SOURCE_URL` (the
+repository; `https://github.com/sitesentrix/stitchhub` when it is unset), at the commit being run (`<SOURCE_URL>/tree/<commit>`)
+when Railway sets `RAILWAY_GIT_COMMIT_SHA` (it does for a deploy from GitHub). If you run a changed version, set
+`SOURCE_URL` to the public repository that has your changes.

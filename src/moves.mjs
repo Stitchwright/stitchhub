@@ -26,7 +26,11 @@ import { one, q, tx } from "./db.mjs";
 import { claimAnswer } from "./billing.mjs";
 
 export const MOVE_DAYS = 14;
-const WRONG_TOKENS = 100; // wrong move tokens from everywhere together in an hour, like wrong join keys
+// A move token is 256 random bits (a restore code, redeemed here too, 192): guessing one is hopeless, so wrong ones are
+// limited per address only (that address waits out the hour), never with a pause for every shop that anyone could set
+// off. The whole hub's only go to the log.
+const WRONG_TOKENS_PER_ADDRESS = 20;
+const WRONG_TOKENS_LOGGED = 1000;
 const KINDS = new Set(["repair", "retail", "both"]);
 const PROGRAMS = new Set(["StitchBench", "StitchShop"]);
 
@@ -216,14 +220,17 @@ export function registerMoves({ app, member, admin, fail, newId, allow, bucket, 
     return c.json({ ok: true, cancelled: r.rowCount });
   });
 
-  // The install the company moved to redeems the token from the move file.
+  // The install the company moved to redeems the token from the move file. Each try is counted against the sender's
+  // address as a wrong token before anything is looked up (tries sent at once are all counted), given back when it's right.
   app.post("/v1/shops/move", small, async (c) => {
-    const wrong = bucket("move-token:wrong");
-    if (wrong.n >= WRONG_TOKENS) throw fail(429, "Too many wrong move tokens were tried lately. Try again in an hour.");
+    const ip = clientIp(c);
+    const wrong = bucket(`move-token:wrong:${ip}`);
+    if (wrong.n >= WRONG_TOKENS_PER_ADDRESS) throw fail(429, "Too many wrong move tokens from this address. Wait an hour.");
+    wrong.n++;
     const h = c.req.header("authorization") ?? "";
     const key = h.startsWith("Bearer ") ? h.slice(7) : "";
     const caller = key ? await installByKey(key) : null;
-    if (!allow(caller ? `shop-move:${caller.id}` : `shop-move:${clientIp(c)}`, 20)) throw fail(429, "Too many tries. Wait an hour.");
+    if (!allow(caller ? `shop-move:${caller.id}` : `shop-move:${ip}`, 20)) throw fail(429, "Too many tries. Wait an hour.");
     const body = await c.req.json().catch(() => ({}));
     const shopRef = str(body.shopRef, 64);
     const token = typeof body.token === "string" ? body.token.trim() : "";
@@ -233,9 +240,10 @@ export function registerMoves({ app, member, admin, fail, newId, allow, bucket, 
     const out = await tx(async (client) => {
       const m = (await client.query(`SELECT * FROM shop_moves WHERE token_hash = $1 FOR UPDATE`, [sha(token)])).rows[0];
       if (!m || m.shop_ref !== shopRef) {
-        wrong.n++;
+        if (++bucket("move-token:wrong").n === WRONG_TOKENS_LOGGED) console.warn(`move: ${WRONG_TOKENS_LOGGED} wrong move tokens this hour, from many addresses`);
         throw fail(404, "That move token isn't right for this company. Use the move file the other install made.");
       }
+      wrong.n = Math.max(0, wrong.n - 1);
       let shop = (await client.query(`SELECT * FROM shops WHERE id = $1 FOR UPDATE`, [m.shop_id])).rows[0];
       // Already where it should be: an earlier try whose answer was lost on the way, the hub admin's move by hand, or a
       // company imported back into the install it left. Nothing to rewrite; the same answer again.
