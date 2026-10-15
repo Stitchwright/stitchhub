@@ -8,7 +8,7 @@
 // 410 moved at its claim and standing; the new install receiving the moved listings, notes and orders whatever its
 // place in the feeds, and pulling the partner backlog once from the old install's place; a move from a program on no
 // hub (an install made, its key answered once, the old scope kept); the admin's list and move by hand; the export
-// carrying shop_moves (hashes only).
+// carrying shop_moves (hashes only); wrong tokens limited per address, never with a pause for every shop.
 // usage: DATABASE_URL=postgresql://... (a fresh scratch database) node test/move.mjs
 import assert from "node:assert/strict";
 import net from "node:net";
@@ -38,7 +38,7 @@ const hub = spawn(process.execPath, ["src/server.mjs"], {
     JOIN_KEY: JOIN,
     PORT: String(port),
     LINK_CHECKER: "off",
-    TRUST_PROXY: "",
+    TRUST_PROXY: "true", // the limits per address see the test's addresses in X-Forwarded-For (none sent: 127.0.0.1)
     RAILWAY_ENVIRONMENT_ID: "",
     HUB_NAME: "Move Test Hub",
   },
@@ -360,6 +360,24 @@ try {
   assert.ok(order.lastIndexOf("shop") < order.indexOf("shop_move") && order.lastIndexOf("install") < order.indexOf("shop_move"), "after the shops and installs it names");
   assert.ok(!/shm_[A-Za-z0-9_-]{20}/.test(hubLog), "the hub's log holds no move tokens");
   console.log("export: ok");
+
+  // ----- wrong move tokens: limited per address, never a pause for every shop -----
+  const V = await register(`Last ${RUN}`);
+  await claim(V.installKey, "v", "V Sewing");
+  const tv = await token(V.installKey, "v");
+  const from = (ip) => ({ "X-Forwarded-For": ip });
+  let guess = 0;
+  const wrongFrom = (ip, key) => call("/v1/shops/move", { key, json: { shopRef: "v", token: `shm_wrong_${++guess}`, shopName: "V Sewing" }, headers: from(ip) });
+  // One address: 20 wrong tokens, with an install's key or none; then it waits out the hour, whatever key it sends.
+  for (let i = 0; i < 10; i++) await status(await wrongFrom("10.8.0.1"), 404, "a wrong token");
+  for (let i = 0; i < 10; i++) await status(await wrongFrom("10.8.0.1", W.installKey), 404, "a wrong token with a key");
+  assert.match((await status(await wrongFrom("10.8.0.1", Y.installKey), 429, "the 21st from that address")).error, /from this address/);
+  // More wrong tokens than the hub-wide pause there used to be (100), from six addresses: the right one still works.
+  for (let a = 2; a <= 7; a++) for (let i = 0; i < 20; i++) await status(await wrongFrom(`10.8.0.${a}`), 404, "wrong tokens from many addresses");
+  const last = await ok(call("/v1/shops/move", { json: { shopRef: "v", token: tv.token, shopName: "V Sewing" }, headers: from("10.8.0.99") }));
+  assert.match(last.installKey, /^shk_/, "the right token from another address moves the company");
+  assert.equal(await shopOf("v"), last.installId);
+  console.log("wrong tokens: ok (20 an hour per address, no pause for every shop)");
   console.log("all move checks passed");
 } catch (e) {
   console.error(e);
