@@ -122,7 +122,7 @@ export const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&
 
 // Where the code this hub runs can be had (AGPL-3.0: everyone who uses the hub may get it). SOURCE_URL is the repository
 // (a hub running changed code points it at its own); on Railway the deployed commit is linked, so the code is what runs.
-const SOURCE_REPO = (/^https?:\/\/\S+$/i.test(process.env.SOURCE_URL?.trim() ?? "") ? process.env.SOURCE_URL.trim() : "https://github.com/sitesentrix/stitchhub").replace(/\/+$/, "");
+const SOURCE_REPO = (/^https?:\/\/\S+$/i.test(process.env.SOURCE_URL?.trim() ?? "") ? process.env.SOURCE_URL.trim() : "https://github.com/Stitchwright/stitchhub").replace(/\/+$/, "");
 const COMMIT = process.env.RAILWAY_GIT_COMMIT_SHA?.trim() ?? "";
 export const SOURCE_URL = /^[0-9a-f]{7,64}$/i.test(COMMIT) ? `${SOURCE_REPO}/tree/${COMMIT}` : SOURCE_REPO;
 
