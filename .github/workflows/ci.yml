@@ -1,0 +1,145 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+
+  # The tests that need no database.
+  unit:
+    name: Tests without a database
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run test:r2
+      - run: npm run test:xpart-dups
+
+  # The tests that start a hub of their own on a scratch Postgres. The role is a superuser because several tests
+  # create and drop databases beside the one in DATABASE_URL.
+  database:
+    name: Tests with PostgreSQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: stitchbench
+          POSTGRES_PASSWORD: stitchbench
+          POSTGRES_DB: postgres
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U stitchbench"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGBASE: postgresql://stitchbench:stitchbench@127.0.0.1:5433
+      ADMIN_TOKEN: ci-admin-token-0123456789
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Each test gets a database of its own, so one cannot disturb another (billing needs a fresh one).
+      - name: Run the database tests
+        run: |
+          set -u
+          failed=0
+          for t in db accounts companies billing signing move provisioning terms limits repository takedown assistant assistant-billing backup hops addons-billing feedback releases; do
+            name="ci_${t//-/_}"
+            psql "$PGBASE/postgres" -qc "DROP DATABASE IF EXISTS $name" -c "CREATE DATABASE $name"
+            echo "::group::npm run test:$t"
+            if ! DATABASE_URL="$PGBASE/$name" npm run "test:$t"; then
+              echo "::error::test:$t failed"; failed=1
+            fi
+            echo "::endgroup::"
+          done
+          exit $failed
+
+  # npm test is an end-to-end run against a running hub.
+  smoke:
+    name: Smoke test against a running hub
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: stitchhub
+          POSTGRES_PASSWORD: stitchhub
+          POSTGRES_DB: stitchhub
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U stitchhub"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://stitchhub:stitchhub@127.0.0.1:5432/stitchhub
+      ADMIN_TOKEN: ci-admin-token-0123456789
+      JOIN_KEY: ci-join-key
+      PORT: 8080
+      LINK_CHECKER: "off"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Start the hub
+        run: |
+          node src/server.mjs > hub.log 2>&1 &
+          for i in $(seq 1 30); do curl -fs http://127.0.0.1:8080/health && break; sleep 1; done
+          curl -fs http://127.0.0.1:8080/health
+      - run: HUB_URL=http://127.0.0.1:8080 npm test
+      - name: Hub log
+        if: failure()
+        run: cat hub.log
+
+  docker:
+    name: Docker image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t stitchhub:ci .
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm audit --omit=dev --audit-level=high
