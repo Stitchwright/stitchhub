@@ -41,7 +41,7 @@
     "@tesseract.js-data/eng": "^1.0.0",
     "hono": "^4.13.9",
     "pdfjs-dist": "^6.4.299",
-    "pg": "^8.23.0",
+    "pg": "^8.23.1",
     "tesseract.js": "^7.0.0"
   }
 }
