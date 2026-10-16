@@ -145,6 +145,7 @@ try {
   assert.equal(page.status, 200);
   const html = await page.text();
   assert.match(html, /<h1>Report a bug<\/h1>/);
+  assert.match(html, /<select id="prog">/, "asks which program when none is given");
   assert.match(html, /location\.search/, "the page reads the program, version and system from the address");
   assert.match(html, /href="\/report-a-bug">Report a bug<\/a>/, "the footer links to the page");
   console.log("bot trap, size and page: ok");

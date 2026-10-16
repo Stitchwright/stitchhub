@@ -115,7 +115,7 @@ function reportPage(hubName) {
     title: `Report a bug - ${hubName}`,
     css: PAGE_CSS,
     body: `<h1>Report a bug</h1><p class="muted">Found something wrong in <strong id="who">${esc(hubName)}</strong>? Tell us what happened. Your report is filed as an issue on GitHub, and for the open-source programs it is public, so please leave out names, email addresses and anything private.</p>
-<form id="f">${f("title", "Short summary", "", 0)}${f("what", "What happened", "", 5)}${f("steps", "Steps to reproduce (optional)", "", 4)}${f("expected", "What should have happened (optional)", "", 3)}
+<form id="f"><div id="pick" hidden><label for="prog">Which program?</label><select id="prog"><option value="stitchhub">StitchHub (this website)</option><option value="stitchfoundry">StitchFoundry</option><option value="lightfoundry">LightFoundry</option></select></div>${f("title", "Short summary", "", 0)}${f("what", "What happened", "", 5)}${f("steps", "Steps to reproduce (optional)", "", 4)}${f("expected", "What should have happened (optional)", "", 3)}
 <div class="hp" aria-hidden="true"><label for="website">Leave this empty</label><input id="website" type="text" tabindex="-1" autocomplete="off"></div>
 <p><button id="go" type="submit">Send the report</button></p><p id="out" role="status"></p></form>
 <script>
@@ -123,16 +123,20 @@ const $ = (id) => document.getElementById(id);
 // A program's Help > Report a Bug opens this page as /report-a-bug?program=stitchfoundry&version=0.3.1&system=macos+aarch64.
 const q = new URLSearchParams(location.search);
 const NAMES = { stitchbench: "StitchBench", stitchshop: "StitchShop", stitchhub: "StitchHub", stitchfoundry: "StitchFoundry", lightfoundry: "LightFoundry" };
-const program = NAMES[(q.get("program") || "").toLowerCase()] ? q.get("program").toLowerCase() : "stitchhub";
+const given = NAMES[(q.get("program") || "").toLowerCase()] ? q.get("program").toLowerCase() : "";
+if (!given) $("pick").hidden = false; // opened without a program (a link on a website): ask which one
+const chosen = () => given || $("prog").value;
 const version = (q.get("version") || "").slice(0, 40);
 const system = (q.get("system") || "").slice(0, 200) || navigator.userAgent;
-$("who").textContent = NAMES[program] + (version ? " " + version : "");
+const showWho = () => { $("who").textContent = NAMES[chosen()] + (version ? " " + version : ""); };
+showWho();
+$("prog").onchange = showWho;
 $("f").onsubmit = async (e) => {
   e.preventDefault();
   $("go").disabled = true;
   $("out").textContent = "Sending...";
   try {
-    const r = await fetch("/v1/bug-report", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ program, version, title: $("title").value, what: $("what").value, steps: $("steps").value, expected: $("expected").value, system, website: $("website").value }) });
+    const r = await fetch("/v1/bug-report", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ program: chosen(), version, title: $("title").value, what: $("what").value, steps: $("steps").value, expected: $("expected").value, system, website: $("website").value }) });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error || "That didn't work. Please try again.");
     $("out").textContent = "Thank you. The report was sent.";
