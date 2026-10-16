@@ -6,6 +6,10 @@
 
 Version: [VERSION DATE, YYYY-MM-DD]
 
+_Rewritten for the free model (16 Oct 2026): the programs, the hub and the hosted service are free, paid for by YouTube
+and donations, so there are no subscriptions or billing records. New: bug reports on GitHub, donations, and our
+website and videos._
+
 This policy explains what information we hold, where it sits, who sees it, how long we keep it, and what you can do
 about it. It covers StitchBench and StitchShop (the programs), StitchHub (the community hub), and our hosted service.
 
@@ -21,19 +25,22 @@ shop serves.
 - **The Windows program keeps your shop's data on your shop PC.** We don't have it and can't see it.
 - **On our hosted service** your shop's data sits on our hosting provider's servers. We hold it **for you**: you
   decide what it's for, and we use it only to run the service.
-- **The hub holds only what it needs and what you choose to share**: your account and billing details, your shop's
-  name, what you offer to the community, and messages between you and a partner shop.
+- **The hub holds only what it needs and what you choose to share**: your account, your shop's name, what you offer
+  to the community, and messages between you and a partner shop.
 - **Your customers' contact details never go to the community.** Partner shops see only what a repair needs (first
   name and last initial, not phone or address).
-- **We never see card numbers.** Stripe handles payments.
+- **We take no payment from you, so we hold no card details.** The programs are free. If you give a donation, it goes
+  through [DONATION PLATFORM], which handles your card.
 - **We don't sell information, and we don't show ads.** No advertising or tracking cookies.
+- **Bug reports go to GitHub.** If you press Report a bug, what you type is filed as an issue on GitHub. For the
+  open-source programs it is public. Your shop's name and email are not put in it (section 5.2b).
 - **The optional Assistant** sends the text of a ticket (with customer names, emails and phone numbers taken out) to
   Anthropic, through the hub, only when someone presses a button. The hub doesn't keep it. Anthropic doesn't train on
   it.
 
 ## 3. Two kinds of information, two roles
 
-1. **Information about you as our customer**: your hub account, your billing, your shop's name, what you share on
+1. **Information about you as a user of our services**: your hub account, your shop's name, what you share on
    the hub. **We decide** how this is used, as this policy says.
 2. **Information your shop keeps about its customers and staff**: customers, machines, tickets, photos, payments,
    messages. **Your shop decides** how this is used; your shop is responsible for it (the "controller", or "business"
@@ -60,24 +67,23 @@ In every case, what you choose to send to the hub sits on the hub (section 5), w
 
 ## 5. What we collect, and why
 
-### 5.1 Your StitchHub account and subscription
+### 5.1 Your StitchHub account
 
 | What | Why |
 |---|---|
-| The owner's email address (the same email the owner signs in to the program with) | To sign you in, confirm the address, send password resets, billing emails and notices about these terms |
+| The owner's email address (the same email the owner signs in to the program with) | To sign you in, confirm the address, send password resets and notices about these terms |
 | A password, stored only as a scrambled one-way "hash" | To sign you in. We can't read your password |
 | Whether the email is confirmed; when you signed up and last signed in; sign-in sessions (stored only as hashes) | Security, and to let you sign out everywhere |
 | Which version of the Terms and this policy you accepted, and when | To know what you agreed to |
-| The shops your account owns: name, kind (repair, retail or both), which program and version | To track each shop's trial, plan and standing |
-| Your subscription: plan (monthly or yearly), status, paid-up-to date, Stripe customer and subscription ids, and which billing emails we've sent | To bill you and keep your program working |
-| Free plans we give, with our note; licence keys we issued to your shop | To run the free plans and keys |
+| The shops your account owns: name, kind (repair, retail or both), which program and version | To list your shops and keep each one connected |
+| The licence keys we issued to your shop (free, and long-lived), and any note we made about the shop | To keep the programs working |
 | Password-reset and link codes, stored only as hashes, for minutes or hours | To reset a password or connect a shop |
 
 ### 5.2 What the program tells the hub about your install and shop
 
 When the program joins the hub, it sends the install's name and a contact you give (usually an email). At every sync
 (every few minutes) it tells the hub, for each company: its id, name, kind, program and version. The hub answers with
-the shop's standing and licence key. The hub keeps the install's key only as a hash.
+the shop's standing (free, unless we have suspended it) and licence key. The hub keeps the install's key only as a hash.
 
 **Internet (IP) addresses.** The hub uses the address a request comes from, for a short time, to limit abuse (for
 example, too many sign-in attempts). It holds this in memory and doesn't save it to its database. Our hosting
@@ -98,6 +104,28 @@ and the page, with anything that looks like an email address, a phone number or 
 contents. We keep this until we have dealt with it (pictures are deleted 90 days after that) and use it only to fix
 and improve the programs and to answer the person; we do not share it or use it to advertise. [OWNER: confirm who
 reads it and how long the words are kept after an item is handled.]
+
+### 5.2b Bug reports
+
+The programs have a **Report a bug** command: in StitchBench and StitchShop it is in the Help button; in StitchFoundry
+and LightFoundry it is in the Help menu and opens our report page in your browser; the hub has a link in its footer.
+What you type (a short summary, what happened, the steps to repeat it, what should have happened, and optionally a log
+or error text) goes to the hub, which files it as an **issue on GitHub**, using a token that only the hub holds. The
+issue also carries the program's name and version and a few details about the system: for StitchBench and StitchShop,
+the page, your role, whether it runs on a PC or hosted, and the browser and screen size; for the open-source programs
+and the hub's page, the operating system and processor, or the browser's name. **It does not carry your shop's name,
+your email address or your internet address.**
+
+- **StitchBench and StitchShop:** the issue is in our **private** repository. The report is also kept on the hub, with
+  the shop's name and the reply address if you gave one, as in section 5.2a. A picture of the screen, if you included
+  one, stays on the hub and is not put in the issue.
+- **StitchFoundry, LightFoundry and the hub's own page:** the issue is in a **public** repository. Anyone can read it
+  and copy it, and GitHub keeps it until we close and delete it. Don't put anything private in a report.
+- The hub uses your internet address for a short time to limit abuse (not saved to its database). GitHub's own privacy
+  statement applies to what GitHub holds. We read reports only to fix and improve the programs.
+- A maintainer can have an AI assistant (Claude, made by Anthropic) work on an issue to propose a fix. It reads the
+  issue text and our code, not your shop's data. [OWNER: confirm you want this stated; check Anthropic's terms for
+  that use, and the section 5.7 wording on training.]
 
 ### 5.3 What you share on the hub
 
@@ -154,9 +182,8 @@ and whether aggregated, de-identified statistics should be reserved or ruled out
 ### 5.6 Emails we send you
 
 From one mailbox we control, we send: account emails (confirm your address, password resets, connecting a shop),
-billing emails (payment failed, grace ending, read-only, yearly renewal reminders), notices about changes to these
-terms and this policy, and, on the hosted service, password-reset emails to your staff. Stripe sends receipts. We
-don't send you marketing. [OWNER: confirm. If you ever send product news, it must have an unsubscribe link.]
+notices about changes to these terms and this policy, and, on the hosted service, password-reset emails to your staff.
+We don't send you marketing. [OWNER: confirm. If you ever send product news, it must have an unsubscribe link.]
 [OWNER: name the mail provider here once chosen.]
 
 ### 5.7 The Assistant (optional)
@@ -211,11 +238,14 @@ publishing.]
 sent" for each), so you can check it. It is part of your data: it's in your backups and exports, and on the Windows
 program it stays on your PC.
 
-### 5.8 Payments
+### 5.8 Payments and donations
 
-- **Your subscription.** Stripe's Checkout and billing pages take your card. We keep only Stripe's customer and
-  subscription ids, the plan, its status and dates. Stripe's dashboard shows us things like the card's brand and last
-  four digits and your billing address; we don't copy them. Stripe's privacy policy applies to what it collects.
+- **The programs are free,** so we take no payment from you and hold no card details, bank details or billing address
+  for you.
+- **Donations.** If you give a donation, [DONATION PLATFORM] takes it under its own terms and privacy policy. We receive
+  from it only what it passes on to us (for example the name or email you gave, the amount, and any message) [OWNER:
+  depends on the platform: say exactly what you receive]. We use that to thank you and for our own records, and we
+  don't share it. We never see your card number.
 - **Your online shop.** Stripe Checkout takes your customers' cards. Card numbers never reach the program or us. The
   order (the customer's name, email or phone, shipping address, items and amounts) is kept in your shop's data.
   If you use the hosted service's Stripe account, Stripe and we see these payments too, because they go through our
@@ -234,6 +264,18 @@ program it stays on your PC.
 The programs and the hub use **sign-in cookies only**: to keep you signed in, and for security. No advertising,
 analytics or tracking cookies. The online shop keeps the cart in the page's address, not in a cookie.
 [LAWYER: confirm no cookie banner is needed for US-only use.]
+
+### 5.11 Our website and videos
+
+- **Our website** (stitchbench.app) is a set of pages with information and links: no accounts, no forms, no
+  advertising and no analytics or tracking cookies. [OWNER: confirm you add no analytics; if you do, say what here.]
+  Cloudflare, which hosts it, may keep ordinary request logs (including internet addresses) for a short time. [OWNER:
+  check Cloudflare's log settings and say how long.]
+- **Links to other sites.** The website links to YouTube, GitHub, the donation page and the hub. When you follow one,
+  that site's own privacy policy applies, not this one.
+- **Our YouTube channel.** What you do on YouTube (watching, liking, subscribing, commenting) is handled by YouTube
+  under its own policy. We see what YouTube shows the channel's owner: public comments and overall figures such as
+  views. We don't connect any of it to a shop's data or its hub account. [OWNER: confirm.]
 
 ## 6. Your customers' information
 
@@ -269,10 +311,14 @@ We share only:
 
 - **With our service providers**, who handle it for us under their own contracts and only to provide their service:
   - **Railway**: hosting and databases for the hub and the hosted service;
-  - **Stripe**: payments and subscriptions;
-  - **[OWNER: mail provider]**: our account, billing and password-reset emails;
+  - **Stripe**: payments in your online shop, only if you use the hosted service's Stripe account (Terms, section 13);
+  - **GitHub**: bug reports, as issues (section 5.2b);
+  - **Cloudflare**: hosting our website;
+  - **[OWNER: mail provider]**: our account and password-reset emails;
   - **Anthropic**: only for the Assistant, only what section 5.7 lists, only when someone presses a button;
   - **Discord**: short announcements on the community channel (section 5.3).
+- **Donations** are handled by [DONATION PLATFORM], an independent company, which gets your card details itself. We
+  don't pass it anything about your shop.
 - **With other shops**, only what you share on the hub (section 5.3), and with a partner shop only the partner
   messages (section 5.4).
 - **When the law requires it**, or to protect people, the services or our rights, when that is lawful.
@@ -285,14 +331,15 @@ We share only:
 | What | How long |
 |---|---|
 | Your hub account | Until you ask us to delete it |
-| Subscription and invoice records | As long as tax and accounting law requires [LAWYER: how long; typically up to 7 years] |
+| Donation records we receive | As long as tax and accounting law requires [LAWYER: how long; typically up to 7 years] |
 | Sign-in sessions | 30 days, or until you sign out everywhere |
 | Reset and link codes | Minutes to a day; each works once |
 | Partner messages on the hub | A year after delivery; never more than three years |
 | Things you shared on the hub (notes, link and part edits, listings, ratings) | Until you remove them, or for as long as the community uses them (section 9) |
 | Help button items and error reports (the words) | Until we have dealt with them, then as long as they help improve the programs [OWNER: choose]; pictures 90 days after they are dealt with |
 | Assistant counts on the hub (no text) | [OWNER: choose, e.g. 2 years] |
-| Your shop's data on the hosted service | While your shop is on the service. **A lapsed subscription never deletes it.** After you close the account: [OWNER: e.g. 90 days], then deleted |
+| Your shop's data on the hosted service | While your shop is on the service. **A suspension never deletes it.** After you close the account: [OWNER: e.g. 90 days], then deleted |
+| Bug reports (issues on GitHub) | Until we close and delete them. A public one can be read or copied by anyone meanwhile. A report's copy on the hub (StitchBench and StitchShop) is kept like a Help button item |
 | Hosted database backups | [OWNER: Railway's backup schedule and retention] |
 | A move file | Not stored on the server when you make one: it streams straight to your download. One uploaded to the hosted service for an import is deleted from the server within 24 hours |
 | The old copy after a move | Read-only, kept until someone deletes it (allowed after 30 days) |
@@ -301,8 +348,7 @@ We share only:
 
 ## 9. Deleting your information
 
-- **Your hub account.** Ask us at [CONTACT EMAIL]. We delete the account, cancel its subscription, and detach its
-  shops. What your shop shared with the community (notes, link and part edits, listings) stays, under your install's
+- **Your hub account.** Ask us at [CONTACT EMAIL]. We delete the account and detach its shops. What your shop shared with the community (notes, link and part edits, listings) stays, under your install's
   name, because other shops rely on it, unless you remove it first or ask us to remove it. [LAWYER: is keeping shared
   contributions after an account deletion acceptable, especially names of people in edit history? Consider replacing
   people's names with the shop's on deletion.]
@@ -310,7 +356,7 @@ We share only:
   Copies in backups disappear as the backups expire.
 - **On Windows or self-hosted**, you delete your own data (uninstalling leaves the data and backups until you delete
   them; the installation guide says where they are).
-- **What we must keep**: billing records the law requires, and anything we need for a legal claim.
+- **What we must keep**: records the law requires (for example for donations), and anything we need for a legal claim.
 
 ## 10. Export and moving your company
 
@@ -330,7 +376,8 @@ You can take your data with you at any time, even when your shop is read-only:
 - Your mail, Twilio and Stripe passwords and keys are encrypted in the database (AES-256-GCM), each tied to your shop.
 - The hosted service and the hub use encrypted connections (https). Sign-in cookies can't be read by page scripts.
 - Sign-ins, sign-ups and resets are rate-limited against guessing.
-- Card numbers never reach us; Stripe handles them.
+- We take no card numbers: the programs are free, donations go through the platform, and your online shop's cards go to
+  Stripe.
 - Each shop on a hosted service sees only its own data; every query is limited to the signed-in shop.
 - **What we can't protect:** your shop PC, its backups and move files. Backups are **not encrypted**. Keep them as
   private as the PC, and remember that Windows may copy Documents to OneDrive.

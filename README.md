@@ -566,8 +566,9 @@ first, then the row, so a failed delete is tried again at the next sweep. `npm r
 The hub serves both documents from markdown files in `legal/`: `terms-<version>.md` and `privacy-<version>.md`, one
 version string for the pair. A version is the day it comes into force, `YYYY-MM-DD` (`YYYY-MM-DD.2` for a second one
 that day), with `-draft` on the end while it is a draft: the pages then carry a **"DRAFT, not yet in force"** banner. The
-drafts for the lawyer are in `legal/` as `2026-10-03-draft` (copied from StitchBench's `docs/legal/`, where the
-placeholders and open questions are listed). Never edit a published version: add a new pair.
+drafts for the lawyer are in `legal/` as `2026-10-16-draft` (copied from StitchBench's `docs/legal/`, where the
+placeholders and open questions are listed; rewritten on 16 Oct 2026 for the free model, replacing the unpublished
+`2026-10-03-draft`). Never edit a published version: add a new pair.
 
 - `/terms` and `/privacy` show the version in force; `/terms/<version>` and `/privacy/<version>` any version on file
   (an earlier one says so and links the current one). The pages run no script and allow none (a strict CSP); the

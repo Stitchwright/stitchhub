@@ -6,6 +6,9 @@
 
 Version: [VERSION DATE, YYYY-MM-DD]
 
+_Rewritten for the free model (16 Oct 2026): the programs, the hub and the hosted service are free, paid for by YouTube
+and donations._
+
 These terms are the agreement between your business and us. Please read them. We've tried to write them in plain
 English. If something isn't clear, write to us at [CONTACT EMAIL] before you agree.
 
@@ -27,13 +30,18 @@ someone allowed to agree to these terms for it. [LAWYER: confirm "authority to b
 proprietor signing for themselves needs anything different.]
 
 The services are for **businesses**, not for personal or household use. [LAWYER: say so to keep consumer-protection
-rules (auto-renewal laws, cooling-off rights) from applying, or check which still apply to small businesses, e.g.
-California's automatic renewal law if a sole trader signs up.]
+rules from applying, or check which still apply to small businesses. With no payments, auto-renewal laws should not
+matter, but check.]
+
+**What these terms do not cover.** **StitchFoundry** and **LightFoundry** are separate open-source programs, under
+their own licences (MIT or Apache-2.0) on GitHub; these terms don't apply to them. Our **website** (stitchbench.app)
+and our **YouTube videos** are not services under these terms: the website only gives information and links, and the
+videos are on YouTube (section 6).
 
 ## 2. Agreeing to these terms
 
 You agree to these terms when you tick the box to accept them, either in the program (Settings → Account), on the hub's
-sign-up page, or when you subscribe. The hub records the **version** you accepted and the date (section 23). If you
+sign-up page, or when you accept an update to these terms. The hub records the **version** you accepted and the date (section 23). If you
 don't agree, don't use the services.
 
 Our **Privacy Policy** (at [HUB ADDRESS]/privacy) is part of these terms. It says what data we hold, where it sits and
@@ -52,8 +60,8 @@ You must be 18 or older to accept these terms. [LAWYER: confirm.]
 - On the Windows program you can choose to **allow a password reset from your StitchHub account** (off unless you turn
   it on). If you turn it on, someone who controls your hub account can reset the owner's password on the shop PC. The
   new password is shown only on that PC's screen.
-- You can use the programs without a hub account. You need one to subscribe, to get a free plan from us, and to
-  start a hosted shop from the hub.
+- You can use the programs without a hub account. You need one to start a hosted shop from the hub, and to connect a
+  shop to the hub (for the community, partner shops and the marketplace).
 
 ## 4. The three ways to run the programs
 
@@ -64,7 +72,7 @@ You choose how each shop runs. You can change your mind later (section 16).
 | What it is | The program installed on your shop PC | Your shop is one company on our shared online service | You run the program on your own server or your own cloud account |
 | Where your shop's data is | On your PC (and your backups) | On our hosting provider's servers, which we manage for you | On your server, which you manage |
 | Who can get at it | You. We can't. | You, and us as the operator (section 11) | You. We can't. |
-| Who pays for the computer | You | Included in your subscription [OWNER: confirm; HANDOFF says "hosted copies at cost" for a dedicated copy] | You |
+| Who pays for the computer | You | Free: we pay for the hosting (sections 5 and 6) [OWNER: confirm, including any dedicated hosted copy] | You |
 | Backups | The program backs up every night to your PC; you keep copies safe | We keep database backups [OWNER: how often, how long] | You |
 
 **A repair shop hosting StitchShop for its partner shops.** A repair shop may run its own copy and put its partner
@@ -78,115 +86,83 @@ only, no redistribution").] [LAWYER: draft that licence.]
 
 **The hub** is the same for everyone. It is optional: a Windows program that never connects keeps working.
 
-## 5. Price
+## 5. Free of charge
 
-- **Two plans for each shop**, however it runs, in US dollars: **Solo**, $25 a month or $250 a year, for up to two
-  people signed in; and **Shop**, $45 a month or $450 a year, for everyone at the shop. Both plans include every
-  feature. A "shop" is one company in the program (one company on a hosted service, or the one company on a Windows
-  install). On Solo, a third person can't be added until the shop switches to Shop; nobody already signed in loses
-  access.
-- **Founding shops**: the first 25 shops we accept as founding shops pay $15 (Solo) or $30 (Shop) a month, or $150 or
-  $300 a year, for as long as their subscription runs without a gap of more than 60 days. [LAWYER: check that this
-  promise is worded so a later price change doesn't break it.]
-- **Price changes**: we change prices for new shops first. A shop already subscribed keeps its price for at least 12
-  months after a change and gets 60 days' notice before it pays more; at most one increase a year. [LAWYER: check.]
-- **Paid modules** (for example Vac Shop, Small Appliance Repair, Scheduling, Marketing, and the Assistant) cost extra.
-  Their prices are shown where you buy them. [OWNER: list the module prices on the pricing page; the Assistant is
-  planned at $15 a month or $150 a year with 300 requests a month, and 20 free plate reads a month without it.]
-- **The hub itself is free** to every shop.
-- **Before subscriptions open.** Until we open subscriptions, every shop uses the programs free, on a trial or on a
-  free plan we give it. We'll tell you at least [30] days before we start charging. [OWNER: choose the notice period.]
+- **The programs, the hub and the hosted service are free.** StitchBench, StitchShop and StitchHub cost nothing to
+  use: no plans, no price per shop or per person, no free trial that ends, and no card. Every feature and every
+  add-on (for example Vac Shop, Small Appliance Repair, Scheduling and Marketing) is included, for every shop, however
+  it runs (section 4).
+- **There is no subscription.** Nothing renews, nothing is charged to you, and we hold no payment details for you.
+- **The Assistant** (section 14) is the one thing that may cost money, because every request it makes costs us money.
+  It is not built yet. If we offer it, we'll show any limit or price where you turn it on, and you won't be charged
+  unless you say yes. [OWNER: decide whether the Assistant will be free, limited, or paid, and say so here.]
+- **Limits.** To keep the free hosted service fair for everyone, we may limit how much a shop can store or send (for
+  example photos, backups, or messages through the hub). We'll say what the limits are where they apply. [OWNER: list
+  any limits you will set, or delete this bullet.]
+- **If we ever charge.** We have no plan to. If we ever did, we would email every account at least [90] days before
+  it applied, it would apply only to what you use after that, nothing would be deleted because you chose not to pay,
+  and you could export everything and move (section 15). [OWNER: confirm you want to make this promise.]
+- **Taxes.** We charge you nothing, so there is no sales tax to add. You are responsible for any taxes on your own
+  sales to your customers.
 
-## 6. Trial, free plans, and paying
+## 6. How the project is paid for: YouTube and donations
 
-**Trial.** Each shop gets one free trial of **30 days**, starting the first time the shop connects to the hub. A new
-company gets its own trial. [OWNER: the hub does not delay the first charge to the end of the trial: if you subscribe
-during the trial you are charged that day. Confirm, or change the code.]
+The services cost us money to run (hosting, email, and our time). We pay for them with the income from our **YouTube
+channel** and with **donations** from people who find the programs useful. Not the shops that use them.
 
-**Free while partnered.** A sewing or quilt shop (the "retail" side) pays nothing while it has an active partnership
-on the hub with a repair shop whose own subscription is in good standing (on trial, paid, inside its grace period, or
-on a free plan from us). The repair shop pays. A shop that both repairs and sells counts as a repair shop and pays.
-When the partnership ends, or the repair shop stops paying, the free use ends too. The program keeps working for about
-a month (35 days) after that, so you have time to subscribe. If you already pay us and then become partnered, the
-program tells you that you can cancel and stay free; we don't cancel or refund for you.
+- **YouTube.** We make videos about the programs and the work they are made for, at [YOUTUBE CHANNEL LINK]. The
+  channel, the videos and their comments are on YouTube and are covered by YouTube's own terms and privacy policy, not
+  by these terms. Whatever the videos earn (advertising, memberships, sponsorships) is separate from the services. **The
+  services show no advertising**, and nothing in them is sponsored content.
+- **Donations.** You can give a donation, once or every month, at [DONATE LINK], through [DONATION PLATFORM]. A
+  donation is a **voluntary gift**, not a payment for the services, and it creates no contract:
+  - it does **not** buy extra features, support or priority. A shop that gives nothing has exactly the same services as
+    one that gives every month;
+  - the platform takes your payment under its own terms, and we never see your card number;
+  - donations are **not refundable**, except where the platform's rules or the law require it. If you gave by mistake,
+    write to [CONTACT EMAIL] and we'll try to put it right; [OWNER: confirm.]
+  - a donation to us is **not a tax-deductible charitable contribution**. [OWNER/LAWYER: true while the project is
+    run by a business and not a registered charity. Change this if that changes.]
+- **No pressure.** Nothing in the programs or the hub will lock or slow down because you haven't donated.
 
-**Free plans from us.** We may give any shop free use for a time or for good. We can end a free plan we gave, with
-[30] days' notice. [OWNER: confirm the notice.]
+[LAWYER: check how donations and YouTube income should be described for a small business (gifts versus income,
+state rules on soliciting donations, and whether a notice about donations must appear anywhere else).]
 
-**How you pay.** You subscribe on the hub (your account → Your shops → Subscribe). Payment is taken by **Stripe**, our
-payment provider. We never see or store your card number (section 13 and the Privacy Policy).
+## 7. If something changes or stops
 
-**Renewal.** Your subscription **renews automatically** each month or year, and the card on file is charged, until you
-cancel. Stripe emails a receipt. For a yearly plan we email you a reminder 30 days before it renews. [LAWYER: check
-state auto-renewal rules for the reminder and cancellation wording, even for business customers.]
+Because the services are free, nothing ends for want of payment. These are the ways something can change:
 
-**Price changes.** We may change the price. We'll email the account at least [30] days before a new price applies to
-you, and it applies from your next renewal after that. [OWNER: choose the notice.]
+- **No lock-outs for money.** The programs never go read-only because you haven't paid; there is nothing to pay. The
+  programs may check a **licence key** the hub signs for your shop. Keys are free and run for many years. A Windows
+  program that never connects to a hub keeps working.
+- **We may change or stop things.** We may change what the services do, limit how much each shop can send, or stop
+  offering the hub or the hosted service. We'll give at least [90] days' notice where we can, and help you move your
+  company to a Windows PC or your own server (section 15). The Windows program and a self-hosted copy keep working
+  without us, except for the things that need the hub (sharing, partner shops, the marketplace, the Assistant).
+  [OWNER: confirm the notice.]
+- **Suspension.** If we suspend a shop because it seriously broke these terms (section 16), the shop becomes
+  **read-only**. **We never delete your data because a shop was suspended.** While read-only, you and your staff can
+  still: look at everything, search, print, and export your data; finish and close open tickets and repairs; take
+  payments, and do returns and voids; and run backups. What waits: new tickets, new sales, new parts, and edits. The
+  shop's online booking page and online shop show as paused, and automatic messages to customers stop.
+- **Offline Windows program.** The program carries a key from the hub that says how long it may run. A PC that is
+  offline keeps working until the key's last day plus its days of grace.
 
-**Taxes.** We don't charge sales tax on the subscription at present. If we have to start, we'll add it to your bill
-and tell you first. You are responsible for any taxes on your own sales to your customers. [LAWYER: SaaS is taxable
-in some states; check whether we have to collect anywhere (economic nexus thresholds), and whether "we don't charge it
-now" is safe to say.]
+## 8. Stopping, and refunds
 
-**Failed payments.** If a payment fails, Stripe tries again and we email you. You have a **grace period of 14 days**
-after the end of the paid period to fix it. We email again 7 days in and on the last day.
-
-## 7. If your subscription lapses: read-only, never deleted
-
-If your trial ends without a subscription, or your subscription ends and the 14 days of grace run out, your shop
-becomes **read-only**. **We never delete your data because a subscription lapsed.**
-
-While read-only, you and your staff can still:
-
-- look at everything, search, print, and export your data;
-- finish and close open tickets and repairs;
-- take payments, and do returns and voids;
-- run backups, and sync with the hub.
-
-What waits until you subscribe again: new tickets, new sales, new parts, and edits. Your online booking page and
-online shop show as paused, and automatic messages to customers stop.
-
-When you subscribe again, the program works fully again, usually at its next sync with the hub (every few minutes).
-
-**Offline Windows program.** The program carries a key from the hub that says how long it may run. A PC that is
-offline keeps working until that key's last day plus the 14 days of grace.
-
-**A Windows program that never connects** to any hub keeps working, and reminds the owner after 60 days to set up an
-account. [OWNER/LAWYER: the program doesn't stop such a shop. Decide whether these terms still require a subscription
-after the trial (recommended: yes; the program being lenient is not permission to use it free).]
-
-## 8. Cancelling and refunds
-
-**Cancelling.** Cancel any time on the hub under your account → Manage billing (Stripe's billing page). Your
-subscription stops at the end of the period you've paid for, and you keep full use until then. After that the 14 days
-of grace and the read-only rules in section 7 apply. Nothing is deleted. You can export your data at any time, even
-read-only.
-
-**Refunds.**
-
-- **First charge:** if you ask within **14 days** of the first charge for a shop, we refund it in full.
-- **Otherwise there are no refunds**, including for part of a month.
-- **Yearly plans:** if you cancel a yearly plan early, we may refund the unused months, at our choice.
-
-Ask for a refund at [CONTACT EMAIL]. When we refund a period, that period is no longer paid for, so the shop becomes
-read-only at the program's next sync, even if it was still inside its trial. Nothing is deleted. [OWNER: this is how
-the hub works today ("a refund or chargeback lapses the shop at once, even inside its trial"). Confirm that is what
-you want, especially for a pro-rata yearly refund.] [LAWYER: confirm the "at our choice" wording for yearly refunds
-is enforceable and fair.]
-
-**Chargebacks.** If you dispute a charge with your bank instead of asking us, the shop becomes read-only at the next
-sync, and we may close the account if the dispute was not made in good faith. [OWNER: the hub lapses the shop when a
-dispute opens and doesn't restore it by itself if you win; you would restore it by hand on the admin page (a comp).]
+- **Stopping.** You can stop using the services at any time. There is nothing to cancel. To close your hub account or
+  your hosted company, write to [CONTACT EMAIL] (section 16). You can export your data whenever you want (section 15).
+- **Refunds.** The services are free, so there is nothing to refund. Donations are covered in section 6.
 
 ## 9. Using the programs: what you may and may not do
 
 We give you a limited, non-exclusive, non-transferable right to use the programs for your own shop's business while
-these terms apply and your shop is on a trial, free plan or paid subscription.
+these terms apply.
 
 You may not:
 
 - resell, rent out or sublicense the programs, except as section 4 allows for a repair shop hosting its partner shops;
-- get around, copy or forge licence keys, trial dates or the read-only rules;
+- get around, copy or forge licence keys or the suspension rules;
 - use the services for anything illegal, to send spam, or to harass anyone;
 - try to break into the hub, the hosted service or another shop's data, or overload them on purpose;
 - copy or reverse-engineer the programs, except where the law allows it or the code's licence does.
@@ -236,10 +212,17 @@ only carries the messages between the two programs.
 
 **The hub is free and may change.** We may change what the hub does, limit how much each shop can send, or stop
 running it, with reasonable notice where we can. The programs keep working without it, except for the things that
-need it (sharing, partners, the marketplace, subscriptions, the Assistant).
+need it (sharing, partners, the marketplace, the Assistant).
 
 **Other people's hubs.** Anyone may run their own hub with the open-source code. A hub someone else runs is theirs,
 not ours, and these terms don't cover it.
+
+**Bug reports.** When you press **Report a bug** in a program (or use the hub's report page), what you type is filed as
+an **issue on GitHub**, so we can fix the problem. For StitchBench and StitchShop it goes in our private repository; for
+the open-source programs and the hub's own page it goes in a **public** repository, which anyone can read. Don't put
+customers' details or anything private in a report. Your shop's name and your email address are not put in the issue,
+but anything you type is. We may use what you report freely to fix and improve the programs. The Privacy Policy
+(section 5.2a) says what is sent.
 
 ## 11. Your customers' information
 
@@ -294,8 +277,8 @@ You agree to cover us (section 22) if a claim is made against us because of mess
 
 ## 13. Payments
 
-**Your subscription to us** is paid through Stripe on the hub (Stripe's Checkout and billing pages). We never see or
-store your card number.
+**You pay us nothing** for the services (section 5). If you give a donation, the donation platform takes it (section 6),
+and we never see or store your card number.
 
 **Your online shop** (StitchShop and StitchBench, hosted service first) takes your customers' payments through Stripe
 Checkout, Stripe's own payment page. Card numbers never reach the program or us. You choose who takes the money:
@@ -316,7 +299,7 @@ Checkout, Stripe's own payment page. Card numbers never reach the program or us.
 
 ## 14. The Assistant (optional)
 
-The Assistant is an optional paid module that drafts text and suggests likely causes, using an AI model made by
+The Assistant is an optional add-on that drafts text and suggests likely causes, using an AI model made by
 **Anthropic**. [OWNER: the Assistant is designed but not built yet. Publish this section when it ships, and check it
 against what shipped.]
 
@@ -352,21 +335,21 @@ against what shipped.]
 
 ## 16. Ending the agreement
 
-**You** can stop using the services at any time: cancel your subscription (section 8), and ask us at [CONTACT EMAIL]
-to delete your hub account or your hosted company.
+**You** can stop using the services at any time (section 8), and ask us at [CONTACT EMAIL] to delete your hub account
+or your hosted company.
 
 **We** may suspend or end your use of the services if you break these terms in a serious way, use them illegally,
-put other shops or the hub at risk, or don't pay. Except for urgent cases (security, illegal use), we'll email you
-first and give you a chance to fix it. Not paying makes the shop read-only (section 7); it doesn't delete anything.
+or put other shops or the hub at risk. Except for urgent cases (security, illegal use), we'll email you first and give
+you a chance to fix it. A suspension makes the shop read-only (section 7); it doesn't delete anything.
 
 **If the hosted service ends for your shop,** we keep your company read-only for at least [90] days so you can export
 it or move it, then delete it, after emailing you. [OWNER: choose the period. The decision so far is "never data loss
-on lapse"; this is about closing an account, not a lapse.] [LAWYER: check.]
+because a shop was suspended"; this is about closing an account.] [LAWYER: check.]
 
 If we stop offering the hosted service entirely, we'll give at least [90] days' notice and help you move your
 company to a Windows PC or your own server. [OWNER: confirm.]
 
-Sections 8 (refunds), 10 (the content licence), 11, 12, 15, 19 to 22 and 24 to 25 continue after the agreement ends.
+Sections 6 (donations), 10 (the content licence), 11, 12, 15, 19 to 22 and 24 to 25 continue after the agreement ends.
 
 ## 17. Keeping things safe: your part
 
@@ -381,9 +364,11 @@ We work to keep the services secure (the Privacy Policy explains how). You must 
 
 ## 18. Other companies' services
 
-The services work with other companies' services: Railway (our hosting), Stripe (payments), Twilio and your mail
-provider (your messages), Anthropic (the Assistant), Discord (community chat), UPCitemdb (barcode lookups, the barcode
-number only), Tailscale or Cloudflare (if you set up a tunnel), and manufacturers' websites (manual downloads). Their
+The services work with other companies' services: Railway (our hosting), Stripe (payments in your online shop, if you
+use it), Twilio and your mail provider (your messages), Anthropic (the Assistant), GitHub (bug reports), Discord
+(community chat), UPCitemdb (barcode lookups, the barcode number only), Tailscale or Cloudflare (if you set up a
+tunnel), and manufacturers' websites (manual downloads). Our website runs on Cloudflare, our videos on YouTube, and
+donations go through [DONATION PLATFORM]. Their
 own terms apply to your use of them. We aren't responsible for them, for their prices, or for them being available.
 
 ## 19. Repair information
@@ -406,12 +391,13 @@ service? Recommended: no.] [LAWYER: wording of the warranty disclaimer; some sta
 To the extent the law allows:
 
 - we are not responsible for lost profits, lost business, lost data, or indirect or consequential losses; and
-- our total responsibility to you for everything to do with the services is limited to **the amount you paid us in
-  the 12 months before the claim**, or **$100** if that is more.
+- our total responsibility to you for everything to do with the services is limited to **$100**. (The services are
+  free, so you have paid us nothing to measure it against.)
 
 This doesn't limit responsibility the law doesn't allow us to limit. [LAWYER: set the cap and carve-outs. Note that
-"lost data" sits awkwardly next to "never data loss on lapse": consider excluding data loss caused by our own gross
-negligence on the hosted service.]
+"lost data" sits awkwardly next to our promise not to delete a suspended shop's data: consider excluding data loss
+caused by our own gross negligence on the hosted service. With a free service, also consider whether a cap of $100 is
+the right figure.]
 
 ## 22. Your responsibility to us
 
@@ -432,13 +418,13 @@ Each version of these terms and of the Privacy Policy has a **version date** in 
 top. Every version is published on the hub at [HUB ADDRESS]/terms and [HUB ADDRESS]/privacy, and earlier versions stay
 available there. [OWNER: the archive of old versions is a proposal; see README.]
 
-The hub records which version your account accepted, and when: at sign-up, and again each time you subscribe.
+The hub records which version your account accepted, and when: at sign-up, and again each time you accept an update.
 
 If we change these terms in a way that matters to you, we'll email the account at least [30] days before the change
 applies, and show "We updated our terms" when you next sign in to the hub and in Settings → Account. If you don't
-agree, you can cancel before the change applies (section 8). If you keep using the services after that, the new
+agree, you can stop using the services before the change applies (section 8). If you keep using the services after that, the new
 version applies. [LAWYER: is "keep using = agree" enough, or must we require a fresh tick for material changes?
-Recommended: a fresh tick at the next sign-in or subscription, which the hub can record.]
+Recommended: a fresh tick at the next sign-in, which the hub can record.]
 
 Small fixes (spelling, contact details) may apply straight away.
 
@@ -454,8 +440,7 @@ otherwise.]
 
 ## 25. General
 
-- These terms, the Privacy Policy, and anything you agree when you buy a module are the whole agreement between us
-  about the services.
+- These terms and the Privacy Policy are the whole agreement between us about the services.
 - You may not transfer this agreement without our written agreement. We may transfer it to someone who takes over the
   services, and we'll tell you.
 - If part of these terms can't be enforced, the rest still applies.
