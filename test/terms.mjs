@@ -39,7 +39,7 @@ const CATALOG = [
   { id: PRICES.shopYearly, interval: "year", amount: 45000 },
 ];
 const OLD = "2026-09-01";
-const DRAFT = "2026-10-03-draft";
+const DRAFT = "2026-10-16-draft";
 
 // ----- a legal folder of the test's own -----
 const LEGAL = fs.mkdtempSync(path.join(os.tmpdir(), "stitchhub-legal-"));
