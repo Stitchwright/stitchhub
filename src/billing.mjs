@@ -23,6 +23,7 @@ import crypto from "node:crypto";
 import { one, q, tx } from "./db.mjs";
 import { sendMail } from "./mail.mjs";
 import * as stripe from "./stripe.mjs";
+import { freeProgram } from "./free.mjs";
 import { signer as hubSigner, signKey, NO_END } from "./license.mjs";
 import { checkShown, currentVersion, needsAccept, recordAcceptance } from "./terms.mjs";
 import { assistantKeysFor, assistantPriceBook, assistantOffer, assistantPaidAgain, assistantPriceFor, assistantStanding, assistantTookBack, creditTopupSession, isAssistantSub, syncAssistantSub, topupTookBack, RUNNING as ASSISTANT_RUNNING } from "./assistant-billing.mjs";
@@ -114,6 +115,7 @@ export const planOfPrice = (priceId) => (priceId ? (priceBook().byId.get(priceId
 export const billingOpen = () => billingProblem() === null;
 /** Why they can't, for the admin page; null when billing is open. */
 export function billingProblem() {
+  if (freeProgram()) return "The programs are free (PROGRAM_FREE is on), so subscriptions are closed.";
   if (!process.env.STRIPE_SECRET_KEY?.trim()) return "STRIPE_SECRET_KEY isn't set: subscriptions aren't open, and every shop runs free (a trial that ended changes nothing).";
   if (!stripe.stripeConfigured()) return "STRIPE_SECRET_KEY doesn't look like a Stripe secret key (sk_live_… or sk_test_…).";
   const missing = PRICE_VARS.filter((v) => !v.founding && !priceFor(v.tier, v.interval, false)).map((v) => v.env);
@@ -483,6 +485,16 @@ export async function standingOf(shop, { noWaiver = false } = {}) {
       want: cutKey(shop, "t", t, lastTier, lastFounding),
     });
   }
+  // 1b. The programs are free (src/free.mjs): everyone is comped for good, whatever else holds.
+  if (freeProgram()) {
+    return out({
+      standing: "comped",
+      source: "comp",
+      lastDay: null,
+      message: "StitchBench and StitchShop are free. Thank you for using them.",
+      want: { plan: "c", f: t, u: NO_END, g: GRACE_DAYS, tier: "shop" },
+    });
+  }
   // 2. A subscription that is paid, or in its grace.
   if (subState && subState.standing !== "lapsed") {
     const waiver = noWaiver ? null : await waiverFor(shop);
@@ -654,7 +666,7 @@ export function registerBilling({ app, acct, admin, fail, allow, clientIp, hubNa
     return e;
   };
   const open = () => {
-    if (!billingOpen()) throw fail(503, "Subscriptions aren't open yet. Every shop is free while the hub is in its community period.");
+    if (!billingOpen()) throw fail(503, freeProgram() ? "StitchBench and StitchShop are free: there is nothing to subscribe to." : "Subscriptions aren't open yet. Every shop is free while the hub is in its community period.");
   };
 
   async function customerFor(a) {

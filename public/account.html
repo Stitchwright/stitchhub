@@ -184,7 +184,7 @@
     const offered = Object.entries(me.hosted || {}).filter(([, on]) => on).map(([name]) => name);
     $("hosted").hidden = !me.account.verified || !offered.length;
     $("hsProgram").replaceChildren(...offered.map((name) => Object.assign(document.createElement("option"), { value: name, textContent: name === "StitchShop" ? "StitchShop (a sewing or quilt shop counter)" : "StitchBench (a repair bench)" })));
-    $("billingNote").textContent = me.billing.open ? billingWords(me.billing) : "Subscriptions aren't open yet. Every shop is free while the hub is in its community period.";
+    $("billingNote").textContent = me.billing.open ? billingWords(me.billing) : "StitchBench and StitchShop are free: there is nothing to subscribe to. A YouTube channel and donations pay for them.";
     show("app", where === "settings" ? "settings" : where === "manuals" ? "manuals" : where === "repository" ? "repository" : "shops");
     if (where === "manuals") searchManuals(0);
     if (where === "repository") loadRepo();

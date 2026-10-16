@@ -100,7 +100,7 @@ async function startHub(env = {}) {
   const port = await freePort();
   const proc = spawn(process.execPath, ["src/server.mjs"], {
     cwd: ROOT,
-    env: { ...process.env, DATABASE_URL: dbUrl(FRESH), ADMIN_TOKEN: ADMIN, JOIN_KEY: JOIN, PORT: String(port), LINK_CHECKER: "off", TRUST_PROXY: "", RAILWAY_ENVIRONMENT_ID: "", HUB_URL: `http://127.0.0.1:${port}`, MAIL_DEV_LOG: "true", SMTP_URL: "", R2_ENDPOINT: r2.endpoint, R2_BUCKET: r2.bucket, R2_ACCESS_KEY_ID: r2.accessKeyId, R2_SECRET_ACCESS_KEY: r2.secret, REPO_UPLOADS: "on", REPO_OCR: "", REPO_OCR_PAGE_MS: "", ...env },
+    env: { ...process.env, DATABASE_URL: dbUrl(FRESH), ADMIN_TOKEN: ADMIN, JOIN_KEY: JOIN, PORT: String(port), LINK_CHECKER: "off", PROGRAM_FREE: "off", TRUST_PROXY: "", RAILWAY_ENVIRONMENT_ID: "", HUB_URL: `http://127.0.0.1:${port}`, MAIL_DEV_LOG: "true", SMTP_URL: "", R2_ENDPOINT: r2.endpoint, R2_BUCKET: r2.bucket, R2_ACCESS_KEY_ID: r2.accessKeyId, R2_SECRET_ACCESS_KEY: r2.secret, REPO_UPLOADS: "on", REPO_OCR: "", REPO_OCR_PAGE_MS: "", ...env },
     stdio: ["ignore", "pipe", "pipe"],
   });
   const h = { proc, url: `http://127.0.0.1:${port}`, log: "" };
