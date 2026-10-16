@@ -18,6 +18,7 @@
 //   STRIPE_PRICE_STORE_MONTHLY, _YEARLY          $25 / $250 for each store after the first, a quantity on the base plan
 import { one, q, tx } from "./db.mjs";
 import * as stripe from "./stripe.mjs";
+import { freeProgram } from "./free.mjs";
 import { signer as hubSigner, signKey, NO_END } from "./license.mjs";
 
 export const ADDON_IDS = ["vac", "appliance", "scheduling", "marketing", "maker"];
@@ -47,7 +48,7 @@ export function addonPriceBook() {
   return byId;
 }
 /** The products that can be bought (both prices set). */
-export const addonsForSale = () => PRODUCTS.filter((p) => addonPriceFor(p, "m") && addonPriceFor(p, "y"));
+export const addonsForSale = () => (freeProgram() ? [] : PRODUCTS).filter((p) => addonPriceFor(p, "m") && addonPriceFor(p, "y"));
 /** Extra stores can be billed (both store prices set). */
 export const storesForSale = () => Boolean(addonPriceFor("store", "m") && addonPriceFor("store", "y"));
 /** What's missing, for the admin page; null when everything is set. */
@@ -184,7 +185,8 @@ export function modulesOn(standings, shop) {
   return [...on];
 }
 // A shop the admin lapsed ("Lapse now") has no comp of the add-ons either, until the comp is set again or it pays.
-const compCovers = (shop) => Boolean(shop?.comp_addons && shop.comp_until && new Date(shop.comp_until).getTime() > Date.now() && !shop.lapsed_at);
+// While the programs are free (src/free.mjs) every shop is covered, for good.
+const compCovers = (shop) => Boolean(shop && !shop.lapsed_at && (freeProgram() || (shop.comp_addons && shop.comp_until && new Date(shop.comp_until).getTime() > Date.now())));
 
 const storedKey = (shopId, modules, plans) =>
   one(
@@ -207,7 +209,7 @@ export async function addonKeysFor(shop) {
   const keys = [];
   // The comp: plan c, all five, through the comp's last day.
   if (compCovers(shop)) {
-    const forever = new Date(shop.comp_until).getTime() >= Date.parse(`${NO_END}T00:00:00Z`);
+    const forever = freeProgram() || new Date(shop.comp_until).getTime() >= Date.parse(`${NO_END}T00:00:00Z`);
     const until = forever ? NO_END : day(shop.comp_until);
     const stored = await storedKey(shop.id, ADDON_IDS, ["c"]);
     if (stored && stored.last_day === until) keys.push(stored.key);

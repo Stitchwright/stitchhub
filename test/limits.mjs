@@ -32,7 +32,7 @@ async function startHub() {
       ADMIN_TOKEN: ADMIN,
       JOIN_KEY: JOIN,
       PORT: String(port),
-      LINK_CHECKER: "off",
+      LINK_CHECKER: "off", PROGRAM_FREE: "off",
       TRUST_PROXY: "true", // the limits per address see the test's addresses in X-Forwarded-For (none sent: 127.0.0.1)
       RAILWAY_ENVIRONMENT_ID: "",
       HUB_NAME: "Limits Test Hub",
