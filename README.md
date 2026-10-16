@@ -233,6 +233,10 @@ page's **Help & ideas** section (`src/feedback.mjs`, migration 034, `StitchBench
 - `GET /v1/feedback/replies?since=<iso>` (install key, company in `X-Shop-Ref`, like `POST /v1/feedback`): the answers to
   this install's and company's items, newest first, at most 50, `replied_at` after `since` (default 90 days ago) →
   `[{ id, kind, text, reply, repliedAt }]` (`text` = the first 200 characters of what they sent). The program asks at each sync.
+- `GITHUB_ISSUES_TOKEN` (optional): a fine-grained GitHub token with *Issues: Read and write* on the four program repositories. With
+  it, bug reports from the programs (`POST /v1/bug-report`, and `kind: "bug"` items from StitchBench and StitchShop) become GitHub
+  issues, and the Claude workflow can fix them: see `docs/bug-reports.md`. Without it bug reports are refused (503) or kept
+  on the admin page only.
 - `FEEDBACK_EMAIL` (optional): the owner's address. Each help, idea and rating is mailed at once (subject "Help: <shop> –
   first 60 characters", everything in the body, a link to `/admin`), up to `FEEDBACK_EMAIL_PER_HOUR` (20; 0 for none) an
   hour for the whole hub; past that items are only saved, and one email at most every hour says "N more feedback items

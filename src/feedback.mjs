@@ -14,9 +14,10 @@ import crypto from "node:crypto";
 import { bodyLimit } from "hono/body-limit";
 import { one, q, tx } from "./db.mjs";
 import { sendMail } from "./mail.mjs";
+import { fileIssue, issuesReady } from "./bugreports.mjs";
 import { mediaChanged, mediaFull, mediaKept } from "./media.mjs";
 
-const KINDS = new Set(["help", "idea", "rating", "error"]);
+const KINDS = new Set(["help", "idea", "rating", "error", "bug"]);
 const STATUSES = new Set(["new", "seen", "done"]);
 const MAX_PICTURE = 1024 * 1024;
 const PER_COMPANY_HOUR = 60; // items (any kind) an hour for one company, and ten times that for an install (a hosted program serves many)
@@ -49,11 +50,18 @@ function errorAllowed(installId) {
 function cleanItem(raw, fail) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw fail(400, "Send the item as a JSON object.");
   const kind = String(raw.kind ?? "");
-  if (!KINDS.has(kind)) throw fail(400, "kind is help, idea, rating or error.");
+  if (!KINDS.has(kind)) throw fail(400, "kind is help, idea, rating, error or bug.");
   const item = { kind };
   const text = str(raw.text, 4000);
   if (text) item.text = text;
-  if ((kind === "help" || kind === "idea") && !text) throw fail(400, "Tell us what happened or what you'd like (text).");
+  if ((kind === "help" || kind === "idea" || kind === "bug") && !text) throw fail(400, "Tell us what happened or what you'd like (text).");
+  if (kind === "bug") {
+    // A bug report: the words above are what happened; these are optional extras that go into the GitHub issue.
+    for (const [k, max] of [["title", 100], ["steps", 3000], ["expected", 2000], ["log", 8000]]) {
+      const v = str(raw[k], max);
+      if (v) item[k] = v;
+    }
+  }
   if (kind === "rating") {
     const stars = Number(raw.stars);
     if (!Number.isInteger(stars) || stars < 1 || stars > 5) throw fail(400, "stars is a whole number from 1 to 5.");
@@ -102,7 +110,7 @@ export function registerFeedback({ member, admin, fail, newId, allow, hubName, h
     const to = ownerEmail();
     if (to) sendMail({ to, subject, text, fromName: hubName }).catch((e) => console.error("feedback mail:", e.message));
   };
-  const LABEL = { help: "Help", idea: "Idea", rating: "Rating" };
+  const LABEL = { help: "Help", idea: "Idea", rating: "Rating", bug: "Bug" };
 
   function mailItem(item, shopName, id, hasPicture) {
     const first = (item.text ?? (item.stars ? `${item.stars} of 5 stars` : "")).replace(/\s+/g, " ").slice(0, 60);
@@ -185,6 +193,26 @@ export function registerFeedback({ member, admin, fail, newId, allow, hubName, h
     digestTimer.unref();
   }
 
+  /** The bug as a GitHub issue; the issue's address is kept on the item so the admin page can link to it. The shop's name and reply address stay on the hub. */
+  async function fileBug(item, id) {
+    const x = item.context;
+    const issue = await fileIssue({
+      program: x.program,
+      title: item.title ?? item.text.replace(/\s+/g, " ").slice(0, 80),
+      fields: {
+        version: x.version,
+        what: item.text,
+        steps: item.steps,
+        expected: item.expected,
+        system: [x.desktop === true ? "desktop" : x.desktop === false ? "hosted" : x.desktop, x.role, x.path, x.screen, x.userAgent].filter(Boolean).join(" | "),
+        log: item.log,
+      },
+      source: `in-app Report a bug (hub item ${id})`,
+    });
+    await q(`UPDATE feedback SET body = body || jsonb_build_object('githubUrl', $2::text) WHERE id = $1`, [id, issue.url]);
+    return issue.url;
+  }
+
   // ----- the programs' route -----
 
   member.post("/feedback", limit, async (c) => {
@@ -249,7 +277,12 @@ export function registerFeedback({ member, admin, fail, newId, allow, hubName, h
       return c.json({ ok: true, id: saved.id });
     }
     mailOrHold(item, shopName, id, Boolean(picture), inst.scope === "pending");
-    return c.json({ ok: true, id });
+    // A bug is also filed as a GitHub issue (src/bugreports.mjs) when the hub has the token; a pending install's isn't (anyone can start one).
+    let issueUrl = null;
+    if (item.kind === "bug" && inst.scope !== "pending" && issuesReady()) {
+      issueUrl = await fileBug(item, id).catch((e) => (console.error("bug report:", e.message), null));
+    }
+    return c.json({ ok: true, id, ...(issueUrl ? { issueUrl } : {}) });
   });
 
   // ----- the owner's admin routes -----
