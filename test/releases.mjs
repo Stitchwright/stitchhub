@@ -30,7 +30,7 @@ async function startHub(env = {}) {
   const port = await freePort();
   const proc = spawn(process.execPath, ["src/server.mjs"], {
     cwd: ROOT,
-    env: { ...process.env, DATABASE_URL: DB, ADMIN_TOKEN: ADMIN, JOIN_KEY: "join-releases-test", PORT: String(port), LINK_CHECKER: "off", TRUST_PROXY: "", RAILWAY_ENVIRONMENT_ID: "", HUB_NAME: "Releases Test Hub", HUB_URL: "https://hub.example.test", HUB_LICENSE_KID: "", HUB_LICENSE_KEY: "", MAIL_DEV_LOG: "true", SMTP_URL: "", FEEDBACK_EMAIL: "", R2_ENDPOINT: "", R2_BUCKET: "", R2_ACCESS_KEY_ID: "", R2_SECRET_ACCESS_KEY: "", R2_ACCOUNT_ID: "", ...env },
+    env: { ...process.env, DATABASE_URL: DB, ADMIN_TOKEN: ADMIN, JOIN_KEY: "join-releases-test", PORT: String(port), LINK_CHECKER: "off", PROGRAM_FREE: "off", TRUST_PROXY: "", RAILWAY_ENVIRONMENT_ID: "", HUB_NAME: "Releases Test Hub", HUB_URL: "https://hub.example.test", HUB_LICENSE_KID: "", HUB_LICENSE_KEY: "", MAIL_DEV_LOG: "true", SMTP_URL: "", FEEDBACK_EMAIL: "", R2_ENDPOINT: "", R2_BUCKET: "", R2_ACCESS_KEY_ID: "", R2_SECRET_ACCESS_KEY: "", R2_ACCOUNT_ID: "", ...env },
     stdio: ["ignore", "pipe", "pipe"],
   });
   procs.push(proc);

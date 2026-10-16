@@ -227,6 +227,11 @@ page's **Help & ideas** section (`src/feedback.mjs`, migration 034, `StitchBench
 - `GET /v1/feedback/replies?since=<iso>` (install key, company in `X-Shop-Ref`, like `POST /v1/feedback`): the answers to
   this install's and company's items, newest first, at most 50, `replied_at` after `since` (default 90 days ago) →
   `[{ id, kind, text, reply, repliedAt }]` (`text` = the first 200 characters of what they sent). The program asks at each sync.
+- `PROGRAM_FREE` (default on): StitchBench and StitchShop are free (owner, 15 Oct 2026). While it is on, every shop's standing is
+  "comped" with a program key that runs to 2099 and a key for every add-on, and subscriptions are closed (`src/free.mjs`);
+  the admin's "Lapse now" still ends a shop. Set `PROGRAM_FREE=off` to bring back the plans, the trial and the prices (the
+  billing tests run that way). The Assistant keeps its own subscription: it costs money for every question. Cancel any
+  Stripe subscription that was already running yourself: turning this on does not touch Stripe.
 - `GITHUB_ISSUES_TOKEN` (optional): a fine-grained GitHub token with *Issues: Read and write* on the four program repositories. With
   it, bug reports from the programs (`POST /v1/bug-report`, and `kind: "bug"` items from StitchBench and StitchShop) become GitHub
   issues, and the Claude workflow can fix them: see `docs/bug-reports.md`. Without it bug reports are refused (503) or kept

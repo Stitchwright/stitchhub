@@ -38,7 +38,7 @@ async function startHub(env = {}) {
   const port = await freePort();
   const proc = spawn(process.execPath, ["src/server.mjs"], {
     cwd: ROOT,
-    env: { ...process.env, DATABASE_URL: DB, ADMIN_TOKEN: ADMIN, JOIN_KEY: JOIN, PORT: String(port), LINK_CHECKER: "off", TRUST_PROXY: "", RAILWAY_ENVIRONMENT_ID: "", HUB_NAME: "Hops Test Hub", HUB_LICENSE_KID: "", HUB_LICENSE_KEY: "", ...env },
+    env: { ...process.env, DATABASE_URL: DB, ADMIN_TOKEN: ADMIN, JOIN_KEY: JOIN, PORT: String(port), LINK_CHECKER: "off", PROGRAM_FREE: "off", TRUST_PROXY: "", RAILWAY_ENVIRONMENT_ID: "", HUB_NAME: "Hops Test Hub", HUB_LICENSE_KID: "", HUB_LICENSE_KEY: "", ...env },
     stdio: ["ignore", "pipe", "pipe"],
   });
   hub = { proc, url: `http://127.0.0.1:${port}` };

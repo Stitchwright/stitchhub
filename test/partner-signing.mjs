@@ -25,7 +25,7 @@ const port = await freePort();
 const HUB = `http://127.0.0.1:${port}`;
 const hub = spawn(process.execPath, ["src/server.mjs"], {
   cwd: ROOT,
-  env: { ...process.env, DATABASE_URL: DB, ADMIN_TOKEN: ADMIN, JOIN_KEY: JOIN, PORT: String(port), LINK_CHECKER: "off", TRUST_PROXY: "", RAILWAY_ENVIRONMENT_ID: "", HUB_NAME: "Signing Test Hub" },
+  env: { ...process.env, DATABASE_URL: DB, ADMIN_TOKEN: ADMIN, JOIN_KEY: JOIN, PORT: String(port), LINK_CHECKER: "off", PROGRAM_FREE: "off", TRUST_PROXY: "", RAILWAY_ENVIRONMENT_ID: "", HUB_NAME: "Signing Test Hub" },
   stdio: ["ignore", "pipe", "pipe"],
 });
 let hubLog = "";
@@ -193,7 +193,7 @@ try {
   const port2 = await freePort();
   const hub2 = spawn(process.execPath, ["src/server.mjs"], {
     cwd: ROOT,
-    env: { ...process.env, DATABASE_URL: Object.assign(new URL(DB), { pathname: `/${other}` }).toString(), ADMIN_TOKEN: ADMIN, JOIN_KEY: JOIN, PORT: String(port2), LINK_CHECKER: "off", TRUST_PROXY: "", RAILWAY_ENVIRONMENT_ID: "" },
+    env: { ...process.env, DATABASE_URL: Object.assign(new URL(DB), { pathname: `/${other}` }).toString(), ADMIN_TOKEN: ADMIN, JOIN_KEY: JOIN, PORT: String(port2), LINK_CHECKER: "off", PROGRAM_FREE: "off", TRUST_PROXY: "", RAILWAY_ENVIRONMENT_ID: "" },
     stdio: "ignore",
   });
   try {

@@ -116,7 +116,7 @@ const ENV = {
   ADMIN_TOKEN: ADMIN,
   JOIN_KEY: JOIN,
   PORT: String(port),
-  LINK_CHECKER: "off",
+  LINK_CHECKER: "off", PROGRAM_FREE: "off",
   TRUST_PROXY: "",
   RAILWAY_ENVIRONMENT_ID: "",
   HUB_URL: HUB,
