@@ -1,6 +1,6 @@
 # StitchHub: the Foundry Account plan
 
-**Status:** 2026-10-19. Survey done, nothing built yet. Owner: Bruce Wattendorf (SiteSentrix).
+**Status:** 2026-10-19. Hub accounts on the Foundry Account built behind `FOUNDRY_SIGNIN` (off by default); see "Built: hub accounts" below. Not yet deployed or tried against the real service. Owner: Bruce Wattendorf (SiteSentrix).
 
 ## Goal
 One login for all SiteSentrix software: the **Foundry Account** (cloud.stitchfoundry.app), with one credit balance
@@ -106,3 +106,18 @@ a decision for the owner (it ends the free plate reads and the monthly allowance
 ## Open decisions (the owner's)
 The hub's Stripe subscriptions and marketplace payments (`PROGRAM_FREE` is on), terms and privacy wording, prices of
 credits (the cloud service's), and what happens to the duplicate finder.
+
+## Built: hub accounts (FA-1/FA-2 on the hub)
+Switch `FOUNDRY_SIGNIN` = off (default) / on / only; `FOUNDRY_CLOUD_URL` overrides https://cloud.stitchfoundry.app.
+- **Changed from the design above:** the hub keeps **no** Foundry token. It signs in through `proveAccount`
+  (`src/foundry.mjs`), reads the account `id`, and signs out again at once. The hub session stays its own `hub_session`.
+- `accounts.foundry_id` (migration 037, unique where set). Accounts are found by that id, never by email (the service does
+  not verify email).
+- **Linking an existing hub account** needs one proof: an emailed link (reset/verify kinds; this is also the way to replace
+  a lost Foundry Account), the old email and password, or the signed-in session. One hub account, one Foundry Account.
+- `only`: hub sign-in, set-password, verify and password change are refused (403); sign-up takes no password.
+- Cutover order: `on` (both work, people link) -> `only` -> `node scripts/retire-passwords.mjs --apply` (dry run without
+  `--apply`; refuses unless `only`). No real users yet, so this is rehearsal.
+- Tests: `npm run test:foundry-accounts` (7 steps, stand-in service `test/foundry-mock.mjs`), wired into CI.
+- **Owner's to decide:** the mail and page wording in `only` mode (written by me as a draft), when to switch on, and when to retire.
+- **Not verified:** a real deploy, the real Foundry service, phone width.

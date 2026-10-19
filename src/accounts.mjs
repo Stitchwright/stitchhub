@@ -24,6 +24,7 @@ import { refuseIfMoved } from "./moves.mjs";
 import { hostedOffer, resetStateOf, withdrawGrants } from "./provisioning.mjs";
 import { checkShown, currentVersion, isDraft, recordAcceptance, termsFor } from "./terms.mjs";
 import { LOOK_CSS, header, footer } from "./look.mjs";
+import { FoundryError, foundryForgot, foundryMode, proveAccount } from "./foundry.mjs";
 
 const SESSION_DAYS = 30;
 const SET_PASSWORD_HOURS = 24; // a link to set the first password, or to verify an address
@@ -135,20 +136,39 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
     }
   }
   const signOff = `\n\n${hubName}\n${HUB_URL}`;
+  const only = () => foundryMode() === "only";
   const setPasswordMail = (email, shop) =>
-    mail(
+    only()
+      ? mail(
+          email,
+          `Link your Foundry Account to ${hubName}`,
+          `Hello,\n\n${shop.name ? `A shop named "${nameForMail(shop.name)}"${shop.program ? ` (${shop.program})` : ""}` : "Someone"} asked for a ${hubName} account for ${email}. Open this link to link your Foundry Account, the one login for all SiteSentrix software; the link works once, for ${SET_PASSWORD_HOURS} hours:\n\n${link("set-password", shop.token)}\n\nIf you didn't ask for this, ignore this email and nothing happens.${signOff}`,
+        )
+      : mail(
       email,
       `Set your ${hubName} password`,
       `Hello,\n\n${shop.name ? `A shop named "${nameForMail(shop.name)}"${shop.program ? ` (${shop.program})` : ""}` : "Someone"} asked for a ${hubName} account for ${email}. Set your password here; the link works once, for ${SET_PASSWORD_HOURS} hours:\n\n${link("set-password", shop.token)}\n\nIf you didn't ask for this, ignore this email and nothing happens.${signOff}`,
     );
   const verifyMail = (email, token) =>
-    mail(
+    only()
+      ? mail(
+          email,
+          `Confirm your email for ${hubName}`,
+          `Hello,\n\nConfirm that ${email} is yours and link your Foundry Account, the one login for all SiteSentrix software, to finish your ${hubName} account; the link works once, for ${SET_PASSWORD_HOURS} hours:\n\n${link("verify", token)}\n\nIf you didn't sign up, ignore this email and nothing happens.${signOff}`,
+        )
+      : mail(
       email,
       `Confirm your email for ${hubName}`,
       `Hello,\n\nConfirm that ${email} is yours to finish your ${hubName} account; the link works once, for ${SET_PASSWORD_HOURS} hours:\n\n${link("verify", token)}\n\nIf you didn't sign up, ignore this email and nothing happens.${signOff}`,
     );
   const resetMail = (email, token) =>
-    mail(
+    only()
+      ? mail(
+          email,
+          `Link your Foundry Account to ${hubName}`,
+          `Hello,\n\nSomeone asked for a link to sign in to the ${hubName} account for ${email}. If that was you, open it to link a Foundry Account (this also replaces a Foundry Account you lost access to); the link works once, for ${RESET_HOURS} hour:\n\n${link("set-password", token)}\n\nIf it wasn't you, ignore this email: nothing changes.${signOff}`,
+        )
+      : mail(
       email,
       `Reset your ${hubName} password`,
       `Hello,\n\nSomeone asked to reset the password of the ${hubName} account for ${email}. If that was you, set a new one here; the link works once, for ${RESET_HOURS} hour:\n\n${link("set-password", token)}\n\nIf it wasn't you, ignore this email: your password hasn't changed.${signOff}`,
@@ -429,7 +449,7 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
 
   // ---------- the hub's own pages and their API (session cookie) ----------
 
-  const PAGES = ["/account", "/account/verify", "/account/forgot", "/account/set-password", "/account/shops", "/account/settings", "/account/manuals", "/account/repository"];
+  const PAGES = ["/account", "/account/verify", "/account/forgot", "/account/set-password", "/account/link", "/account/shops", "/account/settings", "/account/manuals", "/account/repository"];
   // The page is read at each request (easy to change in place); the hub's look, header and footer go in its placeholders.
   for (const p of PAGES)
     app.get(p, (c) =>
@@ -487,7 +507,7 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
       };
     };
     return c.json({
-      account: { id: a.id, email: a.email, verified: Boolean(a.verified_at), termsVersion: a.terms_version, createdAt: a.created_at, lastSignInAt: a.last_sign_in_at, hasBilling: Boolean(a.stripe_customer_id) },
+      account: { id: a.id, email: a.email, verified: Boolean(a.verified_at), foundry: a.foundry_id != null, foundryMode: foundryMode(), termsVersion: a.terms_version, createdAt: a.created_at, lastSignInAt: a.last_sign_in_at, hasBilling: Boolean(a.stripe_customer_id) },
       shops: (await Promise.all(shops.map(withStanding))).map((s) => ({
         ...s,
         canSubscribe: open && !(s.source === "subscription" && s.standing !== "lapsed"),
@@ -538,11 +558,12 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
     if (!allow(`acct-signup:${clientIp(c)}`, 10)) throw fail(429, "Too many sign-ups from this address. Wait an hour.");
     const body = await c.req.json();
     const email = emailOf(body.email);
-    const password = passwordOf(body.password, email);
+    // While only there is no password: the emailed link confirms the address and links a Foundry Account.
+    const password = only() ? null : passwordOf(body.password, email);
     if (body.acceptTerms !== true) throw fail(400, "Tick the box to accept the terms.");
     const terms = currentVersion();
     checkShown(body, fail);
-    const hash = await hashPassword(password);
+    const hash = password ? await hashPassword(password) : null;
     const existing = await one(`SELECT * FROM accounts WHERE lower(email) = $1`, [email]);
     // An address that has an account already (one the program started, with no password yet, included): the password
     // sent here is never put on it, or a stranger's would work once the owner opened the link we mail. The owner is sent
@@ -573,6 +594,8 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
   });
 
   acct.post("/verify", async (c) => {
+    // While only, a verify link doesn't sign anyone in by itself: it proves the address for linking a Foundry Account.
+    if (only()) throw fail(403, "Link your Foundry Account to finish: the page asks for it.");
     const { token } = await c.req.json();
     const accountId = await tx(async (client) => {
       const t = await takeToken(client, "verify", token);
@@ -587,6 +610,7 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
   // The link from the program's account start, or from "Forgot your password": sets the password, verifies the address
   // and signs out every other browser.
   acct.post("/set-password", async (c) => {
+    if (only()) throw fail(403, "There is no password here: link your Foundry Account instead.");
     const { token, password } = await c.req.json();
     const accountId = await tx(async (client) => {
       const t = await takeToken(client, "reset", token);
@@ -601,13 +625,16 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
     return c.json({ ok: true });
   });
 
-  acct.post("/signin", async (c) => {
+  /**
+   * The hub password check with its limits (per address, per address typed, and for the whole hub): the account whose password
+   * this is, or a thrown refusal. Used by the sign-in and by linking a Foundry Account with the old password as the proof.
+   */
+  async function passwordLogin(c, body) {
     const ip = clientIp(c);
     const wrong = bucket("acct-wrong");
     if (wrong.n >= WRONG_PASSWORDS) throw fail(429, "Too many wrong passwords were tried on this hub lately. Try again in an hour.");
     const byIp = bucket(`acct-fail:${ip}`);
     if (byIp.n >= 20) throw fail(429, "Too many wrong sign-ins from this address. Wait an hour.");
-    const body = await c.req.json();
     const email = emailOf(body.email);
     // Counted per address typed (an account or not, so the answer doesn't say which), apart from the sender's address.
     const byEmail = bucket(`acct-fail-email:${email}`);
@@ -624,11 +651,153 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
       throw over ? tooMany() : fail(401, "That email or password isn't right.");
     }
     for (const b of [byIp, byEmail, wrong]) b.n = Math.max(0, b.n - 1);
+    return a;
+  }
+
+  /**
+   * A try at the Foundry Account service counted in the same three limits as a password (a wrong Foundry password is a wrong
+   * guess; the service being down or telling us to wait is not, and is given back). `work` is the call.
+   */
+  async function foundryTry(c, email, work) {
+    const wrong = bucket("acct-wrong");
+    if (wrong.n >= WRONG_PASSWORDS) throw fail(429, "Too many wrong passwords were tried on this hub lately. Try again in an hour.");
+    const byIp = bucket(`acct-fail:${clientIp(c)}`);
+    if (byIp.n >= 20) throw fail(429, "Too many wrong sign-ins from this address. Wait an hour.");
+    const byEmail = bucket(`acct-fail-email:${email}`);
+    if (byEmail.n >= WRONG_PER_ACCOUNT_HARD) throw fail(429, "Too many wrong passwords for this account lately. Wait an hour.");
+    const all = [byIp, byEmail, wrong];
+    for (const b of all) b.n++;
+    let returnIt = false;
+    try {
+      return await work();
+    } catch (e) {
+      returnIt = e instanceof FoundryError && e.kind !== "wrong";
+      throw foundryFail(e);
+    } finally {
+      if (returnIt) for (const b of all) b.n = Math.max(0, b.n - 1);
+    }
+  }
+
+  /** A failure of the Foundry Account service, as the refusal the page shows (anything else is rethrown as it is). */
+  function foundryFail(e) {
+    if (!(e instanceof FoundryError)) return e;
+    const status = { offline: 503, wrong: 401, wait: 429, "not-open": 503, broken: 502 }[e.kind] ?? (e.status === 409 ? 409 : 400);
+    return fail(status, e.message);
+  }
+
+  acct.post("/signin", async (c) => {
+    if (only()) throw fail(403, "Sign in with your Foundry Account.");
+    const a = await passwordLogin(c, await c.req.json());
     if (a.disabled) throw fail(403, "This account is switched off. Ask the hub admin.");
     if (!a.verified_at) throw fail(403, "Confirm your email first: open the link we sent you, or ask for it again below.");
     await q(`UPDATE accounts SET last_sign_in_at = now() WHERE id = $1`, [a.id]);
     await startSession(c, a.id);
     return c.json({ ok: true });
+  });
+
+  // ----- the Foundry Account (src/foundry.mjs; docs/plan.md FA-1, FA-2) -----
+
+  const needFoundry = () => {
+    if (foundryMode() === "off") throw fail(404, "Not found.");
+  };
+
+  // What the page needs to know before anyone is signed in.
+  acct.get("/mode", (c) => c.json({ foundry: foundryMode() }));
+
+  const LINK_KINDS = ["reset", "verify"];
+  const NOT_LINKED = "That Foundry Account isn't linked to a StitchHub account yet. Use “Link my Foundry Account” below the sign-in form.";
+
+  // Sign in with a Foundry Account: the service says who it is (the account's id); the hub account linked to that id is the one.
+  acct.post("/foundry/signin", async (c) => {
+    needFoundry();
+    const body = await c.req.json();
+    const email = emailOf(body.email);
+    const password = typeof body.password === "string" ? body.password : "";
+    if (!password || password.length > 1000) throw fail(400, "Type the Foundry Account password.");
+    const proven = await foundryTry(c, email, () => proveAccount(email, password));
+    const a = await one(`SELECT * FROM accounts WHERE foundry_id = $1`, [proven.id]);
+    if (!a) throw fail(403, NOT_LINKED);
+    if (a.disabled) throw fail(403, "This account is switched off. Ask the hub admin.");
+    await q(`UPDATE accounts SET last_sign_in_at = now() WHERE id = $1`, [a.id]);
+    await startSession(c, a.id);
+    return c.json({ ok: true });
+  });
+
+  // An emailed link (a verify or set-password link, which is how the hub knows an address is someone's) as proof of the account,
+  // not used up until the link is written.
+  async function peekLinkToken(raw) {
+    const t = await one(`SELECT * FROM account_tokens WHERE token_hash = $1 AND kind = ANY($2) AND account_id IS NOT NULL`, [sha(String(raw ?? "")), LINK_KINDS]);
+    if (!t) throw fail(404, "That link isn't right. Ask for a new one.");
+    if (t.used_at) throw fail(410, "That link was already used. Ask for a new one.");
+    if (t.expires_at < new Date()) throw fail(410, "That link has expired. Ask for a new one.");
+    return t;
+  }
+
+  // Link a Foundry Account to a hub account, and sign in. The hub account is proved one of three ways: an emailed link (it also
+  // confirms the address, and may replace a Foundry Account the person lost), the account's own email and password, or the
+  // session already signed in. The Foundry Account is proved by its own password (or made, `create`).
+  acct.post("/foundry/link", async (c) => {
+    needFoundry();
+    if (!allow(`acct-foundry-link:${clientIp(c)}`, 30)) throw fail(429, "Too many tries. Wait an hour.");
+    const body = await c.req.json();
+    const foundryEmail = emailOf(body.foundryEmail);
+    const foundryPassword = typeof body.foundryPassword === "string" ? body.foundryPassword : "";
+    if (!foundryPassword || foundryPassword.length > 1000) throw fail(400, "Type the Foundry Account password.");
+    let account;
+    let token = null;
+    if (body.proof === "token") {
+      token = await peekLinkToken(body.token);
+      account = await one(`SELECT * FROM accounts WHERE id = $1`, [token.account_id]);
+      if (!account || account.disabled) throw fail(404, "That link isn't right. Ask for a new one.");
+    } else if (body.proof === "password") {
+      account = await passwordLogin(c, body);
+      if (account.disabled) throw fail(403, "This account is switched off. Ask the hub admin.");
+      if (!account.verified_at) throw fail(403, "Confirm your email first: open the link we sent you.");
+    } else if (body.proof === "session") {
+      account = await requireAccount(c);
+    } else {
+      throw fail(400, "Say how you prove the account is yours.");
+    }
+    const changeNote = "This StitchHub account is already linked to a different Foundry Account. If you lost access to it, use “Lost access to your Foundry Account?” on the sign-in page to get a link by email.";
+    // Refused before the service is asked, so a Foundry Account isn't made for nothing.
+    if (account.foundry_id != null && !token && body.create === true) throw fail(409, changeNote);
+    const proven = await foundryTry(c, foundryEmail, () => proveAccount(foundryEmail, foundryPassword, { create: body.create === true }));
+    // An account linked to one Foundry Account changes to another only through an emailed link (which proves the address again).
+    if (account.foundry_id != null && account.foundry_id !== proven.id && !token) {
+      throw fail(409, changeNote);
+    }
+    if (await one(`SELECT 1 FROM accounts WHERE foundry_id = $1 AND id <> $2`, [proven.id, account.id])) throw fail(409, "That Foundry Account is already linked to another StitchHub account.");
+    try {
+      await tx(async (client) => {
+        if (token) {
+          // Taken under its own update, with the write: two tries can't both use it, and a write that fails gives it back.
+          const took = await client.query(`UPDATE account_tokens SET used_at = now() WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now()`, [token.token_hash]);
+          if (took.rowCount !== 1) throw fail(410, "That link was already used. Ask for a new one.");
+          await client.query(`UPDATE account_tokens SET used_at = now() WHERE account_id = $1 AND kind = ANY($2) AND used_at IS NULL`, [account.id, LINK_KINDS]);
+          await client.query(`DELETE FROM sessions WHERE account_id = $1`, [account.id]);
+          await verified(client, account.id);
+        }
+        await client.query(`UPDATE accounts SET foundry_id = $2, last_sign_in_at = now() WHERE id = $1`, [account.id, proven.id]);
+      });
+    } catch (e) {
+      if (e?.code === "23505") throw fail(409, "That Foundry Account is already linked to another StitchHub account.");
+      throw e;
+    }
+    await startSession(c, account.id);
+    return c.json({ ok: true });
+  });
+
+  // "Forgot your Foundry Account's password": the service emails the link; the hub says nothing about who has an account.
+  acct.post("/foundry/forgot", async (c) => {
+    needFoundry();
+    if (!allow(`acct-forgot:${clientIp(c)}`, 20)) throw fail(429, "Too many tries. Wait an hour.");
+    const email = emailOf((await c.req.json()).email);
+    try {
+      const r = await foundryForgot(email);
+      return c.json({ ok: true, message: r.message || "If there's a Foundry Account with that email, a link to reset its password is on its way." });
+    } catch (e) {
+      throw foundryFail(e);
+    }
   });
 
   acct.post("/signout", async (c) => {
@@ -696,6 +865,7 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
   }
 
   acct.post("/password", async (c) => {
+    if (only()) throw fail(403, "There is no password here: you sign in with your Foundry Account.");
     const a = await requireAccount(c);
     const body = await c.req.json();
     if (!(await checkPassword(String(body.current ?? ""), a.password_hash))) throw fail(401, "Your current password isn't right.");
@@ -764,6 +934,7 @@ export function registerAccounts({ app, member, admin, fail, newId, allow, bucke
         email: a.email,
         verified: Boolean(a.verified_at),
         hasPassword: Boolean(a.password_hash),
+        foundryLinked: a.foundry_id != null,
         disabled: a.disabled,
         termsVersion: a.terms_version,
         stripeCustomerId: a.stripe_customer_id,
