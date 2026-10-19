@@ -60,6 +60,20 @@ owner's own key, outside the hub's runtime (owner to choose).
 | FA-3 | AI through `/v1/messages`; retire the hub's key | `ANTHROPIC_API_KEY` removed from Railway |
 | FA-4 | Admin on Foundry sign-in (optional) | `ADMIN_TOKEN` retired |
 
+
+## Open: "We host it for you" (owner, 2026-10-19; not built, no price decided)
+A third way to use StitchBench or StitchShop: SiteSentrix hosts the shop or bench on its own server, for a cost. The owner wants it
+shown, with the cost, on the StitchFoundry page for the apps. **Nothing is written or published yet.** Needed from the owner first
+(money and public wording are the owner's call):
+1. **The price**, and what it covers (one company? storage? backups? support? the Foundry credits are separate).
+2. **Which page**: the StitchFoundry website's apps page (stitchfoundry.app, in the sitesentrix-web repo), or `/foundry/` on this
+   site, or both.
+3. **How it is paid**: a subscription through the hub's Stripe (which exists: $25 a month or $250 a year per shop in the hub's code,
+   switched off while `PROGRAM_FREE` is on), or through the Foundry Account service's Stripe, or by invoice.
+4. **How it differs from today's free hosted service**: the public pages now say hosted use is free ("nothing to pay"), and
+   StitchBench's `docs/plans/pricing-review-2026-10.md` lists a "dedicated hosted copy" at cost (about $10 on top of a plan). The
+   wording on `/`, `/stitchbench/`, `/signup/` and `/features/` would have to change with it.
+Hosted copies sign in with a Foundry Account (FA-2), so this option rides on the work already done. Task id: FA-7.
 ## Open decisions (the owner's)
 The hub's Stripe subscriptions and marketplace payments (`PROGRAM_FREE` is on), terms and privacy wording, prices of
 credits (the cloud service's), and what happens to the duplicate finder.
