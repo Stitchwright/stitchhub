@@ -61,6 +61,11 @@ owner's own key, outside the hub's runtime (owner to choose).
 | FA-4 | Admin on Foundry sign-in (optional) | `ADMIN_TOKEN` retired |
 
 
+## Other apps' landing pages (owner, 2026-10-19; not done here)
+PatternFoundry and LaserFoundry each need their own marketing page and download links for their different installers; MakerFoundry needs no landing
+page, because it is the storefront, so pages link straight to it. PatternFoundry will get the same treatment as StitchBench/StitchShop later. The owner
+will do these pages in the StitchFoundry chat, not in this repository.
+
 ## Open: "We host it for you" (FA-7)
 **Owner, 2026-10-19:** running it yourself (the Windows/Mac/Linux program, or your own server) stays **free**. If **SiteSentrix hosts**
 the shop or bench on its own server, it costs about **$25 a month**, and the hosting **includes backups**. The owner wants it, with
@@ -86,6 +91,11 @@ Still the owner's to decide before anything is built or published (money, paymen
 > computer or on your own server. Or let SiteSentrix host it for you: about $25 a month, backups included.* Sign-in is a Foundry
 > Account; AI is paid in Foundry credits or with your own key. Please add this where the apps are described, and tell us the page
 > address so stitchsite can link to it. The final price and the backup promise are the owner's; check them before publishing.
+
+## Hub proxy retirement (FA-4 follow-up)
+The program no longer needs the hub for AI once `FOUNDRY_AI=on` (StitchBench `docs/plan.md`, "FA-4 notes"). The hub's `/v1/assistant`, its
+`ANTHROPIC_API_KEY`, the 300-call plan and `assistant-billing.mjs` stay until every program in use has the switch on; removing them is then FA-3 here, and
+a decision for the owner (it ends the free plate reads and the monthly allowance for good).
 
 ## Open decisions (the owner's)
 The hub's Stripe subscriptions and marketplace payments (`PROGRAM_FREE` is on), terms and privacy wording, prices of
