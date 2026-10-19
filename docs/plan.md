@@ -92,6 +92,12 @@ Still the owner's to decide before anything is built or published (money, paymen
 > Account; AI is paid in Foundry credits or with your own key. Please add this where the apps are described, and tell us the page
 > address so stitchsite can link to it. The final price and the backup promise are the owner's; check them before publishing.
 
+## Wording for the first-sign-in link (FA-5 follow-up)
+With the programs on `FOUNDRY_SIGNIN=only` (StitchBench `docs/plan.md`, "FA-5 notes"), the link the hub shows for "Start a hosted shop" (the program's
+`setPasswordUrl`, same field name) no longer sets a password: it opens a page that links the owner's Foundry Account, which is how they sign in. The hub's
+page and emails still say "choose a password". They should say "link your Foundry Account" for programs on `only`. Not changed here: it needs the
+owner's wording.
+
 ## Hub proxy retirement (FA-4 follow-up)
 The program no longer needs the hub for AI once `FOUNDRY_AI=on` (StitchBench `docs/plan.md`, "FA-4 notes"). The hub's `/v1/assistant`, its
 `ANTHROPIC_API_KEY`, the 300-call plan and `assistant-billing.mjs` stay until every program in use has the switch on; removing them is then FA-3 here, and
