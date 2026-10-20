@@ -56,7 +56,10 @@ own address. (On Railway that's already the default.)
 Each version tag (`v1.0.0`) publishes a Docker image for amd64 and arm64 to `ghcr.io/stitchwright/stitchhub:<version>`
 (`latest` is the newest release that is not a pre-release), with a GitHub release. To run one instead of building from
 source, set `image: ghcr.io/stitchwright/stitchhub:1.0.0` in `docker-compose.yml` in place of `build: .`. Maintainers: tag
-a commit that is on `main` and push the tag; **Actions → Release → Run workflow** builds without publishing, to try it.
+a commit that is on `main` and push the tag; each pushed image carries a GitHub build attestation, checked with
+`gh attestation verify oci://ghcr.io/stitchwright/stitchhub:<version> --repo Stitchwright/stitchhub`. StitchHub has no
+code signing (it is a server image, nothing Windows or Mac is signed); the desktop apps sign in their own repository's
+`release` environment. The workflow uses only `GITHUB_TOKEN`. **Actions → Release → Run workflow** builds without publishing, to try it.
 
 ### Without Docker
 Node 20.12+ (22 recommended) and PostgreSQL: `npm ci`, copy `.env.example` to `.env` and fill it in (or set the same
