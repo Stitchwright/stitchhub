@@ -25,6 +25,14 @@
 
   <section id="signin" hidden>
     <h2>Sign in</h2>
+    <form id="fsForm" hidden>
+      <p class="muted">Sign in with your Foundry Account, the one login for all SiteSentrix software.</p>
+      <label for="fsEmail">Foundry Account email</label><input id="fsEmail" type="email" autocomplete="username" required>
+      <label for="fsPassword">Foundry Account password</label><input id="fsPassword" type="password" autocomplete="current-password" required>
+      <div class="row"><button>Sign in with Foundry Account</button><a href="#" id="fsForgot">Forgot your Foundry Account's password?</a></div>
+      <p class="muted">First time here with a Foundry Account? <a href="#" id="showLink">Link it to your StitchHub account</a>. Lost access to your Foundry Account? <a href="/account/forgot">Email me a link</a>.</p>
+    </form>
+    <h3 id="oldHead" hidden>Or with your StitchHub password</h3>
     <form id="signinForm">
       <label for="siEmail">Email</label><input id="siEmail" type="email" autocomplete="username" required>
       <label for="siPassword">Password</label><input id="siPassword" type="password" autocomplete="current-password" required>
@@ -38,8 +46,9 @@
     <h2>Create an account</h2>
     <form id="signupForm">
       <label for="suEmail">Email</label><input id="suEmail" type="email" autocomplete="username" required>
-      <label for="suPassword">Password (8 characters or more)</label><input id="suPassword" type="password" autocomplete="new-password" minlength="8" required>
-      <label for="suPassword2">The same password again</label><input id="suPassword2" type="password" autocomplete="new-password" minlength="8" required>
+      <div id="suPasswords"><label for="suPassword">Password (8 characters or more)</label><input id="suPassword" type="password" autocomplete="new-password" minlength="8" required>
+      <label for="suPassword2">The same password again</label><input id="suPassword2" type="password" autocomplete="new-password" minlength="8" required></div>
+      <p class="muted" id="suOnly" hidden>There is no password here: we email you a link, and you link your Foundry Account with it.</p>
       <div class="check"><input id="suTerms" type="checkbox" required><label for="suTerms" style="margin:0">I accept the <a href="/terms" target="_blank" rel="noopener">Terms of Service</a> and the <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a><span id="suVersion"></span>.</label></div>
       <div class="row"><button>Create account</button><button type="button" class="plain" id="showSignin">I have an account</button></div>
     </form>
@@ -60,6 +69,22 @@
       <label for="spPassword">New password (8 characters or more)</label><input id="spPassword" type="password" autocomplete="new-password" minlength="8" required>
       <label for="spPassword2">The same password again</label><input id="spPassword2" type="password" autocomplete="new-password" minlength="8" required>
       <button>Save password and sign in</button>
+    </form>
+  </section>
+
+  <section id="link" hidden>
+    <h2>Link your Foundry Account</h2>
+    <p class="muted" id="linkWhy">The Foundry Account is the one login for all SiteSentrix software, with one balance of Foundry credits. After this you sign in to StitchHub with it.</p>
+    <form id="linkForm">
+      <div id="linkOld" hidden>
+        <p class="muted">First, prove this is your StitchHub account:</p>
+        <label for="loEmail">StitchHub email</label><input id="loEmail" type="email" autocomplete="username">
+        <label for="loPassword">StitchHub password</label><input id="loPassword" type="password" autocomplete="current-password">
+      </div>
+      <label for="lfEmail">Foundry Account email</label><input id="lfEmail" type="email" autocomplete="username" required>
+      <label for="lfPassword">Foundry Account password</label><input id="lfPassword" type="password" autocomplete="off" required>
+      <div class="check"><input id="lfCreate" type="checkbox"><label for="lfCreate" style="margin:0">I don't have a Foundry Account yet: make me one</label></div>
+      <div class="row"><button>Link and sign in</button><a href="/account">Back to sign in</a></div>
     </form>
   </section>
 
@@ -140,6 +165,18 @@
     <section id="settings" hidden>
       <h2>Settings</h2>
       <p>Signed in as <strong id="meEmail"></strong>.</p>
+      <div id="foundrySettings" hidden>
+        <h2 style="margin-top:18px">Foundry Account</h2>
+        <p id="fsLinked" class="muted" hidden>This account is linked to a Foundry Account: the one login for all SiteSentrix software, with one balance of Foundry credits.</p>
+        <form id="fsLinkForm" hidden>
+          <p class="muted">Link your Foundry Account to this StitchHub account. From then on you can sign in with it.</p>
+          <label for="slEmail">Foundry Account email</label><input id="slEmail" type="email" autocomplete="username" required>
+          <label for="slPassword">Foundry Account password</label><input id="slPassword" type="password" autocomplete="off" required>
+          <div class="check"><input id="slCreate" type="checkbox"><label for="slCreate" style="margin:0">I don't have a Foundry Account yet: make me one</label></div>
+          <button>Link</button>
+        </form>
+      </div>
+      <div id="passwordBlock">
       <h2 style="margin-top:18px">Change your password</h2>
       <form id="passwordForm">
         <label for="pwCurrent">Current password</label><input id="pwCurrent" type="password" autocomplete="current-password" required>
@@ -147,6 +184,7 @@
         <label for="pwNew2">The same password again</label><input id="pwNew2" type="password" autocomplete="new-password" minlength="8" required>
         <button>Change password</button>
       </form>
+      </div>
       <h2 style="margin-top:18px">Sign out everywhere</h2>
       <p class="muted">Signs this account out of every browser, this one included.</p>
       <button class="plain" id="signoutAll">Sign out everywhere</button>
@@ -160,13 +198,33 @@
   const page = location.pathname.replace(/\/+$/, "").split("/")[2] || "";
   for (const a of document.querySelectorAll("#app > nav a")) if (a.getAttribute("href") === "/account/" + (page || "shops")) a.setAttribute("aria-current", "page");
   const token = new URLSearchParams(location.search).get("t") || "";
-  const SECTIONS = ["signin", "signup", "forgot", "setpw", "verify", "app", "shops", "manuals", "repository", "settings"];
+  const SECTIONS = ["signin", "signup", "forgot", "setpw", "link", "verify", "app", "shops", "manuals", "repository", "settings"];
   function show(...ids) { for (const id of SECTIONS) $(id).hidden = !ids.includes(id); }
   async function api(path, body) {
     const r = await fetch("/account/api" + path, body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) { const e = new Error(j.error || r.statusText); e.status = r.status; e.missing = j.missing; throw e; }
     return j;
+  }
+  // The Foundry Account switch (off | on | only), asked before anything is shown; a hub that can't answer is "off".
+  let MODE = "off";
+  async function loadMode() { try { MODE = (await api("/mode")).foundry || "off"; } catch { MODE = "off"; } }
+  function applyMode() {
+    const f = MODE !== "off";
+    $("fsForm").hidden = !f;
+    $("oldHead").hidden = MODE !== "on";
+    $("signinForm").hidden = MODE === "only";
+    $("suPasswords").hidden = MODE === "only"; $("suOnly").hidden = MODE !== "only";
+    for (const id of ["suPassword", "suPassword2"]) $(id).required = MODE !== "only";
+  }
+  // The link page for a given proof: an emailed link (token), the StitchHub password, or the signed-in session.
+  let linkProof = "password";
+  function showLink(proof, why) {
+    linkProof = proof;
+    $("linkOld").hidden = proof !== "password";
+    for (const id of ["loEmail", "loPassword"]) $(id).required = proof === "password";
+    if (why) $("linkWhy").textContent = why;
+    show("link");
   }
   const when = (d) => (d ? new Date(d).toLocaleString() : "never");
   const td = (text) => { const c = document.createElement("td"); c.textContent = text ?? ""; return c; };
@@ -177,6 +235,10 @@
     try { me = await api("/me"); } catch (e) { if (e.status === 401) { show("signin"); return; } throw e; }
     document.title = `${me.hubName} account`; $("title").textContent = me.hubName;
     $("meEmail").textContent = me.account.email;
+    MODE = me.account.foundryMode || MODE;
+    $("foundrySettings").hidden = MODE === "off";
+    $("fsLinked").hidden = !me.account.foundry; $("fsLinkForm").hidden = me.account.foundry;
+    $("passwordBlock").hidden = MODE === "only";
     $("shopsEmpty").hidden = me.shops.length > 0; $("shopsTable").hidden = !me.shops.length;
     showTermsPrompt(me.terms);
     $("shopRows").replaceChildren(...me.shops.map((s) => { const tr = document.createElement("tr"); tr.append(td(s.name), td([s.program, s.version].filter(Boolean).join(" ") || s.installName), td(s.message), billingCell(s, me.billing, me.terms), td(when(s.lastSeenAt)), resetCell(s, me), restoreCell(s)); return tr; }));
@@ -426,9 +488,16 @@
 
   async function start() {
     try {
+      await loadMode(); applyMode();
+      if (page === "link") return token ? showLink("token", "Open from your email: this proves the address is yours. Link your Foundry Account to finish.") : showLink("password");
       if (page === "forgot") return show("forgot");
-      if (page === "set-password") { if (!token) { say("That link is missing its code. Ask for a new one.", true); return show("forgot"); } return show("setpw"); }
+      if (page === "set-password") {
+        if (!token) { say("That link is missing its code. Ask for a new one.", true); return show("forgot"); }
+        // While the hub is on Foundry sign-in only, this emailed link links a Foundry Account instead of setting a password.
+        return MODE === "only" ? showLink("token", "Open from your email: this proves the address is yours. Link your Foundry Account to sign in.") : show("setpw");
+      }
       if (page === "verify") {
+        if (MODE === "only") { if (!token) { show("verify"); $("verifyText").textContent = "That link is missing its code."; return; } return showLink("token", "Your email is confirmed by this link. Link your Foundry Account to finish."); }
         show("verify");
         if (!token) { $("verifyText").textContent = "That link is missing its code."; return; }
         try { await api("/verify", { token }); say("Your email is confirmed. You're signed in."); history.replaceState(null, "", "/account/shops"); await loadMe("shops"); }
@@ -455,6 +524,29 @@
     catch (err) { say(err.message, true); }
   };
   $("showSignup").onclick = (e) => { e.preventDefault(); show("signup"); };
+  $("showLink").onclick = (e) => { e.preventDefault(); showLink("password"); };
+  $("fsForm").onsubmit = async (e) => {
+    e.preventDefault();
+    try { await api("/foundry/signin", { email: $("fsEmail").value, password: $("fsPassword").value }); say(""); history.replaceState(null, "", "/account/shops"); await loadMe("shops"); }
+    catch (err) { say(err.message, true); }
+  };
+  $("fsForgot").onclick = async (e) => {
+    e.preventDefault();
+    if (!$("fsEmail").value) return say("Type your Foundry Account email above first.", true);
+    try { const r = await api("/foundry/forgot", { email: $("fsEmail").value }); say(r.message); } catch (err) { say(err.message, true); }
+  };
+  $("linkForm").onsubmit = async (e) => {
+    e.preventDefault();
+    const body = { proof: linkProof, foundryEmail: $("lfEmail").value, foundryPassword: $("lfPassword").value, create: $("lfCreate").checked };
+    if (linkProof === "token") body.token = token; else if (linkProof === "password") { body.email = $("loEmail").value; body.password = $("loPassword").value; }
+    try { await api("/foundry/link", body); say("Linked. You're signed in."); history.replaceState(null, "", "/account/shops"); await loadMe("shops"); }
+    catch (err) { say(err.message, true); }
+  };
+  $("fsLinkForm").onsubmit = async (e) => {
+    e.preventDefault();
+    try { await api("/foundry/link", { proof: "session", foundryEmail: $("slEmail").value, foundryPassword: $("slPassword").value, create: $("slCreate").checked }); say("Linked. From now on you can sign in with your Foundry Account."); e.target.reset(); await loadMe("settings"); }
+    catch (err) { say(err.message, true); }
+  };
   $("showSignin").onclick = () => show("signin");
   $("signinForm").onsubmit = async (e) => {
     e.preventDefault();
@@ -464,8 +556,8 @@
   $("resend").onclick = async (e) => { e.preventDefault(); try { const r = await api("/resend", { email: $("siEmail").value }); say(r.message); } catch (err) { say(err.message, true); } };
   $("signupForm").onsubmit = async (e) => {
     e.preventDefault();
-    if (!samePassword($("suPassword").value, $("suPassword2").value)) return;
-    try { await api("/signup", { email: $("suEmail").value, password: $("suPassword").value, acceptTerms: $("suTerms").checked, ...(signupTerms ? { termsVersion: signupTerms } : {}) }); say(`We've sent an email to ${$("suEmail").value}. Open the link in it to finish.`); show("signin"); $("siEmail").value = $("suEmail").value; }
+    if (MODE !== "only" && !samePassword($("suPassword").value, $("suPassword2").value)) return;
+    try { await api("/signup", { email: $("suEmail").value, ...(MODE === "only" ? {} : { password: $("suPassword").value }), acceptTerms: $("suTerms").checked, ...(signupTerms ? { termsVersion: signupTerms } : {}) }); say(`We've sent an email to ${$("suEmail").value}. Open the link in it to finish.`); show("signin"); $("siEmail").value = $("suEmail").value; }
     catch (err) { say(err.message, true); }
   };
   $("forgotForm").onsubmit = async (e) => { e.preventDefault(); try { const r = await api("/forgot", { email: $("fgEmail").value }); say(r.message); } catch (err) { say(err.message, true); } };

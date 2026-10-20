@@ -15,7 +15,7 @@ export const TABLES = [
   { t: "install", table: "installs", cols: ["id", "name", "contact", "key_hash", "scope", "blocked", "invited_by", "created_at", "last_seen_at", "repo_uploads_off"] },
   // Shop owners' accounts (hashed passwords), their shops with standing, the links and codes out (hashed), and signed-in
   // browsers: a move keeps everyone signed in and every link they were sent working.
-  { t: "account", table: "accounts", cols: ["id", "email", "password_hash", "verified_at", "terms_version", "terms_at", "stripe_customer_id", "disabled", "created_at", "last_sign_in_at", "founding_at", "founding_gap_since", "founding_lost_at", "repo_uploads_off"] },
+  { t: "account", table: "accounts", cols: ["id", "email", "password_hash", "verified_at", "terms_version", "terms_at", "stripe_customer_id", "disabled", "created_at", "last_sign_in_at", "founding_at", "founding_gap_since", "founding_lost_at", "repo_uploads_off", "foundry_id"] },
   {
     t: "shop",
     table: "shops",
@@ -356,6 +356,7 @@ function checkRow(table, row) {
     if (!/^[0-9a-f]{64}$/.test(row.key_hash ?? "")) refuse("a member's key must be a SHA-256 hash");
   } else if (table === "accounts") {
     if (!/^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/.test(row.email ?? "")) refuse("an account needs an email address");
+    if (row.foundry_id != null && !(Number.isSafeInteger(row.foundry_id) && row.foundry_id >= 1)) refuse("an account's Foundry Account id must be a whole number");
     if (row.password_hash != null && !/^scrypt\$\d+\$\d+\$\d+\$[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+$/.test(row.password_hash)) refuse("an account's password must be a scrypt hash");
   } else if (table === "shop_moves") {
     if (row.token_hash != null && !/^[0-9a-f]{64}$/.test(row.token_hash)) refuse("a move token must be a SHA-256 hash");
