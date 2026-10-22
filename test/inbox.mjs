@@ -5,7 +5,7 @@
 // refused; a signed address for the account's own prefix), upload and done (the hub looks at the object and its size), what the
 // shop sees (confirmed files only, any shop of the account, or the one it was addressed to, never another account's), get, take
 // (it leaves the list and the bucket, once), retract, the limits on files and bytes, the sweep (unfinished, expired and taken
-// files go from the bucket), what StitchFoundry says about a file (cleaned, unknown keys dropped), and a second account unable to
+// files go from the bucket), the preview that can ride with a file, what StitchFoundry says about a file (cleaned, unknown keys dropped), and a second account unable to
 // touch the first's files.
 // usage: DATABASE_URL=postgresql://... (a fresh scratch database) node test/inbox.mjs
 import assert from "node:assert/strict";
@@ -273,6 +273,54 @@ try {
   assert.equal((await list(X.installKey, "a1")).items.some((i) => i.id === toRetract), false);
   await status(await call("/v1/inbox/retract", { token: tokA, json: { id: a.id } }), 200, "retracting something already gone is quiet");
   console.log("  ok  retract takes a file back (its owner only)");
+
+  // ----- the preview: a picture of the design that rides with the file -----
+  const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), crypto.randomBytes(300)]);
+  const dstBytes = crypto.randomBytes(400);
+  const pv = (b, type = "image/png") => ({ size: b.length, sha256: sha(b), type });
+  await status(await put(tokA, dstBytes, { preview: { ...pv(png), type: "image/gif" } }), 400, "a preview that isn't PNG or JPEG");
+  await status(await put(tokA, dstBytes, { preview: { ...pv(png), size: 3 * 1024 * 1024 } }), 400, "a preview over 2 MB");
+  await status(await put(tokA, dstBytes, { preview: { ...pv(png), sha256: "nope" } }), 400, "a preview with a bad hash");
+  await status(await put(tokA, dstBytes, { preview: { ...pv(png), size: 0 } }), 400, "an empty preview");
+  await status(await put(tokA, dstBytes, { preview: "yes" }), 400, "a preview that isn't an object");
+  const withPv = await okJson(await put(tokA, dstBytes, { fileName: "front.dst", preview: pv(png), meta: { design: "Front logo", format: "DST", hoop: "100x100", fabric: "pique", trims: 12, colorChanges: 3, threadM: 41.26, bobbinM: 18, other: 1 } }));
+  assert.ok(withPv.preview?.url, "the reply carries an address for the preview too");
+  assert.equal((await fetch(withPv.preview.url, { method: "PUT", body: crypto.randomBytes(png.length), headers: withPv.preview.headers })).status, 400, "other bytes of the preview: the store refuses them");
+  await status(await call("/v1/inbox/done", { token: tokA, json: { id: withPv.id } }), 409, "done before anything is uploaded");
+  assert.equal((await fetch(withPv.url, { method: "PUT", body: dstBytes, headers: withPv.headers })).status, 200);
+  await status(await call("/v1/inbox/done", { token: tokA, json: { id: withPv.id } }), 409, "done with the preview still missing");
+  assert.equal((await fetch(withPv.preview.url, { method: "PUT", body: png, headers: withPv.preview.headers })).status, 200);
+  await okJson(await call("/v1/inbox/done", { token: tokA, json: { id: withPv.id } }));
+  const pvItem = (await list(X.installKey, "a1")).items.find((i) => i.id === withPv.id);
+  assert.deepEqual(pvItem.preview, { size: png.length, sha256: sha(png), type: "image/png" });
+  assert.deepEqual(pvItem.meta, { design: "Front logo", format: "dst", hoop: "100x100", fabric: "pique", trims: 12, colorChanges: 3, threadM: 41.3, bobbinM: 18 }, "the new keys are kept, cleaned, and unknown ones dropped");
+  assert.equal((await list(X.installKey, "a2")).items.find((i) => i.fileName === "sleeve.dst").preview, null, "a file without one says null");
+  const gotPv = await okJson(await call("/v1/inbox/get", { key: X.installKey, json: { shopRef: "a1", id: withPv.id } }));
+  assert.ok((await fetchUrl(gotPv.previewUrl)).equals(png), "get gives a signed address for the preview");
+  assert.equal(gotPv.previewUrl.includes(`${withPv.id}.preview`), true);
+  assert.equal(("previewUrl" in (await okJson(await call("/v1/inbox/get", { key: X.installKey, json: { shopRef: "a2", id: only2 } })))), false, "no preview, no address");
+  const badMeta = await status(await call("/v1/inbox/put", { token: tokA, json: { fileName: "a.dst", size: 10, sha256: sha(dstBytes), meta: { format: "DST;drop", trims: -3, colorChanges: 5000, threadM: 1e9 } } }), 200, "bad meta values are dropped, not refused");
+  assert.deepEqual((await db.query(`SELECT meta FROM inbox_items WHERE id = $1`, [badMeta.id])).rows[0].meta, {}, "nothing out of range is kept");
+  await okJson(await call("/v1/inbox/retract", { token: tokA, json: { id: badMeta.id } }));
+  // The preview counts against the room: 3,146 B and 4 files an account; sleeve (500) + this is 900 + the preview below.
+  const big = crypto.randomBytes(2500);
+  await status(await put(tokA, crypto.randomBytes(1000), { preview: pv(big) }), 413, "file plus preview past the bytes");
+  await okJson(await call("/v1/inbox/retract", { token: tokA, json: { id: withPv.id } }));
+  assert.equal(store.has(`inbox/${accA}/${withPv.id}`) || store.has(`inbox/${accA}/${withPv.id}.preview`), false, "retract removes the file and its preview");
+  const take2 = await send(tokA, dstBytes, { fileName: "back.dst" });
+  const tk = await okJson(await put(tokA, dstBytes, { fileName: "back2.dst", preview: pv(png) }));
+  await fetch(tk.url, { method: "PUT", body: dstBytes, headers: tk.headers });
+  await fetch(tk.preview.url, { method: "PUT", body: png, headers: tk.preview.headers });
+  await okJson(await call("/v1/inbox/done", { token: tokA, json: { id: tk.id } }));
+  await okJson(await call("/v1/inbox/take", { key: X.installKey, json: { shopRef: "a1", id: tk.id } }));
+  assert.equal(store.has(`inbox/${accA}/${tk.id}`) || store.has(`inbox/${accA}/${tk.id}.preview`), false, "take removes the file and its preview");
+  await okJson(await call("/v1/inbox/retract", { token: tokA, json: { id: take2 } }));
+  // the sweep takes the preview of an item that is dropped too: an upload never finished
+  const half = await okJson(await put(tokA, dstBytes, { fileName: "half.dst", preview: pv(png) }));
+  await fetch(half.preview.url, { method: "PUT", body: png, headers: half.preview.headers });
+  await db.query(`UPDATE inbox_items SET created_at = now() - interval '3 hours' WHERE id = $1`, [half.id]);
+  await until(async () => !store.has(`inbox/${accA}/${half.id}.preview`), "the sweep to remove the preview of an unfinished upload");
+  console.log("  ok  the preview: only PNG/JPEG of 2 MB at most, hash-checked, done needs both objects, list/get show it, it counts against the room, and retract, take and the sweep remove it");
 
   // ----- the limits -----
   // already waiting for account A: logo (taken), sleeve (500 B). Room for 4 files and 3,146 bytes.

@@ -82,7 +82,7 @@ export const TABLES = [
   {
     t: "inbox_item",
     table: "inbox_items",
-    cols: ["id", "account_id", "to_shop_id", "file_name", "size", "sha256", "meta", "created_at", "confirmed_at", "expires_at", "taken_at", "taken_by_shop_id", "deleted_at"],
+    cols: ["id", "account_id", "to_shop_id", "file_name", "size", "sha256", "meta", "created_at", "confirmed_at", "expires_at", "taken_at", "taken_by_shop_id", "deleted_at", "preview_size", "preview_sha256", "preview_type"],
     json: ["meta"],
   },
   // The manual repository (src/repository.mjs): the manuals shops see (numbered in the change sequence, which the

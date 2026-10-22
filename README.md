@@ -578,11 +578,11 @@ A shop takes it into an order and it leaves the inbox and the bucket.
 | | |
 |---|---|
 | `GET /v1/inbox/shops` (sender) | the account's shops, to pick one |
-| `POST /v1/inbox/put { fileName, size, sha256, meta?, toShopId? }` (sender) | `{ id, url, method: "PUT", expiresIn, headers }`: a signed address for that size and those bytes |
-| `POST /v1/inbox/done { id }` (sender) | after the upload: the hub looks at the object and its size |
+| `POST /v1/inbox/put { fileName, size, sha256, meta?, toShopId?, preview?: { size, sha256, type } }` (sender) | `{ id, url, method: "PUT", expiresIn, headers, preview?: { url, method, headers } }`: a signed address for that size and those bytes; a preview is a PNG or JPEG of 2 MB at most, uploaded to its own address |
+| `POST /v1/inbox/done { id }` (sender) | after the upload: the hub looks at the object (and the preview) and its size |
 | `POST /v1/inbox/retract { id }` (sender) | takes it back before a shop has taken it |
-| `GET /v1/inbox/list?shopRef` (program, install key) | `{ linked, items: [{ id, fileName, size, sha256, meta, createdAt, expiresAt }] }` |
-| `POST /v1/inbox/get { shopRef, id }` (program) | `{ url, expiresIn }`: a signed download address |
+| `GET /v1/inbox/list?shopRef` (program, install key) | `{ linked, items: [{ id, fileName, size, sha256, meta, preview: null | { size, sha256, type }, createdAt, expiresAt }] }` |
+| `POST /v1/inbox/get { shopRef, id }` (program) | `{ url, previewUrl?, expiresIn }`: signed download addresses |
 | `POST /v1/inbox/take { shopRef, id }` (program) | the shop imported it: it leaves the inbox and the bucket |
 
 Limits: a file of 1 byte to 10 MB; `INBOX_MAX_ITEMS` (25) files and `INBOX_QUOTA_MB` (100) MB waiting for an account; a file waits
@@ -590,7 +590,7 @@ Limits: a file of 1 byte to 10 MB; `INBOX_MAX_ITEMS` (25) files and `INBOX_QUOTA
 minutes, `INBOX_SWEEP_MS`). `meta` is an open bag, cleaned to these optional keys and 4 KB: `job`, `customer`, `garment`,
 `placement`, `program`, `version`, `notes` (text), `due` (`yyyy-mm-dd`), `quantity`, `stitches`, `colors`, `runMinutes` (whole
 numbers), `widthMm`, `heightMm`, `threads` (a list of names). Anything else is dropped. A Foundry Account with no StitchHub
-account is told to link one. Checked by `npm run test:inbox`.
+account is told to link one. The `meta` keys the hub keeps (anything else is dropped): `job`, `customer`, `garment`, `placement`, `notes`, `due`, `quantity`, `stitches`, `colors`, `widthMm`, `heightMm`, `runMinutes`, `threads`, and (migration 039) `design`, `format`, `hoop`, `fabric`, `trims`, `colorChanges`, `threadM`, `bobbinM`. A preview counts against the account's room and goes with the file on take, retract and sweep. Checked by `npm run test:inbox`.
 
 ## Terms of Service and Privacy Policy
 The hub serves both documents from markdown files in `legal/`: `terms-<version>.md` and `privacy-<version>.md`, one

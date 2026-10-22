@@ -128,4 +128,5 @@ Switch `FOUNDRY_SIGNIN` = off (default) / on / only; `FOUNDRY_CLOUD_URL` overrid
 - **Who sees it:** the StitchHub account whose `foundry_id` is the sender's; any of its shops, or only the one addressed. Matching is by Foundry id, never by email.
 - **Cost bounds (the owner's money):** 10 MB a file, 25 files and 100 MB waiting for an account, 30 days, then swept. All in environment variables (`INBOX_*`).
 - **Sender side is not here:** StitchFoundry (Rust, its own repository and chat) has to call this API. The contract is in the README; the question to that chat about a job file is still open (StitchBench `docs/plans/decorators-proposal.md`).
-- **Tests:** `npm run test:inbox` (9 groups, seven deliberate breaks caught), wired into CI; the export carries `inbox_items`.
+- **Preview and more keys (migration 039):** an optional preview picture (PNG or JPEG, 2 MB) beside the file, asked for by StitchFoundry's SHOP-01 plan, and the meta keys `design`, `format`, `hoop`, `fabric`, `trims`, `colorChanges`, `threadM`, `bobbinM`. Not yet tried against the real bucket or StitchFoundry.
+- **Tests:** `npm run test:inbox` (10 groups, seven deliberate breaks caught, four more for the preview), wired into CI; the export carries `inbox_items`.
