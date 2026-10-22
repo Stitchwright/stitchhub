@@ -26,6 +26,7 @@ import { registerAccounts } from "./accounts.mjs";
 import { registerBilling } from "./billing.mjs";
 import { registerMoves } from "./moves.mjs";
 import { registerBackups } from "./backups.mjs";
+import { registerInbox } from "./inbox.mjs";
 import { registerProvisioning } from "./provisioning.mjs";
 import { registerTerms } from "./terms.mjs";
 import { registerRepository } from "./repository.mjs";
@@ -982,6 +983,9 @@ registerTakedown({ app, admin, acct: accounts.acct, fail, newId, allow, clientIp
 // (src/backups.mjs, src/s3.mjs; BACKUP_S3_* in the environment).
 // (before the account routes are mounted: Hono copies a router's routes when it is mounted)
 registerBackups({ app, member, acct: accounts.acct, fail, newId, allow, bucket, clientIp, requireAccount: accounts.requireAccount });
+// The StitchFoundry inbox: a designer sends an embroidery file to a shop by the shared Foundry Account (src/inbox.mjs; off unless
+// FOUNDRY_SIGNIN is on or only; the files wait in the same bucket as the backups).
+registerInbox({ app, member, fail, newId, allow, clientIp });
 // Help, ideas, ratings and error alerts from the programs, and the admin page's "Help & ideas" (src/feedback.mjs).
 registerFeedback({ member, admin, fail, newId, allow, hubName: HUB_NAME, hubUrl: accounts.hubUrl });
 // Bug reports as GitHub issues, for the open-source programs and the hub's own pages: no key, limited by address (src/bugreports.mjs).

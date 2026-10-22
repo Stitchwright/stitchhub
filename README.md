@@ -565,6 +565,33 @@ install's space. Wrong restore codes are limited to 20 an hour per address (that
 whole hub). An upload address never confirmed is swept after 6 hours (`BACKUP_SWEEP_MS`, every 30 minutes): the object
 first, then the row, so a failed delete is tried again at the next sweep. `npm run test:backup` (a fresh database).
 
+## StitchFoundry inbox
+
+A designer sends an embroidery file (and what StitchFoundry knows about it) from StitchFoundry to the shop that will sew it, by
+the Foundry Account the two share (`src/inbox.mjs`, migration 038). It works only with `FOUNDRY_SIGNIN` on or only (a hub account
+has a Foundry id only then) and the off-site backup bucket set up (`BACKUP_S3_*`): the files wait in that bucket under
+`inbox/<account>/<item>`, and the bytes never pass through the hub. The sender has no install key; it sends its Foundry Account token
+(`Authorization: Bearer sfs_...`) and the hub asks the Foundry Account service whose token that is, keeping nothing of it. The file
+goes to the StitchHub account whose Foundry id that is: any shop of the account sees it, or only the one it was addressed to.
+A shop takes it into an order and it leaves the inbox and the bucket.
+
+| | |
+|---|---|
+| `GET /v1/inbox/shops` (sender) | the account's shops, to pick one |
+| `POST /v1/inbox/put { fileName, size, sha256, meta?, toShopId? }` (sender) | `{ id, url, method: "PUT", expiresIn, headers }`: a signed address for that size and those bytes |
+| `POST /v1/inbox/done { id }` (sender) | after the upload: the hub looks at the object and its size |
+| `POST /v1/inbox/retract { id }` (sender) | takes it back before a shop has taken it |
+| `GET /v1/inbox/list?shopRef` (program, install key) | `{ linked, items: [{ id, fileName, size, sha256, meta, createdAt, expiresAt }] }` |
+| `POST /v1/inbox/get { shopRef, id }` (program) | `{ url, expiresIn }`: a signed download address |
+| `POST /v1/inbox/take { shopRef, id }` (program) | the shop imported it: it leaves the inbox and the bucket |
+
+Limits: a file of 1 byte to 10 MB; `INBOX_MAX_ITEMS` (25) files and `INBOX_QUOTA_MB` (100) MB waiting for an account; a file waits
+`INBOX_DAYS` (30) days; an upload never finished is swept after 2 hours, an expired or taken file at the next sweep (every 30
+minutes, `INBOX_SWEEP_MS`). `meta` is an open bag, cleaned to these optional keys and 4 KB: `job`, `customer`, `garment`,
+`placement`, `program`, `version`, `notes` (text), `due` (`yyyy-mm-dd`), `quantity`, `stitches`, `colors`, `runMinutes` (whole
+numbers), `widthMm`, `heightMm`, `threads` (a list of names). Anything else is dropped. A Foundry Account with no StitchHub
+account is told to link one. Checked by `npm run test:inbox`.
+
 ## Terms of Service and Privacy Policy
 The hub serves both documents from markdown files in `legal/`: `terms-<version>.md` and `privacy-<version>.md`, one
 version string for the pair. A version is the day it comes into force, `YYYY-MM-DD` (`YYYY-MM-DD.2` for a second one

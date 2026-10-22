@@ -109,3 +109,13 @@ export async function foundryForgot(email, o = {}) {
   const json = await call("POST", "/v1/password/forgot", { ...o, body: { email } });
   return { sent: isRecord(json) && json.sent === true, message: isRecord(json) && typeof json.message === "string" ? json.message.slice(0, 300) : "" };
 }
+
+/**
+ * Who a service token (the "sfs_..." StitchFoundry holds after sign-in) belongs to: the account's id, asked of the service itself
+ * and never remembered. Throws a FoundryError (kind "wrong" when the service doesn't know the token).
+ */
+export async function accountOfToken(token, o = {}) {
+  const json = await call("POST", "/v1/account", { ...o, token, body: {} });
+  if (!isRecord(json) || !Number.isSafeInteger(json.id) || json.id < 1) throw new FoundryError("The Foundry Account service answered something the hub doesn't understand.", 0, "broken");
+  return { id: json.id };
+}

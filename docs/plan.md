@@ -121,3 +121,11 @@ Switch `FOUNDRY_SIGNIN` = off (default) / on / only; `FOUNDRY_CLOUD_URL` overrid
 - Tests: `npm run test:foundry-accounts` (7 steps, stand-in service `test/foundry-mock.mjs`), wired into CI.
 - **Owner's to decide:** the mail and page wording in `only` mode (written by me as a draft), when to switch on, and when to retire.
 - **Not verified:** a real deploy, the real Foundry service, phone width.
+
+## Built: the StitchFoundry inbox
+**Status:** 2026-10-22. Built and checked against stand-ins (the Foundry Account service and the bucket); not deployed, not tried with the real StitchFoundry. Owner's decision (2026-10-22): go ahead, accepting the storage it costs.
+- **What:** a designer sends a file from StitchFoundry to the shop that will sew it, through the Foundry Account. The hub keeps a row (`inbox_items`, migration 038) and hands out signed bucket addresses (the same bucket as the backups, `inbox/<account>/<item>`); the bytes never pass through it. API in README, "StitchFoundry inbox".
+- **Who sees it:** the StitchHub account whose `foundry_id` is the sender's; any of its shops, or only the one addressed. Matching is by Foundry id, never by email.
+- **Cost bounds (the owner's money):** 10 MB a file, 25 files and 100 MB waiting for an account, 30 days, then swept. All in environment variables (`INBOX_*`).
+- **Sender side is not here:** StitchFoundry (Rust, its own repository and chat) has to call this API. The contract is in the README; the question to that chat about a job file is still open (StitchBench `docs/plans/decorators-proposal.md`).
+- **Tests:** `npm run test:inbox` (9 groups, seven deliberate breaks caught), wired into CI; the export carries `inbox_items`.

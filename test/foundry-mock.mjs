@@ -1,5 +1,5 @@
 // A stand-in for the Foundry Account service (cloud.stitchfoundry.app, github.com/Stitchwright/StitchFoundry apps/stitchfoundry-cloud,
-// docs/cloud.md) as the hub uses it: sign up, sign in, sign out and "forgot my password". node:http only; nothing touches real accounts.
+// docs/cloud.md) as the hub uses it: sign up, sign in, sign out, "forgot my password" and the account a token belongs to (POST or GET /v1/account). node:http only; nothing touches real accounts.
 // It follows the real service's rules (checked 2026-10-19): the email is trimmed and lower-cased and needs an @ and a dot after it; a
 // password needs 8 characters; a second sign-up for an email is 409; five wrong passwords in a row lock that email (429); a token is
 // "sfs_" and 64 hex digits; errors are { type: "error", error: { type, message } }. Test hooks (no auth): GET /__sent (reset emails the
@@ -86,6 +86,12 @@ export async function startFoundryMock({ port = 0, firstId = 1 } = {}) {
       if (!email) return error(res, 400, "invalid_request_error", "give a real email address");
       if (accounts.has(email)) sent.push({ to: email });
       return send(res, 200, { sent: true, message: "If there's a Foundry account with that email, a link to reset its password is on its way. It works for an hour." });
+    }
+    if (route === "POST /v1/account" || route === "GET /v1/account") {
+      const t = /^Bearer (sfs_[0-9a-f]{64})$/.exec(req.headers.authorization ?? "")?.[1];
+      const a = t ? sessions.get(t) : null;
+      if (!a) return error(res, 401, "authentication_error", "your sign-in has ended: sign in again");
+      return send(res, 200, { id: a.id, email: a.email, credits: 100 });
     }
     if (route === "POST /v1/signout") {
       const t = /^Bearer (sfs_[0-9a-f]{64})$/.exec(req.headers.authorization ?? "")?.[1];
