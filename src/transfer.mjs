@@ -78,6 +78,13 @@ export const TABLES = [
     key: "shop_id || '|' || name",
     conflict: ["shop_id", "name"],
   },
+  // The StitchFoundry inbox (src/inbox.mjs): files waiting for a shop to take them (the bytes stay in the bucket, which a moved hub keeps).
+  {
+    t: "inbox_item",
+    table: "inbox_items",
+    cols: ["id", "account_id", "to_shop_id", "file_name", "size", "sha256", "meta", "created_at", "confirmed_at", "expires_at", "taken_at", "taken_by_shop_id", "deleted_at", "preview_size", "preview_sha256", "preview_type"],
+    json: ["meta"],
+  },
   // The manual repository (src/repository.mjs): the manuals shops see (numbered in the change sequence, which the
   // repository feed pages by), the files in R2 by hash (the bytes stay in the bucket; a moved hub keeps the bucket), the
   // offers, the hashes that may not come back, and the download counts.
