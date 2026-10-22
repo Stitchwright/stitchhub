@@ -27,6 +27,7 @@ import { registerBilling } from "./billing.mjs";
 import { registerMoves } from "./moves.mjs";
 import { registerBackups } from "./backups.mjs";
 import { registerInbox } from "./inbox.mjs";
+import { summarize, lastMonths } from "./orders-report.mjs";
 import { registerProvisioning } from "./provisioning.mjs";
 import { registerTerms } from "./terms.mjs";
 import { registerRepository } from "./repository.mjs";
@@ -848,6 +849,31 @@ admin.get("/summary", async (c) => {
     installs,
     datasets,
   });
+});
+
+// Parts orders by calendar month (UTC) and currency, to see whether a fee on parts sales would be worth it (src/orders-report.mjs).
+// ?months=12 (1..36). ?excludeInstalls=id,id leaves out orders where either side is one of those installs (the hub marks no test
+// shops, so the admin names them). Counts and sums only: no shop names, contacts, addresses or items.
+admin.get("/orders/summary", async (c) => {
+  const n = c.req.query("months") === undefined ? 12 : Number(c.req.query("months"));
+  if (!Number.isInteger(n) || n < 1 || n > 36) throw fail(400, "months must be a whole number from 1 to 36.");
+  const exclude = String(c.req.query("excludeInstalls") ?? "").split(",").map((x) => x.trim()).filter(Boolean).slice(0, 200);
+  const from = `${lastMonths(n)[0]}-01T00:00:00Z`;
+  const { rows } = await q(
+    `SELECT status, currency, qty, unit_price_cents, shipping_cents, created_at, paid_at,
+            coalesce(seller_install_id, '') || ':' || coalesce(seller_shop_ref, '') AS seller_key,
+            coalesce(buyer_install_id, '') || ':' || coalesce(buyer_shop_ref, '') AS buyer_key
+       FROM orders
+      WHERE (created_at >= $1 OR paid_at >= $1)
+        AND NOT (coalesce(seller_install_id, '') = ANY($2) OR coalesce(buyer_install_id, '') = ANY($2))`,
+    [from, exclude],
+  );
+  return c.json(
+    summarize(
+      rows.map((r) => ({ status: r.status, currency: r.currency, qty: r.qty, unitPriceCents: r.unit_price_cents, shippingCents: r.shipping_cents, createdAt: r.created_at, paidAt: r.paid_at, sellerKey: r.seller_key, buyerKey: r.buyer_key })),
+      n,
+    ),
+  );
 });
 
 admin.put("/join-key", async (c) => {

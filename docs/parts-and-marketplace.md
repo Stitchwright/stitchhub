@@ -214,3 +214,20 @@ as the partner channel does; installs that don't say act as the whole install, a
   and `{ shopRef, off: true }` (that company's reports are taken back). `shops` counts companies.
 - A blocked install's listings show PAUSED to everyone and take no orders; its REQUESTED orders are declined.
 - `GET /v1/changes` stops a page short of about 32 MB (a run of very large parts), with `more: true`.
+
+## Orders report (hub admin)
+
+`GET /v1/admin/orders/summary?months=12[&excludeInstalls=id,id]` (admin token; a missing or wrong token is 401, like the other admin routes).
+Built only from the orders the hub keeps (`src/orders-report.mjs`); nothing new is collected from the programs, and the report
+carries counts and sums only, never a shop's name, contact, address or item. It exists to show whether a fee on parts sales would be
+worth it. Money is integer cents, each currency apart, no conversion. UTC calendar months, `months` 1 to 36.
+
+- **Completed** (PAID, SHIPPED or RECEIVED) counts in the month the order was **paid** (`paid_at`). `goodsCents` is `qty x unitPriceCents`,
+  `shippingCents` the flat or accepted shipping (none = 0), `totalCents` both; `medianOrderCents` (floor of the middle two's mean) and
+  `largestOrderCents` are of the totals; `sellers` and `buyers` are distinct companies (install and shop id).
+- An order paid and then **cancelled** is `cancelledAfterPaid` (in its paid month), never completed. An order never paid is in no sum.
+- `requested`, `cancelled` (before payment) and `declined` count in the month the order was **created**.
+- `ifThereHadBeenAFee`: 3%, 4% and 5% of `goodsCents`, rounded down; not a promise. Stripe's card fee would be on top, paid by the buyer.
+- The hub marks no test shops or admin-owned installs, so the admin names them in `excludeInstalls` (orders where either side is one of them are left out).
+
+Checked by `npm run test:orders-report`.
