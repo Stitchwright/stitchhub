@@ -4,10 +4,10 @@ How a bug typed into a program becomes a GitHub issue, and how an issue becomes 
 
 ## The path
 
-1. **In the program** a person presses *Report a bug* (StitchBench and StitchShop: Help; StitchFoundry and LightFoundry:
+1. **In the program** a person presses *Report a bug* (StitchBench and StitchShop: Help; StitchFoundry and LaserFoundry:
    Help menu; StitchHub: the *Report a bug* link in the footer, `/report-a-bug`).
 2. **StitchBench and StitchShop** send an item of `kind: "bug"` to `POST /v1/feedback` under their install key (it is
-   kept for the admin page, "Help & ideas", like the other kinds). **StitchFoundry, LightFoundry and the hub's own page**
+   kept for the admin page, "Help & ideas", like the other kinds). **StitchFoundry, LaserFoundry and the hub's own page**
    send `POST /v1/bug-report`, which needs no key.
 3. **The hub** files a GitHub issue with `GITHUB_ISSUES_TOKEN` (`src/bugreports.mjs`). The token never leaves the hub.
    The issue gets the labels `bug` and `from-app`.
@@ -17,7 +17,7 @@ How a bug typed into a program becomes a GitHub issue, and how an issue becomes 
 | StitchBench, StitchShop | `Stitchwright/stitchbench` (private) |
 | StitchHub | `Stitchwright/stitchhub` |
 | StitchFoundry | `Stitchwright/StitchFoundry` (public) |
-| LightFoundry | `Stitchwright/lightfoundry` (public) |
+| LaserFoundry (`laserfoundry`; the old `lightfoundry` still works) | `Stitchwright/laserfoundry` (public) |
 
 ## What the owner sets up (once)
 

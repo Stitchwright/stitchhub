@@ -119,9 +119,10 @@ try {
   assert.ok(i1.body.includes(`\n${fenceOpen[1]}\n`), "and it is closed with the same length");
   assert.ok(i1.body.indexOf("@everyone") > i1.body.indexOf(fenceOpen[0]) && i1.body.indexOf("@everyone") < i1.body.lastIndexOf(fenceOpen[1]), "the mention is inside the fence");
 
+  // "lightfoundry", LaserFoundry's first name, still files to LaserFoundry.
   const b = await ok(await call("/v1/bug-report", { json: { program: "lightfoundry", what: "Frame goes the wrong way" } }));
-  assert.equal(b.url, "https://github.com/Stitchwright/lightfoundry/issues/2");
-  assert.equal(filed[1].title, "[LightFoundry] Frame goes the wrong way", "the title comes from the text when none is sent");
+  assert.equal(b.url, "https://github.com/Stitchwright/laserfoundry/issues/2");
+  assert.equal(filed[1].title, "[LaserFoundry] Frame goes the wrong way", "the title comes from the text when none is sent");
 
   githubStatus = 500;
   await refused(await call("/v1/bug-report", { json: { program: "stitchfoundry", what: "x y z" } }), 502, /GitHub didn't take the report/, "GitHub failing");

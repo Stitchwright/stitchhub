@@ -1,6 +1,6 @@
 // Bug reports from the programs, filed as GitHub issues. The GitHub token lives here only (GITHUB_ISSUES_TOKEN, a
 // fine-grained token with Issues: read and write on the repositories below), never in a program. Two ways in:
-//   - POST /v1/bug-report, no key: StitchFoundry, LightFoundry and the hub's own pages (open-source programs with no
+//   - POST /v1/bug-report, no key: StitchFoundry, LaserFoundry and the hub's own pages (open-source programs with no
 //     install on the hub). Limited per address and for the whole hub; a filled-in `website` field (a trap for bots) is
 //     answered "ok" and dropped.
 //   - fileIssue(), called by src/feedback.mjs when StitchBench or StitchShop send an item of kind "bug" under their
@@ -16,9 +16,9 @@ const REPOS = {
   stitchshop: "Stitchwright/stitchbench",
   stitchhub: "Stitchwright/stitchhub",
   stitchfoundry: "Stitchwright/StitchFoundry",
-  lightfoundry: "Stitchwright/lightfoundry",
+  laserfoundry: "Stitchwright/laserfoundry",
 };
-const NAMES = { stitchbench: "StitchBench", stitchshop: "StitchShop", stitchhub: "StitchHub", stitchfoundry: "StitchFoundry", lightfoundry: "LightFoundry" };
+const NAMES = { stitchbench: "StitchBench", stitchshop: "StitchShop", stitchhub: "StitchHub", stitchfoundry: "StitchFoundry", laserfoundry: "LaserFoundry" };
 const PER_ADDRESS_HOUR = 5;
 const PER_HUB_HOUR = 100;
 
@@ -32,7 +32,9 @@ const oneLine = (v, max) => str(String(v ?? "").replace(/\s+/g, " "), max);
 export const repoFor = (program) => REPOS[String(program ?? "").toLowerCase().replace(/\s+/g, "")] ?? null;
 export const programKey = (program) => {
   const k = String(program ?? "").toLowerCase().replace(/\s+/g, "");
-  return REPOS[k] ? k : null;
+  // LightFoundry was LaserFoundry's first name: older links and apps still send it.
+  const key = k === "lightfoundry" ? "laserfoundry" : k;
+  return REPOS[key] ? key : null;
 };
 export const issuesReady = () => Boolean((process.env.GITHUB_ISSUES_TOKEN ?? "").trim());
 
@@ -88,7 +90,7 @@ export async function fileIssue({ program, title, fields, source, labels = [] })
 export function cleanReport(raw, fail) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw fail(400, "Send the report as a JSON object.");
   const program = programKey(raw.program);
-  if (!program) throw fail(400, "program is stitchbench, stitchshop, stitchhub, stitchfoundry or lightfoundry.");
+  if (!program) throw fail(400, "program is stitchbench, stitchshop, stitchhub, stitchfoundry or laserfoundry.");
   const what = str(raw.what ?? raw.text, 4000);
   if (!what) throw fail(400, "Tell us what happened (what).");
   const title = oneLine(raw.title, 100) ?? oneLine(what, 80);
@@ -115,14 +117,14 @@ function reportPage(hubName) {
     title: `Report a bug - ${hubName}`,
     css: PAGE_CSS,
     body: `<h1>Report a bug</h1><p class="muted">Found something wrong in <strong id="who">${esc(hubName)}</strong>? Tell us what happened. Your report is filed as an issue on GitHub, and for the open-source programs it is public, so please leave out names, email addresses and anything private.</p>
-<form id="f"><div id="pick" hidden><label for="prog">Which program?</label><select id="prog"><option value="stitchhub">StitchHub (this website)</option><option value="stitchfoundry">StitchFoundry</option><option value="lightfoundry">LightFoundry</option></select></div>${f("title", "Short summary", "", 0)}${f("what", "What happened", "", 5)}${f("steps", "Steps to reproduce (optional)", "", 4)}${f("expected", "What should have happened (optional)", "", 3)}
+<form id="f"><div id="pick" hidden><label for="prog">Which program?</label><select id="prog"><option value="stitchhub">StitchHub (this website)</option><option value="stitchfoundry">StitchFoundry</option><option value="laserfoundry">LaserFoundry</option></select></div>${f("title", "Short summary", "", 0)}${f("what", "What happened", "", 5)}${f("steps", "Steps to reproduce (optional)", "", 4)}${f("expected", "What should have happened (optional)", "", 3)}
 <div class="hp" aria-hidden="true"><label for="website">Leave this empty</label><input id="website" type="text" tabindex="-1" autocomplete="off"></div>
 <p><button id="go" type="submit">Send the report</button></p><p id="out" role="status"></p></form>
 <script>
 const $ = (id) => document.getElementById(id);
 // A program's Help > Report a Bug opens this page as /report-a-bug?program=stitchfoundry&version=0.3.1&system=macos+aarch64.
 const q = new URLSearchParams(location.search);
-const NAMES = { stitchbench: "StitchBench", stitchshop: "StitchShop", stitchhub: "StitchHub", stitchfoundry: "StitchFoundry", lightfoundry: "LightFoundry" };
+const NAMES = { stitchbench: "StitchBench", stitchshop: "StitchShop", stitchhub: "StitchHub", stitchfoundry: "StitchFoundry", laserfoundry: "LaserFoundry" };
 const given = NAMES[(q.get("program") || "").toLowerCase()] ? q.get("program").toLowerCase() : "";
 if (!given) $("pick").hidden = false; // opened without a program (a link on a website): ask which one
 const chosen = () => given || $("prog").value;

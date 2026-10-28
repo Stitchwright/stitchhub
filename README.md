@@ -1,7 +1,7 @@
 # StitchHub
 
 The community hub for **StitchBench** and **StitchShop**, the open-source programs for sewing machine repair shops and
-the sewing and quilt shops they work with ([SiteSentrix/StitchBench](https://github.com/SiteSentrix/StitchBench)).
+the sewing and quilt shops they work with ([Stitchwright/stitchbench](https://github.com/Stitchwright/stitchbench)).
 Anyone can run their own hub.
 
 Each shop's program keeps its customers, machines, tickets and prices on the shop's own PC or server. StitchHub is the
