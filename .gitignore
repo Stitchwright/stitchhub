@@ -2,3 +2,15 @@ node_modules/
 .env
 *.ndjson.gz
 duplicate-xparts.json
+
+# OS and editor leftovers
+.DS_Store
+*.log
+npm-debug.log*
+
+# local environment files (an .env.example may be committed)
+.env.*
+!.env.example
+
+# test and coverage output
+/coverage
