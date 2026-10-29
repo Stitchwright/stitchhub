@@ -32,4 +32,4 @@ subscriptions and marketplace, prices, terms and privacy text, and moving existi
 - Run `npm run check` and the relevant `npm run test:*` before every push. Never push to main with failing checks;
   never force-push.
 - Secrets live in Railway variables. Never in code, docs or chat. Name variables, never values.
-- Work on the branch the session names; no pull request unless asked.
+- Work on the branch the session names. Open a pull request at the end of each task (see CLAUDE.md, "Standing rule"); never merge it yourself.
