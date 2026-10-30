@@ -10,14 +10,15 @@ Updated 2026-10-29. Read after `CLAUDE.md`. Keep this under one page.
 - Licence AGPL-3.0; shared contracts will be MIT OR Apache-2.0 (owner, 2026-10-29).
 
 ## Recently done
+- Work queue set up: `docs/claude-queue.md`, a disabled-by-default `claude-nightly.yml`, labels, issues #20 to #25 (5 queued, 1 proposed).
 - Integration contract v1.0.0 (`contracts/`, `docs/integration.md`) and `npm run test:contract`; real hub answers are checked against the schemas.
 - StitchFoundry inbox and preview (#17); orders-by-month report for judging a parts-sales fee.
 - Cleanup: `.nvmrc` (22), `.gitignore` additions, exact-version saves (b34daf4, on the work branch).
 
 ## Next 3 steps
-1. Owner: authorize Railway's GitHub app on the Stitchwright org, back up the database, reconnect and deploy the hub.
-2. Read the orders report (`/v1/admin/orders/summary?months=12`, pass `excludeInstalls` for test installs) and send the numbers to the owner.
-3. Phase 4 of the plan: write the integration contract (OpenAPI and JSON schemas) for the partner and marketplace API that already exists, with contract tests.
+1. Owner: Railway reconnect, backup, deploy (inbox bucket variables and the legal details can follow).
+2. Queue: #20 (migration upgrade-path test, do this BEFORE the deploy), #21 (contract v1.1, with Bench).
+3. Owner: read the orders report after the deploy and send the numbers on.
 
 ## Blockers
 - Railway source repo is the old name; "Wait for CI" is off.
