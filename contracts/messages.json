@@ -1,0 +1,41 @@
+{
+  "description": "Partner message types covered by this contract version: which side may send each, and the schema of its data. Must agree with the sender rules in the programs (StitchBench: FROM in src/lib/partners.ts).",
+  "types": {
+    "job.new": {
+      "from": "retail",
+      "schema": "job.new"
+    },
+    "job.update": {
+      "from": "repair",
+      "schema": "job.update"
+    },
+    "job.reply": {
+      "from": "retail",
+      "schema": "job.reply"
+    },
+    "job.paid": {
+      "from": "retail",
+      "schema": "job.paid"
+    },
+    "job.pickedup": {
+      "from": "retail",
+      "schema": "job.pickedup"
+    },
+    "job.cancel": {
+      "from": "retail",
+      "schema": "job.cancel"
+    },
+    "order.new": {
+      "from": "retail",
+      "schema": "order.new"
+    },
+    "order.update": {
+      "from": "either",
+      "schema": "order.update"
+    },
+    "catalog": {
+      "from": "repair",
+      "schema": "catalog"
+    }
+  }
+}

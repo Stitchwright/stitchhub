@@ -1,0 +1,28 @@
+{
+  "id": "job_7f3a91c2",
+  "status": "WAITING_CUSTOMER_OK",
+  "ticketNumber": 2217,
+  "lines": [
+    {
+      "description": "Tune-up and clean",
+      "qty": 1,
+      "amountCents": 9500,
+      "kind": "LABOR"
+    },
+    {
+      "description": "Hook timing parts",
+      "qty": 1,
+      "amountCents": 3200,
+      "kind": "PART"
+    }
+  ],
+  "totalCents": 13500,
+  "taxCents": 800,
+  "commissionPct": 10,
+  "commissionCents": 1270,
+  "repairNote": "Needs a new bobbin case",
+  "repairPaidCents": null,
+  "paidAt": null,
+  "readyAt": null,
+  "at": "2026-10-29T14:05:00.000Z"
+}

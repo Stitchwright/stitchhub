@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "order.new",
+  "description": "The sewing shop orders parts from the repair shop's catalog (retail side).",
+  "type": "object",
+  "required": [
+    "id",
+    "lines",
+    "at"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "number": {
+      "type": [
+        "integer",
+        "string"
+      ]
+    },
+    "lines": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/line"
+      }
+    },
+    "note": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "name": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "$defs": {
+    "line": {
+      "type": "object",
+      "required": [
+        "itemKey",
+        "qty",
+        "unitCents"
+      ],
+      "properties": {
+        "itemKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "partNumber": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "qty": {
+          "type": "number",
+          "minimum": 0
+        },
+        "unitCents": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "condition": {
+          "type": "string",
+          "enum": [
+            "USED",
+            "REFURB"
+          ],
+          "description": "Sent only when not new: left out means NEW."
+        },
+        "origin": {
+          "type": "string",
+          "enum": [
+            "COMPATIBLE",
+            "PRINTED"
+          ],
+          "description": "Sent only when not genuine: left out means GENUINE."
+        }
+      }
+    }
+  }
+}

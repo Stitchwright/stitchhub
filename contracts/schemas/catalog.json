@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "catalog",
+  "description": "The repair shop's parts catalog for its partner (repair side).",
+  "type": "object",
+  "required": [
+    "items"
+  ],
+  "properties": {
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "itemKey",
+          "description",
+          "wholesaleCents"
+        ],
+        "properties": {
+          "itemKey": {
+            "type": "string",
+            "minLength": 1
+          },
+          "partNumber": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "brand": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "unit": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "wholesaleCents": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "retailCents": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "inStock": {
+            "type": "number"
+          },
+          "condition": {
+            "type": "string",
+            "enum": [
+              "USED",
+              "REFURB"
+            ],
+            "description": "Sent only when not new: left out means NEW."
+          },
+          "origin": {
+            "type": "string",
+            "enum": [
+              "COMPATIBLE",
+              "PRINTED"
+            ],
+            "description": "Sent only when not genuine: left out means GENUINE."
+          }
+        }
+      }
+    },
+    "at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

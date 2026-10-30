@@ -10,6 +10,7 @@ Updated 2026-10-29. Read after `CLAUDE.md`. Keep this under one page.
 - Licence AGPL-3.0; shared contracts will be MIT OR Apache-2.0 (owner, 2026-10-29).
 
 ## Recently done
+- Integration contract v1.0.0 (`contracts/`, `docs/integration.md`) and `npm run test:contract`; real hub answers are checked against the schemas.
 - StitchFoundry inbox and preview (#17); orders-by-month report for judging a parts-sales fee.
 - Cleanup: `.nvmrc` (22), `.gitignore` additions, exact-version saves (b34daf4, on the work branch).
 

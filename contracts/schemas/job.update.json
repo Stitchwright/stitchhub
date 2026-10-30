@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "job.update",
+  "description": "The repair shop's view of the job, sent whenever its ticket changes: status, bill, commission, paid and ready dates. Sent by the repair side. Applying one twice does no harm.",
+  "type": "object",
+  "required": [
+    "id",
+    "status",
+    "lines",
+    "totalCents",
+    "taxCents",
+    "at"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "type": "string",
+      "pattern": "^[A-Z_]+$",
+      "description": "The ticket status, for example AT_SHOP_AWAITING_PICKUP, ON_BENCH, WAITING_CUSTOMER_OK, WAITING_PARTS, READY_IN_TRUCK, COLLECTED. A receiver must accept values it does not know."
+    },
+    "ticketNumber": {
+      "type": [
+        "integer",
+        "string"
+      ]
+    },
+    "lines": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "description",
+          "qty",
+          "amountCents",
+          "kind"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "qty": {
+            "type": "number"
+          },
+          "amountCents": {
+            "type": "integer"
+          },
+          "kind": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "totalCents": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "taxCents": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "commissionPct": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "commissionCents": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "repairNote": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "repairPaidCents": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "paidAt": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "readyAt": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "id": "ord_41b8",
+  "number": "1007",
+  "lines": [
+    {
+      "itemKey": "p-100",
+      "partNumber": "HK-100",
+      "description": "Bobbin case",
+      "qty": 2,
+      "unitCents": 850
+    },
+    {
+      "itemKey": "p-205",
+      "partNumber": "NDL-90",
+      "description": "Needles, pack of 10",
+      "qty": 3,
+      "unitCents": 400,
+      "condition": "USED"
+    }
+  ],
+  "note": "For the Bernina",
+  "name": "Dana",
+  "at": "2026-10-29T14:05:00.000Z"
+}

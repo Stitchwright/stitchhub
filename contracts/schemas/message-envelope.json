@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "message-envelope",
+  "description": "One message as GET /v1/partners/messages returns it. `data` is checked against the schema for its `type` (messages.json).",
+  "type": "object",
+  "required": [
+    "seq",
+    "id",
+    "linkId",
+    "fromSide",
+    "type",
+    "data",
+    "createdAt"
+  ],
+  "properties": {
+    "seq": {
+      "type": [
+        "integer",
+        "string"
+      ],
+      "pattern": "^[0-9]+$",
+      "description": "The feed position. The hub sends it as a string of digits (a Postgres bigint); a receiver must accept a number too."
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "linkId": {
+      "type": "string"
+    },
+    "fromSide": {
+      "type": "string",
+      "enum": [
+        "repair",
+        "retail",
+        "hub"
+      ]
+    },
+    "toSide": {
+      "type": "string",
+      "enum": [
+        "repair",
+        "retail"
+      ]
+    },
+    "toShopRef": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "type": {
+      "type": "string",
+      "pattern": "^[a-z]{2,20}(\\.[a-z]{2,20})?$"
+    },
+    "data": {
+      "type": "object"
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "sig": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Ed25519 signature envelope { v, pub, seq, ts, sig }; absent or null on messages from older programs."
+    }
+  }
+}

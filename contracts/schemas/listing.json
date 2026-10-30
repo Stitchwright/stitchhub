@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "listing",
+  "description": "A parts listing, as the hub returns it in /v1/changes and from POST/PUT /v1/listings.",
+  "type": "object",
+  "required": [
+    "id",
+    "title",
+    "condition",
+    "priceCents",
+    "currency",
+    "qty",
+    "status",
+    "createdAt",
+    "updatedAt"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "shopName": {
+      "type": "string"
+    },
+    "mine": {
+      "type": "boolean"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "kind": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "condition": {
+      "type": "string",
+      "enum": [
+        "NEW",
+        "USED",
+        "REFURB"
+      ]
+    },
+    "origin": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "GENUINE",
+        "COMPATIBLE",
+        "PRINTED",
+        null
+      ]
+    },
+    "brand": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "partNumber": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "xpartId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "fits": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "priceCents": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "currency": {
+      "type": "string",
+      "pattern": "^[A-Z]{3}$"
+    },
+    "qty": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "shippingCents": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "shippingNote": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "shipsFrom": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "ACTIVE",
+        "PAUSED",
+        "SOLD_OUT",
+        "REMOVED"
+      ]
+    },
+    "photos": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "sortOrder": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

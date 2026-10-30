@@ -1,0 +1,24 @@
+{
+  "id": "it_Abc123XyZ",
+  "fileName": "left-chest-logo.dst",
+  "size": 18432,
+  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "meta": {
+    "job": "J-14",
+    "customer": "Riverside",
+    "design": "Logo",
+    "format": "dst",
+    "stitches": 5200,
+    "colors": 3,
+    "trims": 12,
+    "widthMm": 62.5,
+    "heightMm": 40
+  },
+  "preview": {
+    "size": 20480,
+    "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "type": "image/png"
+  },
+  "createdAt": "2026-10-29T14:05:00.000Z",
+  "expiresAt": "2026-11-28T14:05:00.000Z"
+}

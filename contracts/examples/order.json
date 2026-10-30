@@ -1,0 +1,52 @@
+{
+  "id": "ord_e1",
+  "number": "SH-000123",
+  "role": "buyer",
+  "listingId": "lst_58aa",
+  "item": {
+    "title": "Bernina hook assembly",
+    "brand": "Bernina",
+    "partNumber": "HK-221",
+    "condition": "USED",
+    "origin": "GENUINE"
+  },
+  "sellerShop": "Bobbin & Bolt Repairs",
+  "buyerShop": "Main St Sewing",
+  "qty": 1,
+  "unitPriceCents": 3500,
+  "shippingCents": 600,
+  "totalCents": 4100,
+  "currency": "USD",
+  "shipTo": "12 Main St",
+  "buyerNote": null,
+  "buyerContact": {
+    "name": "Dana",
+    "email": "dana@example.test",
+    "phone": null
+  },
+  "sellerContact": null,
+  "payInstructions": null,
+  "status": "REQUESTED",
+  "buyerPaidNote": null,
+  "paidAt": null,
+  "carrier": null,
+  "tracking": null,
+  "trackingUrl": null,
+  "shippedAt": null,
+  "receivedAt": null,
+  "cancelReason": null,
+  "createdAt": "2026-10-29T14:05:00.000Z",
+  "updatedAt": "2026-10-29T14:05:00.000Z",
+  "events": [
+    {
+      "at": "2026-10-29T14:05:00.000Z",
+      "by": "buyer",
+      "action": "requested",
+      "note": null
+    }
+  ],
+  "ratings": {
+    "buyer": null,
+    "seller": null
+  }
+}

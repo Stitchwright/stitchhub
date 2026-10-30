@@ -1,0 +1,339 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "order",
+  "description": "A parts order between two shops on the hub marketplace (only the buyer and the seller see it).",
+  "type": "object",
+  "required": [
+    "id",
+    "number",
+    "role",
+    "qty",
+    "unitPriceCents",
+    "totalCents",
+    "currency",
+    "status",
+    "createdAt",
+    "updatedAt",
+    "events"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "number": {
+      "type": "string",
+      "pattern": "^SH-[0-9]+$"
+    },
+    "role": {
+      "type": "string",
+      "enum": [
+        "buyer",
+        "seller"
+      ]
+    },
+    "listingId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "item": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "brand": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "partNumber": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "condition": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "origin": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "sellerShop": {
+      "type": "string"
+    },
+    "buyerShop": {
+      "type": "string"
+    },
+    "qty": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "unitPriceCents": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "shippingCents": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "totalCents": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "currency": {
+      "type": "string",
+      "pattern": "^[A-Z]{3}$"
+    },
+    "shipTo": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "buyerNote": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "buyerContact": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "email": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "phone": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "address": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "sellerContact": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "email": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "phone": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "address": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "payInstructions": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "REQUESTED",
+        "ACCEPTED",
+        "PAID",
+        "SHIPPED",
+        "RECEIVED",
+        "DECLINED",
+        "CANCELLED"
+      ]
+    },
+    "buyerPaidNote": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "paidAt": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "carrier": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "tracking": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "trackingUrl": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "shippedAt": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "receivedAt": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "cancelReason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "at",
+          "by",
+          "action"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "by": {
+            "type": "string",
+            "enum": [
+              "buyer",
+              "seller"
+            ]
+          },
+          "action": {
+            "type": "string"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "ratings": {
+      "type": "object",
+      "properties": {
+        "buyer": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "stars": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 5
+            },
+            "comment": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        },
+        "seller": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "stars": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 5
+            },
+            "comment": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        }
+      }
+    }
+  }
+}

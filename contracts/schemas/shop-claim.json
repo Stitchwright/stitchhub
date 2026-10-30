@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "shop-claim",
+  "description": "POST /v1/shops/claim body: a program tells the hub about one of its shops (the shop profile). The hub's own id for the shop is not part of it.",
+  "type": "object",
+  "required": [
+    "shopRef",
+    "shopName"
+  ],
+  "properties": {
+    "shopRef": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "The shop's id inside the sending install"
+    },
+    "shopName": {
+      "type": "string",
+      "minLength": 1
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "retail",
+        "repair",
+        "both"
+      ]
+    },
+    "program": {
+      "type": "string",
+      "description": "StitchBench or StitchShop"
+    },
+    "version": {
+      "type": "string"
+    },
+    "sole": {
+      "type": "boolean"
+    }
+  }
+}

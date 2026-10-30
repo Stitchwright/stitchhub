@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "job.cancel",
+  "description": "The sewing shop cancelled the job (retail side).",
+  "type": "object",
+  "required": [
+    "id",
+    "at"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "note": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

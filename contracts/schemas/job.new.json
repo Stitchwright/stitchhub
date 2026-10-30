@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "job.new",
+  "description": "A sewing shop took a machine in for its repair shop. Sent by the retail side; it arrives as a ticket at the repair shop. `id` ties the job to the ticket for its whole life.",
+  "type": "object",
+  "required": [
+    "id",
+    "tag",
+    "customerName",
+    "brand",
+    "model",
+    "at"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "tag": {
+      "type": "string",
+      "maxLength": 20,
+      "description": "The claim tag number on the customer's paperwork"
+    },
+    "customerName": {
+      "type": "string",
+      "maxLength": 80,
+      "description": "First name and last initial only"
+    },
+    "brand": {
+      "type": "string",
+      "maxLength": 80
+    },
+    "model": {
+      "type": "string",
+      "maxLength": 80
+    },
+    "serial": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "machineType": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "problem": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "serviceRequested": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "accessories": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "preApprovedCents": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "note": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "photos": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "required": [
+          "mime",
+          "data"
+        ],
+        "properties": {
+          "mime": {
+            "type": "string",
+            "enum": [
+              "image/png",
+              "image/jpeg",
+              "image/webp"
+            ]
+          },
+          "data": {
+            "type": "string",
+            "description": "base64"
+          },
+          "caption": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

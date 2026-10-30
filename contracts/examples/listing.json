@@ -1,0 +1,29 @@
+{
+  "id": "lst_58aa",
+  "shopName": "Bobbin & Bolt Repairs",
+  "mine": false,
+  "title": "Bernina hook assembly",
+  "description": "Tested, from a 530",
+  "kind": "PART",
+  "condition": "USED",
+  "origin": "GENUINE",
+  "brand": "Bernina",
+  "partNumber": "HK-221",
+  "xpartId": null,
+  "fits": "Bernina 530, 550",
+  "priceCents": 3500,
+  "currency": "USD",
+  "qty": 2,
+  "shippingCents": 600,
+  "shippingNote": null,
+  "shipsFrom": "Rhode Island",
+  "status": "ACTIVE",
+  "photos": [
+    {
+      "id": "ph_1",
+      "sortOrder": 0
+    }
+  ],
+  "createdAt": "2026-10-29T14:05:00.000Z",
+  "updatedAt": "2026-10-29T14:05:00.000Z"
+}

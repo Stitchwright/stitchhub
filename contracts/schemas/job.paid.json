@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "job.paid",
+  "description": "The customer paid at the sewing shop's register (retail side).",
+  "type": "object",
+  "required": [
+    "id",
+    "amountCents",
+    "at"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "amountCents": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "paidCents": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "saleNumber": {
+      "type": [
+        "integer",
+        "string"
+      ]
+    },
+    "at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

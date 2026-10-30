@@ -1,0 +1,1747 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "StitchHub shared API (StitchBench, StitchShop, StitchFoundry)",
+    "version": "1.0.0",
+    "description": "The calls StitchBench, StitchShop and StitchFoundry make to StitchHub, and the data they exchange. Describes what the hub does today. Message data is checked against the schemas named in messages.json. Licence: MIT OR Apache-2.0.",
+    "license": {
+      "name": "MIT OR Apache-2.0"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://hub.stitchbench.app"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "installKey": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "The install key a program gets when it joins the hub. Scope `member` can call everything here; scope `partner` only /v1/partners/* and /v1/me until it upgrades."
+      },
+      "foundryToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "A Foundry Account session token (sfs_ followed by 64 hex characters), checked with the Foundry Account service."
+      }
+    }
+  },
+  "paths": {
+    "/v1/shops/claim": {
+      "post": {
+        "summary": "A program tells the hub about one of its shops (the shop profile)",
+        "security": [
+          {
+            "installKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "listings": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad input: the answer says what to fix"
+          },
+          "401": {
+            "description": "Missing or wrong key"
+          },
+          "409": {
+            "description": "Wrong role or status for this step"
+          },
+          "429": {
+            "description": "Rate limit"
+          }
+        },
+        "tags": [
+          "shops"
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "./schemas/shop-claim.json"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/partners/invites": {
+      "post": {
+        "summary": "Make a code to link a repair shop with a sewing shop",
+        "security": [
+          {
+            "installKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "expiresAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad input: the answer says what to fix"
+          },
+          "401": {
+            "description": "Missing or wrong key"
+          },
+          "409": {
+            "description": "Wrong role or status for this step"
+          },
+          "429": {
+            "description": "Rate limit"
+          }
+        },
+        "tags": [
+          "partners"
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "shopRef": {
+                    "type": "string"
+                  },
+                  "shopName": {
+                    "type": "string"
+                  },
+                  "side": {
+                    "type": "string",
+                    "enum": [
+                      "repair",
+                      "retail"
+                    ]
+                  },
+                  "terms": {
+                    "type": "object"
+                  },
+                  "publicKey": {
+                    "type": "string"
+                  },
+                  "proof": {
+                    "type": "object"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/partners/redeem": {
+      "post": {
+        "summary": "Redeem a code from a shop already on the hub",
+        "security": [
+          {
+            "installKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "link": {
+                      "type": "object"
+                    },
+                    "side": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad input: the answer says what to fix"
+          },
+          "401": {
+            "description": "Missing or wrong key"
+          },
+          "409": {
+            "description": "Wrong role or status for this step"
+          },
+          "429": {
+            "description": "Rate limit"
+          }
+        },
+        "tags": [
+          "partners"
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  },
+                  "shopRef": {
+                    "type": "string"
+                  },
+                  "shopName": {
+                    "type": "string"
+                  },
+                  "publicKey": {
+                    "type": "string"
+                  },
+                  "proof": {
+                    "type": "object"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/partners/join": {
+      "post": {
+        "summary": "Redeem a code from an install not yet on the hub (no key needed)",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "installId": {
+                      "type": "string"
+                    },
+                    "installKey": {
+                      "type": "string"
+                    },
+                    "scope": {
+                      "type": "string"
+                    },
+                    "link": {
+                      "type": "object"
+                    },
+                    "side": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad input: the answer says what to fix"
+          },
+          "401": {
+            "description": "Missing or wrong key"
+          },
+          "409": {
+            "description": "Wrong role or status for this step"
+          },
+          "429": {
+            "description": "Rate limit"
+          }
+        },
+        "tags": [
+          "partners"
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  },
+                  "shopRef": {
+                    "type": "string"
+                  },
+                  "shopName": {
+                    "type": "string"
+                  },
+                  "contact": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/partners/messages": {
+      "get": {
+        "summary": "Messages for this install's shops after `since`, oldest first",
+        "security": [
+          {
+            "installKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "messages": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "./schemas/message-envelope.json"
+                      }
+                    },
+                    "next": {
+                      "type": "integer"
+                    },
+                    "more": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad input: the answer says what to fix"
+          },
+          "401": {
+            "description": "Missing or wrong key"
+          },
+          "409": {
+            "description": "Wrong role or status for this step"
+          },
+          "429": {
+            "description": "Rate limit"
+          }
+        },
+        "tags": [
+          "partners"
+        ],
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "maximum": 200
+            }
+          }
+        ]
+      }
+    },
+    "/v1/partners/links/{id}/messages": {
+      "post": {
+        "summary": "Send a typed message to the partner; the same `id` twice is stored once",
+        "security": [
+          {
+            "installKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "duplicate": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad input: the answer says what to fix"
+          },
+          "401": {
+            "description": "Missing or wrong key"
+          },
+          "409": {
+            "description": "Wrong role or status for this step"
+          },
+          "429": {
+            "description": "Rate limit"
+          }
+        },
+        "tags": [
+          "partners"
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "Up to 4 MB",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "shopRef": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string",
+                    "pattern": "^[a-z]{2,20}(\\.[a-z]{2,20})?$"
+                  },
+                  "data": {
+                    "type": "object",
+                    "description": "Checked against the schema for its type (messages.json)"
+                  },
+                  "sig": {
+                    "type": "object"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/partners/links/{id}/end": {
+      "post": {
+        "summary": "End the partnership",
+        "security": [
+          {
+            "installKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad input: the answer says what to fix"
+          },
+          "401": {
+            "description": "Missing or wrong key"
+          },
+          "409": {
+            "description": "Wrong role or status for this step"
+          },
+          "429": {
+            "description": "Rate limit"
+          }
+        },
+        "tags": [
+          "partners"
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "shopRef": {
+                    "type": "string"
+                  },
+                  "note": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/listings": {
+      "post": {
+        "summary": "List a part (multipart: `listing` JSON + up to 8 `photo` files)",
+        "security": [
+          {
+            "installKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/listing.json"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad input: the answer says what to fix"
+          },
+          "401": {
+            "description": "Missing or wrong key"
+          },
+          "409": {
+            "description": "Wrong role or status for this step"
+          },
+          "429": {
+            "description": "Rate limit"
+          }
+        },
+        "tags": [
+          "marketplace"
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "multipart/form-data",
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/listings/{id}": {
+      "put": {
+        "summary": "Change your own listing",
+        "security": [
+          {
+            "installKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/listing.json"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad input: the answer says what to fix"
+          },
+          "401": {
+            "description": "Missing or wrong key"
+          },
+          "409": {
+            "description": "Wrong role or status for this step"
+          },
+          "429": {
+            "description": "Rate limit"
+          }
+        },
+        "tags": [
+          "marketplace"
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "delete": {
+        "summary": "Take your own listing down",
+        "security": [
+          {
+            "installKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad input: the answer says what to fix"
+          },
+          "401": {
+            "description": "Missing or wrong key"
+          },
+          "409": {
+            "description": "Wrong role or status for this step"
+          },
+          "429": {
+            "description": "Rate limit"
+          }
+        },
+        "tags": [
+          "marketplace"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/orders": {
+      "post": {
+        "summary": "Order a listed part (buyer)",
+        "security": [
+          {
+            "installKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/order.json"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad input: the answer says what to fix"
+          },
+          "401": {
+            "description": "Missing or wrong key"
+          },
+          "409": {
+            "description": "Wrong role or status for this step"
+          },
+          "429": {
+            "description": "Rate limit"
+          }
+        },
+        "tags": [
+          "marketplace"
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "listingId": {
+                    "type": "string"
+                  },
+                  "qty": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "shipTo": {
+                    "type": "string"
+                  },
+                  "buyerNote": {
+                    "type": "string"
+                  },
+                  "buyerContact": {
+                    "type": "object"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "Your orders changed after `since`",
+        "security": [
+          {
+            "installKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "orders": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "./schemas/order.json"
+                      }
+                    },
+                    "next": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad input: the answer says what to fix"
+          },
+          "401": {
+            "description": "Missing or wrong key"
+          },
+          "409": {
+            "description": "Wrong role or status for this step"
+          },
+          "429": {
+            "description": "Rate limit"
+          }
+        },
+        "tags": [
+          "marketplace"
+        ],
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/orders/{id}/accept": {
+      "post": {
+        "summary": "Issue the invoice (seller)",
+        "security": [
+          {
+            "installKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/order.json"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad input: the answer says what to fix"
+          },
+          "401": {
+            "description": "Missing or wrong key"
+          },
+          "409": {
+            "description": "Wrong role or status for this step"
+          },
+          "429": {
+            "description": "Rate limit"
+          }
+        },
+        "tags": [
+          "marketplace"
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/orders/{id}/decline": {
+      "post": {
+        "summary": "Decline (seller)",
+        "security": [
+          {
+            "installKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/order.json"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad input: the answer says what to fix"
+          },
+          "401": {
+            "description": "Missing or wrong key"
+          },
+          "409": {
+            "description": "Wrong role or status for this step"
+          },
+          "429": {
+            "description": "Rate limit"
+          }
+        },
+        "tags": [
+          "marketplace"
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/orders/{id}/buyer-paid": {
+      "post": {
+        "summary": "Say the payment was sent (buyer)",
+        "security": [
+          {
+            "installKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/order.json"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad input: the answer says what to fix"
+          },
+          "401": {
+            "description": "Missing or wrong key"
+          },
+          "409": {
+            "description": "Wrong role or status for this step"
+          },
+          "429": {
+            "description": "Rate limit"
+          }
+        },
+        "tags": [
+          "marketplace"
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/orders/{id}/paid": {
+      "post": {
+        "summary": "Mark paid (seller)",
+        "security": [
+          {
+            "installKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/order.json"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad input: the answer says what to fix"
+          },
+          "401": {
+            "description": "Missing or wrong key"
+          },
+          "409": {
+            "description": "Wrong role or status for this step"
+          },
+          "429": {
+            "description": "Rate limit"
+          }
+        },
+        "tags": [
+          "marketplace"
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/orders/{id}/ship": {
+      "post": {
+        "summary": "Enter carrier and tracking (seller)",
+        "security": [
+          {
+            "installKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/order.json"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad input: the answer says what to fix"
+          },
+          "401": {
+            "description": "Missing or wrong key"
+          },
+          "409": {
+            "description": "Wrong role or status for this step"
+          },
+          "429": {
+            "description": "Rate limit"
+          }
+        },
+        "tags": [
+          "marketplace"
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/orders/{id}/received": {
+      "post": {
+        "summary": "Confirm it arrived (buyer)",
+        "security": [
+          {
+            "installKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/order.json"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad input: the answer says what to fix"
+          },
+          "401": {
+            "description": "Missing or wrong key"
+          },
+          "409": {
+            "description": "Wrong role or status for this step"
+          },
+          "429": {
+            "description": "Rate limit"
+          }
+        },
+        "tags": [
+          "marketplace"
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/orders/{id}/cancel": {
+      "post": {
+        "summary": "Cancel before it ships (either)",
+        "security": [
+          {
+            "installKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/order.json"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad input: the answer says what to fix"
+          },
+          "401": {
+            "description": "Missing or wrong key"
+          },
+          "409": {
+            "description": "Wrong role or status for this step"
+          },
+          "429": {
+            "description": "Rate limit"
+          }
+        },
+        "tags": [
+          "marketplace"
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/orders/{id}/message": {
+      "post": {
+        "summary": "Add a note to the order (either)",
+        "security": [
+          {
+            "installKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/order.json"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad input: the answer says what to fix"
+          },
+          "401": {
+            "description": "Missing or wrong key"
+          },
+          "409": {
+            "description": "Wrong role or status for this step"
+          },
+          "429": {
+            "description": "Rate limit"
+          }
+        },
+        "tags": [
+          "marketplace"
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/orders/{id}/rate": {
+      "post": {
+        "summary": "Rate the other side, 1 to 5 stars (either)",
+        "security": [
+          {
+            "installKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/order.json"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad input: the answer says what to fix"
+          },
+          "401": {
+            "description": "Missing or wrong key"
+          },
+          "409": {
+            "description": "Wrong role or status for this step"
+          },
+          "429": {
+            "description": "Rate limit"
+          }
+        },
+        "tags": [
+          "marketplace"
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/inbox/shops": {
+      "get": {
+        "summary": "Sender: the shops of the Foundry Account's StitchHub account",
+        "security": [
+          {
+            "foundryToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "shops": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "program": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad input: the answer says what to fix"
+          },
+          "401": {
+            "description": "Missing or wrong key"
+          },
+          "409": {
+            "description": "Wrong role or status for this step"
+          },
+          "429": {
+            "description": "Rate limit"
+          }
+        },
+        "tags": [
+          "inbox"
+        ]
+      }
+    },
+    "/v1/inbox/put": {
+      "post": {
+        "summary": "Sender: announce a file (and optional preview) and get signed upload addresses",
+        "security": [
+          {
+            "foundryToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "{ id, url, method, expiresIn, headers, preview?: { url, method, headers } }"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad input: the answer says what to fix"
+          },
+          "401": {
+            "description": "Missing or wrong key"
+          },
+          "409": {
+            "description": "Wrong role or status for this step"
+          },
+          "429": {
+            "description": "Rate limit"
+          }
+        },
+        "tags": [
+          "inbox"
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "fileName": {
+                    "type": "string"
+                  },
+                  "size": {
+                    "type": "integer"
+                  },
+                  "sha256": {
+                    "type": "string"
+                  },
+                  "meta": {
+                    "type": "object"
+                  },
+                  "toShopId": {
+                    "type": "string"
+                  },
+                  "preview": {
+                    "type": "object",
+                    "properties": {
+                      "size": {
+                        "type": "integer"
+                      },
+                      "sha256": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "image/png",
+                          "image/jpeg"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/inbox/done": {
+      "post": {
+        "summary": "Sender: the upload is finished; the hub checks the object(s) and sizes",
+        "security": [
+          {
+            "foundryToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad input: the answer says what to fix"
+          },
+          "401": {
+            "description": "Missing or wrong key"
+          },
+          "409": {
+            "description": "Wrong role or status for this step"
+          },
+          "429": {
+            "description": "Rate limit"
+          }
+        },
+        "tags": [
+          "inbox"
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/inbox/retract": {
+      "post": {
+        "summary": "Sender: take a file back before a shop takes it",
+        "security": [
+          {
+            "foundryToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad input: the answer says what to fix"
+          },
+          "401": {
+            "description": "Missing or wrong key"
+          },
+          "409": {
+            "description": "Wrong role or status for this step"
+          },
+          "429": {
+            "description": "Rate limit"
+          }
+        },
+        "tags": [
+          "inbox"
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/inbox/list": {
+      "get": {
+        "summary": "Receiver: the files waiting for this shop",
+        "security": [
+          {
+            "installKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "linked": {
+                      "type": "boolean"
+                    },
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "./schemas/inbox-item.json"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad input: the answer says what to fix"
+          },
+          "401": {
+            "description": "Missing or wrong key"
+          },
+          "409": {
+            "description": "Wrong role or status for this step"
+          },
+          "429": {
+            "description": "Rate limit"
+          }
+        },
+        "tags": [
+          "inbox"
+        ],
+        "parameters": [
+          {
+            "name": "shopRef",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/inbox/get": {
+      "post": {
+        "summary": "Receiver: signed download addresses for a file (and its preview)",
+        "security": [
+          {
+            "installKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "url": {
+                      "type": "string"
+                    },
+                    "previewUrl": {
+                      "type": "string"
+                    },
+                    "expiresIn": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad input: the answer says what to fix"
+          },
+          "401": {
+            "description": "Missing or wrong key"
+          },
+          "409": {
+            "description": "Wrong role or status for this step"
+          },
+          "429": {
+            "description": "Rate limit"
+          }
+        },
+        "tags": [
+          "inbox"
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "shopRef": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/inbox/take": {
+      "post": {
+        "summary": "Receiver: the shop imported the file; it leaves the inbox and the bucket",
+        "security": [
+          {
+            "installKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad input: the answer says what to fix"
+          },
+          "401": {
+            "description": "Missing or wrong key"
+          },
+          "409": {
+            "description": "Wrong role or status for this step"
+          },
+          "429": {
+            "description": "Rate limit"
+          }
+        },
+        "tags": [
+          "inbox"
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "shopRef": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "x-planned-webhooks": {
+    "status": "NOT BUILT. Today programs poll GET /v1/partners/messages.",
+    "design": "POST to a URL the install registers, body = one message-envelope; header X-StitchHub-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256 of 't.' + body with the install's webhook secret>; receivers reject a timestamp more than 5 minutes old and a bad signature; retries with backoff; the poll stays the source of truth."
+  }
+}

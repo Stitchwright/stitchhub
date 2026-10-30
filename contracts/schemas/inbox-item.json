@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "inbox-item",
+  "description": "A file StitchFoundry sent to a shop, as GET /v1/inbox/list returns it.",
+  "type": "object",
+  "required": [
+    "id",
+    "fileName",
+    "size",
+    "sha256",
+    "meta",
+    "createdAt",
+    "expiresAt"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{8,40}$"
+    },
+    "fileName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "size": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10485760
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "meta": {
+      "type": "object",
+      "description": "Open bag; the hub keeps only job, customer, garment, placement, notes, due, quantity, stitches, colors, widthMm, heightMm, runMinutes, threads, design, format, hoop, fabric, trims, colorChanges, threadM, bobbinM."
+    },
+    "preview": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "size",
+        "sha256",
+        "type"
+      ],
+      "properties": {
+        "size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2097152
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "image/png",
+            "image/jpeg"
+          ]
+        }
+      }
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expiresAt": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "order.update",
+  "description": "A status change on a parts order, from either side; the repair side also sends the final `lines`.",
+  "type": "object",
+  "required": [
+    "id",
+    "status",
+    "at"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "type": "string",
+      "pattern": "^[A-Z_]+$"
+    },
+    "carrier": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "tracking": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "sellerNote": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "eventNote": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "lines": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/line"
+      }
+    },
+    "at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "$defs": {
+    "line": {
+      "type": "object",
+      "required": [
+        "itemKey",
+        "qty",
+        "unitCents"
+      ],
+      "properties": {
+        "itemKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "partNumber": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "qty": {
+          "type": "number",
+          "minimum": 0
+        },
+        "unitCents": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "condition": {
+          "type": "string",
+          "enum": [
+            "USED",
+            "REFURB"
+          ],
+          "description": "Sent only when not new: left out means NEW."
+        },
+        "origin": {
+          "type": "string",
+          "enum": [
+            "COMPATIBLE",
+            "PRINTED"
+          ],
+          "description": "Sent only when not genuine: left out means GENUINE."
+        }
+      }
+    }
+  }
+}
