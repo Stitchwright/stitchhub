@@ -1,7 +1,7 @@
 # StitchHub
 
 The community hub for **StitchBench** and **StitchShop**, the open-source programs for sewing machine repair shops and
-the sewing and quilt shops they work with ([SiteSentrix/StitchBench](https://github.com/SiteSentrix/StitchBench)).
+the sewing and quilt shops they work with ([Stitchwright/stitchbench](https://github.com/Stitchwright/stitchbench)).
 Anyone can run their own hub.
 
 Each shop's program keeps its customers, machines, tickets and prices on the shop's own PC or server. StitchHub is the
@@ -243,14 +243,18 @@ page's **Help & ideas** section (`src/feedback.mjs`, migration 034, `StitchBench
   Stripe subscription that was already running yourself: turning this on does not touch Stripe.
 - `GITHUB_ISSUES_TOKEN` (optional): a fine-grained GitHub token with *Issues: Read and write* on the four program repositories. With
   it, bug reports from the programs (`POST /v1/bug-report`, and `kind: "bug"` items from StitchBench and StitchShop) become GitHub
-  issues, and the Claude workflow can fix them: see `docs/bug-reports.md`. Without it bug reports are refused (503) or kept
-  on the admin page only.
-- `FEEDBACK_EMAIL` (optional): the owner's address. Each help, idea and rating is mailed at once (subject "Help: <shop> –
-  first 60 characters", everything in the body, a link to `/admin`), up to `FEEDBACK_EMAIL_PER_HOUR` (20; 0 for none) an
+  issues, and the Claude workflow can fix them: see `docs/bug-reports.md`. Without it a form's bug report is only emailed
+  (with `FEEDBACK_EMAIL`), or refused (503) when neither is set; StitchBench's are kept on the admin page.
+- `FEEDBACK_EMAIL` (optional): the owner's address. Each help, idea and rating is mailed at once (subject "[StitchBench]
+  Help request: <shop> – first 60 characters", or "Feature request:", "Rating:", "Bug report:", with StitchShop's name for
+  StitchShop; everything in the body, a link to `/admin`), up to `FEEDBACK_EMAIL_PER_HOUR` (20; 0 for none) an
   hour for the whole hub; past that items are only saved, and one email at most every hour says "N more feedback items
   are waiting on the admin page". Items from a pending install are never mailed one by one (they are counted in that
   email). New errors go in one digest email at most every hour ("3 new errors from 2 shops"; the waits are kept in
-  memory, so a restart sends the next one at once). Unset: no email, the admin page only. Mail goes through
+  memory, so a restart sends the next one at once). Bug reports and feature requests from the public form
+  (`/report-a-bug`, `POST /v1/bug-report`: StitchFoundry, LaserFoundry, StitchHub) are mailed too, subject
+  "[StitchFoundry] Bug report: <title>" or "Feature request: <title>", up to 30 an hour; feature requests are only mailed,
+  and refused (503) without this address. Unset: no email, the admin page only. Mail goes through
   `src/mail.mjs` (needs `SMTP_URL` and `MAIL_FROM`; `MAIL_DEV_LOG=true` prints it on a test hub).
 - Retention: items are kept (they are the owner's product feedback); a picture is deleted 90 days after the item is
   marked done. **Feedback is not part of the hub's export or a company's move**: a rebuilt hub starts with an empty Help

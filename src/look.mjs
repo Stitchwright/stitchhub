@@ -138,7 +138,7 @@ export function header(hubName, { active = "", nav = true } = {}) {
 }
 
 export function footer(hubName) {
-  return `<footer class="foot"><div class="in"><span class="stitch" aria-hidden="true"></span><span>${esc(hubName)}, the community hub for StitchBench and StitchShop</span><a href="/terms">Terms</a><a href="/privacy">Privacy</a><a href="/copyright">Copyright</a><a href="/report-a-bug">Report a bug</a><a href="${esc(SOURCE_URL)}">Source code</a></div></footer>`;
+  return `<footer class="foot"><div class="in"><span class="stitch" aria-hidden="true"></span><span>${esc(hubName)}, the community hub for StitchBench and StitchShop</span><a href="/terms">Terms</a><a href="/privacy">Privacy</a><a href="/copyright">Copyright</a><a href="/report-a-bug">Report a bug</a><a href="/report-a-bug?kind=feature">Suggest a feature</a><a href="${esc(SOURCE_URL)}">Source code</a></div></footer>`;
 }
 
 // A whole page: the shared look, then any page-specific CSS, then the header, the body and the footer.

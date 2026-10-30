@@ -27,6 +27,12 @@ export function mailProblem() {
   return null;
 }
 
+/** Where the owner's copies of help, ideas, bug reports and feature requests go (FEEDBACK_EMAIL), or null when unset. */
+export function ownerEmail() {
+  const to = (process.env.FEEDBACK_EMAIL ?? "").trim();
+  return /^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/.test(to) ? to : null;
+}
+
 /** RFC 2047 encoded word, so a subject or a name in any language travels as plain ASCII. */
 const encodedWord = (s) => `=?UTF-8?B?${Buffer.from(s, "utf8").toString("base64")}?=`;
 const clean = (s) => String(s ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").trim();

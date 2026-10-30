@@ -96,6 +96,7 @@ try {
   // ----- a hub with no token says so, and files nothing -----
   await startHub();
   await refused(await call("/v1/bug-report", { json: { program: "stitchfoundry", what: "It crashed" } }), 503, /aren't switched on/, "no token");
+  await refused(await call("/v1/bug-report", { json: { program: "stitchfoundry", kind: "feature", what: "Bigger icons" } }), 503, /Feature requests aren't switched on/, "no owner email");
   assert.equal(filed.length, 0);
   console.log("no token: ok");
 
@@ -119,9 +120,10 @@ try {
   assert.ok(i1.body.includes(`\n${fenceOpen[1]}\n`), "and it is closed with the same length");
   assert.ok(i1.body.indexOf("@everyone") > i1.body.indexOf(fenceOpen[0]) && i1.body.indexOf("@everyone") < i1.body.lastIndexOf(fenceOpen[1]), "the mention is inside the fence");
 
+  // "lightfoundry", LaserFoundry's first name, still files to LaserFoundry.
   const b = await ok(await call("/v1/bug-report", { json: { program: "lightfoundry", what: "Frame goes the wrong way" } }));
-  assert.equal(b.url, "https://github.com/Stitchwright/lightfoundry/issues/2");
-  assert.equal(filed[1].title, "[LightFoundry] Frame goes the wrong way", "the title comes from the text when none is sent");
+  assert.equal(b.url, "https://github.com/Stitchwright/laserfoundry/issues/2");
+  assert.equal(filed[1].title, "[LaserFoundry] Frame goes the wrong way", "the title comes from the text when none is sent");
 
   githubStatus = 500;
   await refused(await call("/v1/bug-report", { json: { program: "stitchfoundry", what: "x y z" } }), 502, /GitHub didn't take the report/, "GitHub failing");
@@ -144,11 +146,40 @@ try {
   const page = await call("/report-a-bug");
   assert.equal(page.status, 200);
   const html = await page.text();
-  assert.match(html, /<h1>Report a bug<\/h1>/);
+  assert.match(html, /<h1 id="h">Report a bug<\/h1>/);
+  assert.match(html, /value="feature"/, "a bug report or a feature request");
+  assert.match(html, /q\.get\("kind"\) === "feature"/, "?kind=feature opens it as a feature request");
   assert.match(html, /<select id="prog">/, "asks which program when none is given");
   assert.match(html, /location\.search/, "the page reads the program, version and system from the address");
   assert.match(html, /href="\/report-a-bug">Report a bug<\/a>/, "the footer links to the page");
+  assert.match(html, /href="\/report-a-bug\?kind=feature">Suggest a feature<\/a>/, "and to a feature request");
   console.log("bot trap, size and page: ok");
+
+  // ----- the owner's email: a copy of each bug report, and feature requests (emailed only) -----
+  hubLog = "";
+  await startHub({ GITHUB_ISSUES_TOKEN: "ghp_test_token", FEEDBACK_EMAIL: "owner@example.test" });
+  const filedBefore = filed.length;
+  const mb = await ok(await call("/v1/bug-report", { json: { program: "stitchfoundry", version: "0.4.0", title: "Trim\nlost", what: "The trim after the letters is gone", steps: "Type ABC" } }));
+  assert.ok(mb.url, "still filed on GitHub");
+  const mf = await ok(await call("/v1/bug-report", { json: { program: "laserfoundry", kind: "feature", title: "Engrave photos", what: "Let me engrave a photo in greys" } }));
+  assert.equal(mf.url, undefined, "a feature request isn't filed");
+  assert.equal(filed.length, filedBefore + 1);
+  const waitLog = async (re, what) => {
+    for (let i = 0; i < 50 && !re.test(hubLog); i++) await new Promise((r) => setTimeout(r, 100));
+    assert.match(hubLog, re, what);
+  };
+  await waitLog(/to owner@example\.test\nsubject: \[StitchFoundry\] Bug report: Trim lost\n/, "the bug report's email, program first");
+  await waitLog(/Filed on GitHub: https:\/\/github\.com\/Stitchwright\/StitchFoundry\/issues\/\d+/, "with the issue's address");
+  await waitLog(/subject: \[LaserFoundry\] Feature request: Engrave photos\n/, "the feature request's email");
+  assert.match(hubLog, /What they would like:\nLet me engrave a photo in greys/);
+  await refused(await call("/v1/bug-report", { json: { program: "stitchfoundry", kind: "praise", what: "x" } }), 400, /kind is bug or feature/, "an unknown kind");
+  // With no GitHub token, a bug report is still emailed.
+  hubLog = "";
+  await startHub({ FEEDBACK_EMAIL: "owner@example.test" });
+  assert.deepEqual(await ok(await call("/v1/bug-report", { json: { program: "stitchhub", what: "The parts page is blank" } })), { ok: true });
+  await waitLog(/subject: \[StitchHub\] Bug report: The parts page is blank\n[\s\S]*Not filed on GitHub/, "emailed, not filed");
+  console.log("owner email: ok");
+  await startHub({ GITHUB_ISSUES_TOKEN: "ghp_test_token" });
 
   // ----- StitchBench's route, under the install key -----
   const key = (await ok(await call("/v1/register", { json: { joinKey: JOIN, name: "Install X" } }))).installKey;

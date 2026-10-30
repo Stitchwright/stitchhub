@@ -4,20 +4,28 @@ How a bug typed into a program becomes a GitHub issue, and how an issue becomes 
 
 ## The path
 
-1. **In the program** a person presses *Report a bug* (StitchBench and StitchShop: Help; StitchFoundry and LightFoundry:
+1. **In the program** a person presses *Report a bug* (StitchBench and StitchShop: Help; StitchFoundry and LaserFoundry:
    Help menu; StitchHub: the *Report a bug* link in the footer, `/report-a-bug`).
 2. **StitchBench and StitchShop** send an item of `kind: "bug"` to `POST /v1/feedback` under their install key (it is
-   kept for the admin page, "Help & ideas", like the other kinds). **StitchFoundry, LightFoundry and the hub's own page**
+   kept for the admin page, "Help & ideas", like the other kinds). **StitchFoundry, LaserFoundry and the hub's own page**
    send `POST /v1/bug-report`, which needs no key.
 3. **The hub** files a GitHub issue with `GITHUB_ISSUES_TOKEN` (`src/bugreports.mjs`). The token never leaves the hub.
    The issue gets the labels `bug` and `from-app`.
+4. **The owner gets an email** of each one when `FEEDBACK_EMAIL` is set, subject `[StitchFoundry] Bug report: <title>`
+   (the program in brackets), with the issue's address. StitchBench and StitchShop's items are mailed the same way
+   (`[StitchShop] Bug report: ...`, see the README's `FEEDBACK_EMAIL`).
+
+**Feature requests** take the same road with `kind: "feature"` (the form's *A feature request* choice,
+`/report-a-bug?kind=feature`, the footer's *Suggest a feature*, StitchFoundry's Help › Suggest a Feature…). They are only
+emailed (`[LaserFoundry] Feature request: <title>`), never filed on GitHub, and refused (503) on a hub with no
+`FEEDBACK_EMAIL`. StitchBench and StitchShop send theirs as `kind: "idea"`.
 
 | Program | Issues go to |
 |---|---|
 | StitchBench, StitchShop | `Stitchwright/stitchbench` (private) |
 | StitchHub | `Stitchwright/stitchhub` |
 | StitchFoundry | `Stitchwright/StitchFoundry` (public) |
-| LightFoundry | `Stitchwright/lightfoundry` (public) |
+| LaserFoundry (`laserfoundry`; the old `lightfoundry` still works) | `Stitchwright/laserfoundry` (public) |
 
 ## What the owner sets up (once)
 
@@ -34,7 +42,7 @@ How a bug typed into a program becomes a GitHub issue, and how an issue becomes 
   its own formatting. The issue begins with a note that the text is untrusted.
 - The shop's name and reply address never go into an issue (the hub keeps them, and the admin page links to the issue).
   The two open-source programs and the hub's page are public: their form says so.
-- Limits: 5 reports an hour from one address and 100 an hour for the whole hub; a body over 16 KB is refused; a hidden form
+- Limits: 5 reports an hour from one address and 100 an hour for the whole hub, of which 30 are emailed; a body over 16 KB is refused; a hidden form
   field catches bots (answered "ok", nothing filed).
 
 ## Having Claude fix a bug
