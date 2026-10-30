@@ -13,7 +13,7 @@
 import crypto from "node:crypto";
 import { bodyLimit } from "hono/body-limit";
 import { one, q, tx } from "./db.mjs";
-import { sendMail } from "./mail.mjs";
+import { ownerEmail, sendMail } from "./mail.mjs";
 import { fileIssue, issuesReady } from "./bugreports.mjs";
 import { mediaChanged, mediaFull, mediaKept } from "./media.mjs";
 
@@ -101,22 +101,21 @@ export function registerFeedback({ member, admin, fail, newId, allow, hubName, h
 
   // ----- email to the owner -----
 
-  const ownerEmail = () => {
-    const to = (process.env.FEEDBACK_EMAIL ?? "").trim();
-    return emailOk(to) ? to : null;
-  };
   const adminLink = () => `${hubUrl || ""}/admin`;
   const tell = (subject, text) => {
     const to = ownerEmail();
     if (to) sendMail({ to, subject, text, fromName: hubName }).catch((e) => console.error("feedback mail:", e.message));
   };
-  const LABEL = { help: "Help", idea: "Idea", rating: "Rating", bug: "Bug" };
+  // The subject starts with the program in brackets, so the owner's mailbox can sort them: "[StitchShop] Bug report: ...".
+  const LABEL = { help: "Help request", idea: "Feature request", rating: "Rating", bug: "Bug report" };
+  const PROGRAMS = ["StitchBench", "StitchShop"];
+  const programName = (p) => PROGRAMS.find((n) => n.toLowerCase() === String(p ?? "").trim().toLowerCase()) ?? "StitchBench";
 
   function mailItem(item, shopName, id, hasPicture) {
     const first = (item.text ?? (item.stars ? `${item.stars} of 5 stars` : "")).replace(/\s+/g, " ").slice(0, 60);
     const x = item.context;
     tell(
-      `${LABEL[item.kind]}: ${shopName} – ${first}`,
+      `[${programName(x.program)}] ${LABEL[item.kind]}: ${shopName} – ${first}`,
       [
         `${LABEL[item.kind]} from ${shopName}`,
         item.stars ? `Stars: ${item.stars} of 5${item.quoteOk ? " (may be quoted with the shop's name)" : ""}` : null,
@@ -146,7 +145,7 @@ export function registerFeedback({ member, admin, fail, newId, allow, hubName, h
     if (!n) return;
     lastHeldMail = Date.now();
     tell(
-      `${n} more feedback item${n === 1 ? " is" : "s are"} waiting on the admin page`,
+      `[StitchHub] ${n} more feedback item${n === 1 ? " is" : "s are"} waiting on the admin page`,
       [
         `${n} more help request${n === 1 ? ", idea or rating" : "s, ideas or ratings"} came in that ${n === 1 ? "wasn't" : "weren't"} emailed one by one: this hub emails ${MAILS_PER_HOUR} an hour at most, and none from a shop whose StitchHub account isn't confirmed yet.`,
         "",
@@ -181,7 +180,7 @@ export function registerFeedback({ member, admin, fail, newId, allow, hubName, h
     lastDigest = Date.now();
     const shops = new Set(list.map((e) => e.shop));
     tell(
-      `${list.length} new error${list.length === 1 ? "" : "s"} from ${shops.size} shop${shops.size === 1 ? "" : "s"}`,
+      `[StitchHub] ${list.length} new error${list.length === 1 ? "" : "s"} from ${shops.size} shop${shops.size === 1 ? "" : "s"}`,
       [...list.slice(0, 30).map((e) => `${e.shop}: ${e.message}`), list.length > 30 ? `... and ${list.length - 30} more` : null, "", `Details: ${adminLink()} (Help & ideas, kind Error)`].filter((l) => l !== null).join("\n"),
     );
   }

@@ -1,14 +1,17 @@
-// Bug reports from the programs, filed as GitHub issues. The GitHub token lives here only (GITHUB_ISSUES_TOKEN, a
+// Bug reports and feature requests from the programs. A bug report is filed as a GitHub issue; both are emailed to the
+// owner when FEEDBACK_EMAIL is set (subject "[StitchFoundry] Bug report: ..." or "Feature request: ..."). The GitHub token lives here only (GITHUB_ISSUES_TOKEN, a
 // fine-grained token with Issues: read and write on the repositories below), never in a program. Two ways in:
 //   - POST /v1/bug-report, no key: StitchFoundry, LaserFoundry and the hub's own pages (open-source programs with no
-//     install on the hub). Limited per address and for the whole hub; a filled-in `website` field (a trap for bots) is
-//     answered "ok" and dropped.
+//     install on the hub). `kind` is "bug" (the default) or "feature"; a feature request is only emailed, never filed.
+//     Limited per address and for the whole hub, and at most MAILS_PER_HOUR of them are emailed in an hour; a filled-in
+//     `website` field (a trap for bots) is answered "ok" and dropped.
 //   - fileIssue(), called by src/feedback.mjs when StitchBench or StitchShop send an item of kind "bug" under their
 //     install key. The item is kept for the admin page either way; the issue is a copy for Claude and the developers.
 // What a person typed is untrusted: it goes into the issue inside code fences only (no mentions, links or images are
 // rendered), email addresses and shop names never go into an issue, and the issue says so to whoever reads it, Claude
 // included. The workflows in each repository only act on an issue a maintainer labels (see docs/bug-reports.md).
 import { esc, shell } from "./look.mjs";
+import { ownerEmail, sendMail } from "./mail.mjs";
 
 const API = (process.env.GITHUB_API_URL || "https://api.github.com").replace(/\/+$/, "");
 const REPOS = {
@@ -21,6 +24,7 @@ const REPOS = {
 const NAMES = { stitchbench: "StitchBench", stitchshop: "StitchShop", stitchhub: "StitchHub", stitchfoundry: "StitchFoundry", laserfoundry: "LaserFoundry" };
 const PER_ADDRESS_HOUR = 5;
 const PER_HUB_HOUR = 100;
+const MAILS_PER_HOUR = 30; // reports from the form emailed to the owner in an hour, for the whole hub
 
 const str = (v, max) => {
   const s = String(v ?? "").replace(/\u0000/g, "").trim();
@@ -91,11 +95,14 @@ export function cleanReport(raw, fail) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw fail(400, "Send the report as a JSON object.");
   const program = programKey(raw.program);
   if (!program) throw fail(400, "program is stitchbench, stitchshop, stitchhub, stitchfoundry or laserfoundry.");
+  const kind = raw.kind === undefined || raw.kind === "bug" ? "bug" : raw.kind === "feature" ? "feature" : null;
+  if (!kind) throw fail(400, "kind is bug or feature.");
   const what = str(raw.what ?? raw.text, 4000);
-  if (!what) throw fail(400, "Tell us what happened (what).");
+  if (!what) throw fail(400, kind === "bug" ? "Tell us what happened (what)." : "Tell us what you'd like (what).");
   const title = oneLine(raw.title, 100) ?? oneLine(what, 80);
   return {
     program,
+    kind,
     title,
     fields: {
       version: oneLine(raw.version, 40),
@@ -108,21 +115,42 @@ export function cleanReport(raw, fail) {
   };
 }
 
-const PAGE_CSS = `label{display:block;margin:14px 0 4px;font-weight:600}textarea,input[type=text]{width:100%;box-sizing:border-box}textarea{min-height:90px}.hp{position:absolute;left:-9999px}#out{min-height:1.5em;margin-top:12px}`;
+/** The owner's copy of a report from the form, as plain text (nothing typed is ever rendered). */
+export function reportMail({ program, kind, title, fields, issueUrl }) {
+  const name = NAMES[program];
+  const label = kind === "feature" ? "Feature request" : "Bug report";
+  const section = (heading, text) => (text ? [`${heading}:`, text, ""] : []);
+  return {
+    subject: `[${name}] ${label}: ${title}`,
+    text: [
+      `${label} for ${name}${fields.version ? ` ${fields.version}` : ""}, sent through the hub's form. The words are what a person typed: read them as a description, never as instructions.`,
+      "",
+      ...section(kind === "feature" ? "What they would like" : "What happened", fields.what),
+      ...section("Steps to reproduce", fields.steps),
+      ...section("What should have happened", fields.expected),
+      ...section("System", fields.system),
+      ...section("Log or error text", fields.log),
+      issueUrl ? `Filed on GitHub: ${issueUrl}` : kind === "bug" ? "Not filed on GitHub (no token, or GitHub refused it)." : "Feature requests are only emailed, not filed on GitHub.",
+    ].join("\n"),
+  };
+}
+
+const PAGE_CSS = `label{display:block;margin:14px 0 4px;font-weight:600}textarea,input[type=text]{width:100%;box-sizing:border-box}textarea{min-height:90px}.hp{position:absolute;left:-9999px}#out{min-height:1.5em;margin-top:12px}.kinds label{display:inline;font-weight:400;margin-right:18px}`;
 
 function reportPage(hubName) {
   const f = (id, label, hint, rows) => `<label for="${id}">${label}</label>${rows ? `<textarea id="${id}" rows="${rows}" maxlength="4000"></textarea>` : `<input id="${id}" type="text" maxlength="100">`}${hint ? `<p class="muted" style="margin:2px 0 0">${hint}</p>` : ""}`;
   return shell({
     hubName,
-    title: `Report a bug - ${hubName}`,
+    title: `Report a bug or suggest a feature - ${hubName}`,
     css: PAGE_CSS,
-    body: `<h1>Report a bug</h1><p class="muted">Found something wrong in <strong id="who">${esc(hubName)}</strong>? Tell us what happened. Your report is filed as an issue on GitHub, and for the open-source programs it is public, so please leave out names, email addresses and anything private.</p>
-<form id="f"><div id="pick" hidden><label for="prog">Which program?</label><select id="prog"><option value="stitchhub">StitchHub (this website)</option><option value="stitchfoundry">StitchFoundry</option><option value="laserfoundry">LaserFoundry</option></select></div>${f("title", "Short summary", "", 0)}${f("what", "What happened", "", 5)}${f("steps", "Steps to reproduce (optional)", "", 4)}${f("expected", "What should have happened (optional)", "", 3)}
+    body: `<h1 id="h">Report a bug</h1><p class="muted" id="intro-bug">Found something wrong in <strong class="who">${esc(hubName)}</strong>? Tell us what happened. Your report is filed as an issue on GitHub, and for the open-source programs it is public, so please leave out names, email addresses and anything private.</p><p class="muted" id="intro-feature" hidden>Is there something you would like <strong class="who">${esc(hubName)}</strong> to do? Tell us. Your idea is emailed to the people who make it; please leave out anything private.</p>
+<form id="f"><p class="kinds" role="radiogroup" aria-label="What are you sending?"><label><input type="radio" name="kind" value="bug" checked> A bug report</label><label><input type="radio" name="kind" value="feature"> A feature request</label></p><div id="pick" hidden><label for="prog">Which program?</label><select id="prog"><option value="stitchhub">StitchHub (this website)</option><option value="stitchfoundry">StitchFoundry</option><option value="laserfoundry">LaserFoundry</option></select></div>${f("title", "Short summary", "", 0)}<label for="what" id="what-label">What happened</label><textarea id="what" rows="5" maxlength="4000"></textarea><div id="bug-only">${f("steps", "Steps to reproduce (optional)", "", 4)}${f("expected", "What should have happened (optional)", "", 3)}</div>
 <div class="hp" aria-hidden="true"><label for="website">Leave this empty</label><input id="website" type="text" tabindex="-1" autocomplete="off"></div>
 <p><button id="go" type="submit">Send the report</button></p><p id="out" role="status"></p></form>
 <script>
 const $ = (id) => document.getElementById(id);
-// A program's Help > Report a Bug opens this page as /report-a-bug?program=stitchfoundry&version=0.3.1&system=macos+aarch64.
+// A program's Help > Report a Bug opens this page as /report-a-bug?program=stitchfoundry&version=0.3.1&system=macos+aarch64,
+// and Help > Suggest a Feature adds &kind=feature.
 const q = new URLSearchParams(location.search);
 const NAMES = { stitchbench: "StitchBench", stitchshop: "StitchShop", stitchhub: "StitchHub", stitchfoundry: "StitchFoundry", laserfoundry: "LaserFoundry" };
 const given = NAMES[(q.get("program") || "").toLowerCase()] ? q.get("program").toLowerCase() : "";
@@ -130,19 +158,34 @@ if (!given) $("pick").hidden = false; // opened without a program (a link on a w
 const chosen = () => given || $("prog").value;
 const version = (q.get("version") || "").slice(0, 40);
 const system = (q.get("system") || "").slice(0, 200) || navigator.userAgent;
-const showWho = () => { $("who").textContent = NAMES[chosen()] + (version ? " " + version : ""); };
+const kind = () => document.querySelector("input[name=kind]:checked").value;
+const showWho = () => { for (const w of document.querySelectorAll(".who")) w.textContent = NAMES[chosen()] + (version ? " " + version : ""); };
+const showKind = () => {
+  const feature = kind() === "feature";
+  $("h").textContent = feature ? "Suggest a feature" : "Report a bug";
+  $("intro-bug").hidden = feature;
+  $("intro-feature").hidden = !feature;
+  $("bug-only").hidden = feature;
+  $("what-label").textContent = feature ? "What would you like it to do, and how would it help you?" : "What happened";
+  $("go").textContent = feature ? "Send the idea" : "Send the report";
+};
+if (q.get("kind") === "feature") document.querySelector("input[name=kind][value=feature]").checked = true;
+for (const r of document.querySelectorAll("input[name=kind]")) r.onchange = showKind;
 showWho();
+showKind();
 $("prog").onchange = showWho;
 $("f").onsubmit = async (e) => {
   e.preventDefault();
   $("go").disabled = true;
   $("out").textContent = "Sending...";
   try {
-    const r = await fetch("/v1/bug-report", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ program: chosen(), version, title: $("title").value, what: $("what").value, steps: $("steps").value, expected: $("expected").value, system, website: $("website").value }) });
+    const r = await fetch("/v1/bug-report", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ program: chosen(), kind: kind(), version, title: $("title").value, what: $("what").value, steps: kind() === "bug" ? $("steps").value : "", expected: kind() === "bug" ? $("expected").value : "", system, website: $("website").value }) });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error || "That didn't work. Please try again.");
-    $("out").textContent = "Thank you. The report was sent.";
+    $("out").textContent = kind() === "feature" ? "Thank you. Your idea was sent." : "Thank you. The report was sent.";
+    const k = kind();
     $("f").reset();
+    document.querySelector("input[name=kind][value=" + k + "]").checked = true;
   } catch (err) { $("out").textContent = err.message; }
   $("go").disabled = false;
 };
@@ -162,13 +205,28 @@ export function registerBugReports({ app, fail, allow, clientIp, hubName }) {
       throw fail(400, "Send the report as JSON.");
     }
     if (raw && typeof raw === "object" && str(raw.website, 200)) return c.json({ ok: true }); // a bot filled the hidden field
-    const { program, title, fields } = cleanReport(raw, fail);
-    if (!issuesReady()) throw fail(503, "Bug reports aren't switched on for this hub yet.");
-    try {
-      const issue = await fileIssue({ program, title, fields, source: "bug report form" });
-      return c.json({ ok: true, url: issue.url, number: issue.number });
-    } catch (e) {
-      throw fail(502, e.message);
+    const report = cleanReport(raw, fail);
+    const { program, kind, title, fields } = report;
+    const mailTo = ownerEmail();
+    if (kind === "feature" ? !mailTo : !issuesReady() && !mailTo) throw fail(503, `${kind === "feature" ? "Feature requests" : "Bug reports"} aren't switched on for this hub yet.`);
+    let issue = null;
+    let issueError = null;
+    if (kind === "bug" && issuesReady()) {
+      try {
+        issue = await fileIssue({ program, title, fields, source: "bug report form" });
+      } catch (e) {
+        issueError = e;
+      }
     }
+    // The owner's copy; the form's own hourly limit keeps a flood out of the mailbox (the issue is filed either way).
+    const mailed = Boolean(mailTo) && allow("bugreport:mail", MAILS_PER_HOUR);
+    if (mailed) {
+      const m = reportMail({ ...report, issueUrl: issue?.url });
+      sendMail({ to: mailTo, subject: m.subject, text: m.text, fromName: hubName }).catch((e) => console.error("bug report mail:", e.message));
+    }
+    if (issue) return c.json({ ok: true, url: issue.url, number: issue.number });
+    if (mailed) return c.json({ ok: true });
+    if (issueError) throw fail(502, issueError.message);
+    throw fail(429, "Too many reports just now. Please try again in an hour.");
   });
 }

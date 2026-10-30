@@ -225,15 +225,15 @@ try {
   console.log("picture sweep: ok");
 
   // ----- the owner's email: each help, idea and rating at once; errors in a digest -----
-  await waitFor(() => hubLog.includes("subject: Help: Thimble Quilts – The invoice page <b>won't</b> open"), "the help email");
-  await waitFor(() => hubLog.includes("subject: Idea: Thimble Quilts – Print the labels bigger"), "the idea email");
-  await waitFor(() => hubLog.includes("subject: Rating: Thimble Quilts – 4 of 5 stars"), "the rating email");
-  await waitFor(() => /subject: \d+ new errors? from \d+ shops?/.test(hubLog), "the errors digest");
+  await waitFor(() => hubLog.includes("subject: [StitchBench] Help request: Thimble Quilts – The invoice page <b>won't</b> open"), "the help email");
+  await waitFor(() => hubLog.includes("subject: [StitchBench] Feature request: Thimble Quilts – Print the labels bigger"), "the idea email");
+  await waitFor(() => hubLog.includes("subject: [StitchBench] Rating: Thimble Quilts – 4 of 5 stars"), "the rating email");
+  await waitFor(() => /subject: \[StitchHub\] \d+ new errors? from \d+ shops?/.test(hubLog), "the errors digest");
   assert.ok(hubLog.includes("to owner@example.test"));
   assert.ok(hubLog.includes("https://hub.example.test/admin"), "a link to the admin page");
-  assert.equal((hubLog.match(/subject: \d+ new errors? from/g) ?? []).length, 1, "one digest, not one per error");
+  assert.equal((hubLog.match(/subject: \[StitchHub\] \d+ new errors? from/g) ?? []).length, 1, "one digest, not one per error");
   assert.ok(!hubLog.includes("from a pending install") && !hubLog.includes("pending, with a picture"), "a pending install's items aren't mailed one by one");
-  assert.ok(hubLog.includes("subject: Idea: Install Partner – from a partner install"), "a partner-only install's are");
+  assert.ok(hubLog.includes("subject: [StitchBench] Feature request: Install Partner – from a partner install"), "a partner-only install's are");
   console.log("email: ok");
 
   // ----- limits -----
@@ -351,16 +351,16 @@ async function capped() {
   const P = await register("Install Capped Pending");
   await db.query(`UPDATE installs SET scope = 'pending' WHERE name = 'Install Capped Pending'`);
   await ok(await sendJson(P, "p1", { kind: "help", text: "capped, from a pending install", context: ctx() }));
-  await waitFor(() => hubLog.includes("subject: 1 more feedback item is waiting on the admin page"), "the email that items wait");
+  await waitFor(() => hubLog.includes("subject: [StitchHub] 1 more feedback item is waiting on the admin page"), "the email that items wait");
   assert.ok(hubLog.includes("this hub emails 2 an hour at most") && hubLog.includes("Read them on the admin page: https://hub.example.test/admin (Help & ideas)"));
   for (const [key, shop, text] of [[A, "a1", "capped one"], [B, "b1", "capped two"], [A, "a2", "capped three"], [B, "b2", "capped four"]]) {
     await ok(await sendJson(key, shop, { kind: "help", text, context: ctx() }));
   }
-  await waitFor(() => (hubLog.match(/subject: Help: /g) ?? []).length === 2, "two items mailed");
+  await waitFor(() => (hubLog.match(/subject: \[StitchBench\] Help request: /g) ?? []).length === 2, "two items mailed");
   await new Promise((r) => setTimeout(r, 500));
   assert.deepEqual(
     hubLog.match(/subject: .*/g),
-    ["subject: 1 more feedback item is waiting on the admin page", "subject: Help: Install Capped A – capped one", "subject: Help: Install Capped B – capped two"],
+    ["subject: [StitchHub] 1 more feedback item is waiting on the admin page", "subject: [StitchBench] Help request: Install Capped A – capped one", "subject: [StitchBench] Help request: Install Capped B – capped two"],
     "two mailed one by one for the whole hub, then nothing more within the hour",
   );
   assert.equal((await list("kind=help&limit=500")).items.filter((i) => /^capped/.test(i.text)).length, 5, "every item is saved");
