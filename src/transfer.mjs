@@ -79,6 +79,11 @@ export const TABLES = [
     conflict: ["shop_id", "name"],
   },
   // The StitchFoundry inbox (src/inbox.mjs): files waiting for a shop to take them (the bytes stay in the bucket, which a moved hub keeps).
+  // Hub sync v2 (src/sync.mjs): what each program says it understands, the service keys (hashed) and the shops' opt-ins. The
+  // queue itself (sync_messages, sync_deliveries) is in flight and is not moved.
+  { t: "sync_caps", table: "sync_caps", cols: ["principal", "app", "version", "types", "hello_at"], key: "principal", json: ["types"] },
+  { t: "service_key", table: "service_keys", cols: ["id", "name", "key_hash", "scopes", "public_key", "created_at", "revoked_at", "last_used_at"], json: ["scopes"] },
+  { t: "shop_service_optin", table: "shop_service_optins", cols: ["shop_id", "service", "enabled", "max_open", "per_minute", "created_at", "updated_at"], key: "shop_id || '/' || service", conflict: ["shop_id", "service"] },
   {
     t: "inbox_item",
     table: "inbox_items",
