@@ -1,6 +1,6 @@
 # Hub sync design: versions, handshake and a queue for offline shops (#19, Phase 2)
 
-**Status:** 2026-10-31. **A design for the owner's approval. Nothing is built.** Read [`hub-sync-audit.md`](hub-sync-audit.md) first (how it works today). Input: MakerFoundry's proposal, `docs/shop-orders-contract.md` on the branch `issue-2-ordering-audit` of SiteSentrix/makerfoundry (PR #44). #34 (MakerFoundry orders) is built on top of this and waits for it.
+**Status:** 2026-10-31. **Approved by the owner on 2026-10-31 (30 days after the ack for message bodies).** Steps A to C are built in the transport PR (see "As built" at the end); the order messages of #34 are built on top. Read [`hub-sync-audit.md`](hub-sync-audit.md) first (how it works today). Input: MakerFoundry's proposal, `docs/shop-orders-contract.md` on the branch `issue-2-ordering-audit` of SiteSentrix/makerfoundry (PR #44). #34 (MakerFoundry orders) is built on top of this and waits for it.
 
 ## The decisions in one minute
 1. **Adopt MakerFoundry's proposal almost whole**: the envelope (sender-made id, `type`, `version`, per-conversation `seq`, `expires_at`), `GET /v2/hello`, `POST /v2/messages`, `GET /v2/messages` with `POST .../ack`, `message.expired` back to the sender. It is the right shape and it matches what partner messages already do (sender ids, dedupe, signatures).
@@ -130,3 +130,13 @@ A shop that reconnects after 3 days offline and drains in order; an old client r
 5. **Caps**: 1,000 messages and 64 MB per recipient queue; 200 open orders per shop (from #34); OK?
 6. **Scope**: put every message family on `/v2` (this design), or only the new ones and leave partner messages on `/v1` for now?
 7. **The shared client module and contract fixtures**: in `stitch-contracts` (needs the new repo) or in `contracts/` for now?
+
+## As built (transport PR, 2026-10-31)
+What is in the code now (`src/sync.mjs`, `src/sync-types.mjs`, migration `040_sync.sql`, `test/sync.mjs`), and where it differs from the text above:
+- `GET /v2/hello` is public and only reads; **`POST /v2/hello`** records what the caller understands (a GET with a body was awkward). Held messages are released by the POST.
+- Service keys start `svk_` (not `mfk_`: they are not only MakerFoundry's), are hashed, carry scopes `orders:send` and `shops:list`, and can be revoked; the admin sets an optional Ed25519 public key. The signature itself is checked with the order messages (next PR).
+- Addresses: `shop:<hub shop id>`, `service:<name>`, `hub`.
+- `GET /v2/messages` hands a conversation's messages out in `seq` order: `seq` n+1 is not released while n is still queued or held for the same recipient. `wait=` (up to 25 s) makes the poll wait for news.
+- Expiry: a sender may ask for a shorter life than the type's maximum (7 days for an order, 14 for proofs and status, 30 for notices). The notice `message.expired` has a reason `expired` or `recipient_too_old`.
+- **Not done yet:** `downgrade` bodies (a lower-version copy for an old recipient: today the message is held), the installs health dashboard and alerts (Step D), key rotation for install keys, and moving the partner messages onto `/v2` (`/v1/partners/messages` is untouched). The queue tables are in flight data and are not part of a hub export.
+- Settings, names only: `SYNC_MIN_CLIENT`, `SYNC_DEPRECATED`, `SYNC_UPDATE_URL`, `SYNC_QUEUE_MESSAGES` (1000), `SYNC_QUEUE_MB` (64), `SYNC_BODY_KB` (256), `SYNC_KEEP_DAYS` (30), `SYNC_SKEW_MIN` (10), `SYNC_SWEEP_MS` (60000).
