@@ -584,7 +584,9 @@ A version handshake and a durable, acknowledged queue between programs and servi
 | `GET /v2/messages/status?ids` | the sender | `queued`, `held_capability`, `delivered`, `acked` or `expired` for each |
 | `POST/GET/DELETE /v1/admin/service-keys`, `GET /v1/admin/sync/summary` | the admin | issue (shown once), list, revoke; the queue by state and recipient |
 
-A message nobody acknowledges expires (the sender gets `message.expired`); the body is erased 30 days after the ack and the audit stub (no body) is deleted after a year. Settings (names only): `SYNC_MIN_CLIENT`, `SYNC_DEPRECATED`, `SYNC_UPDATE_URL`, `SYNC_QUEUE_MESSAGES`, `SYNC_QUEUE_MB`, `SYNC_BODY_KB`, `SYNC_KEEP_DAYS`, `SYNC_SKEW_MIN`, `SYNC_SWEEP_MS`. Checked by `npm run test:sync`.
+Orders from MakerFoundry ride the same queue (`order.placed` signed by the service, status, proofs, cancels; bodies are checked, customer email and phone are never routed, a shipping address only goes with a shipped order). Files do not travel in messages: `POST /v2/files/put`, `/done` and `/get` hand out short-lived signed addresses on the backup bucket, checked by size and SHA-256 (art 10 MB, PNG/JPEG mock-ups 2 MB). A shop takes no orders until it opts in, and has a cap of open orders.
+
+A message nobody acknowledges expires (the sender gets `message.expired`); the body is erased 30 days after the ack and the audit stub (no body) is deleted after a year. Settings (names only): `SYNC_MIN_CLIENT`, `SYNC_DEPRECATED`, `SYNC_UPDATE_URL`, `SYNC_QUEUE_MESSAGES`, `SYNC_QUEUE_MB`, `SYNC_BODY_KB`, `SYNC_KEEP_DAYS`, `SYNC_SKEW_MIN`, `SYNC_SWEEP_MS`, `SYNC_FILE_DAYS`. Checked by `npm run test:sync` and `npm run test:sync-orders`.
 
 ## StitchFoundry inbox
 

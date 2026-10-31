@@ -1,0 +1,51 @@
+{
+  "fulfilment": "ship",
+  "lines": [
+    {
+      "sku": "TEE-01",
+      "colour": "Navy",
+      "sizes": {
+        "M": 6,
+        "L": 6
+      },
+      "decorations": [
+        {
+          "method": "embroidery",
+          "placement": "left chest",
+          "art": {
+            "file": "logo.dst",
+            "size": 48210,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        }
+      ]
+    }
+  ],
+  "preview": {
+    "size": 90112,
+    "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "type": "image/png"
+  },
+  "customer": {
+    "name": "Pat Lee",
+    "ship_to": {
+      "name": "Pat Lee",
+      "line1": "12 Main St",
+      "city": "Providence",
+      "region": "RI",
+      "postal": "02903",
+      "country": "US"
+    }
+  },
+  "totals": {
+    "goods_cents": 9000,
+    "setup_cents": 2500,
+    "shipping_cents": 800,
+    "tax_cents": 0,
+    "paid_cents": 12300,
+    "fee_cents": 1150,
+    "card_fee_cents": 657,
+    "shop_gets_cents": 10493
+  },
+  "note": "Please match the navy of the school shirts."
+}

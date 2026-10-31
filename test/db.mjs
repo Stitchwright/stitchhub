@@ -23,9 +23,9 @@ for (const spec of TABLES) {
 const carried = new Set(TABLES.map((s) => s.table));
 // Left out of the export on purpose: the migration list, and feedback (README: "Feedback is not part of the hub's export
 // or a company's move"). releases is here because it was not in the export when this list was made: decide if it should be.
-// sync_messages and sync_deliveries are the v2 queue (src/sync.mjs): in flight, and short-lived (a message is kept for delivery for a
+// sync_messages, sync_deliveries, sync_orders and sync_files are the v2 queue (src/sync.mjs): in flight, and short-lived (a message is kept for delivery for a
 // week or two). A hub is moved with the queue drained; the delivery numbers are the recipients' cursors and do not carry over.
-const NOT_EXPORTED = new Set(["hub_migrations", "feedback", "releases", "sync_messages", "sync_deliveries"]);
+const NOT_EXPORTED = new Set(["hub_migrations", "feedback", "releases", "sync_messages", "sync_deliveries", "sync_orders", "sync_files"]);
 assert.deepEqual([...new Set(cols.map((r) => r.t))].filter((t) => !carried.has(t) && !NOT_EXPORTED.has(t)), [], "tables the export leaves out");
 console.log("export columns: ok");
 

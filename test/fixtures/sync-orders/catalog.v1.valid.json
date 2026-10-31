@@ -1,0 +1,47 @@
+{
+  "shop": {
+    "name": "Main Street Threadworks",
+    "town": "Providence",
+    "ships": true,
+    "pickup": true
+  },
+  "products": [
+    {
+      "sku": "TEE-01",
+      "name": "Cotton tee",
+      "kind": "shirt",
+      "colours": [
+        "Navy",
+        "White"
+      ],
+      "sizes": [
+        "S",
+        "M",
+        "L"
+      ],
+      "methods": [
+        {
+          "method": "embroidery",
+          "placements": [
+            "left chest"
+          ],
+          "price_breaks": [
+            {
+              "min": 1,
+              "cents": 900
+            },
+            {
+              "min": 12,
+              "cents": 750
+            }
+          ],
+          "setup_cents": 2500
+        }
+      ]
+    }
+  ],
+  "shipping": {
+    "flat_cents": 800
+  },
+  "currency": "usd"
+}

@@ -21,6 +21,8 @@ import crypto from "node:crypto";
 import { bodyLimit } from "hono/body-limit";
 import { one, q, tx } from "./db.mjs";
 import { TYPES, hubTypes } from "./sync-types.mjs";
+import { Bad, MAX_ART_BYTES, MAX_PREVIEW_BYTES, SIGNED_TYPES, canonical, fileRefs, validateBody, verifySignature } from "./sync-orders.mjs";
+import { deleteObject, headObject, presign, s3Config } from "./s3.mjs";
 
 const HUB_VERSION = "2.0.0";
 const posNum = (v, fallback) => (Number(v) > 0 ? Number(v) : fallback);
@@ -30,6 +32,8 @@ export const bodyBytes = () => Math.round(posNum(process.env.SYNC_BODY_KB, 256) 
 export const keepDays = () => posNum(process.env.SYNC_KEEP_DAYS, 30);
 const skewMs = () => posNum(process.env.SYNC_SKEW_MIN, 10) * 60_000;
 const STUB_DAYS = 365;
+const fileDays = () => posNum(process.env.SYNC_FILE_DAYS, 30);
+const ORDER_TYPES = new Set(["order.status", "proof.sent", "proof.answer", "order.cancel"]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CLIENT = /^([a-z0-9-]{1,30})\/(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]{1,30})?)$/;
 const sha = (s) => crypto.createHash("sha256").update(s).digest("hex");
@@ -152,11 +156,13 @@ export function registerSync({ app, admin, installByKey, fail, newId, allow, cli
     min_client: jsonEnv("SYNC_MIN_CLIENT"),
     types: hubTypes(),
     deprecated: Object.entries(jsonEnv("SYNC_DEPRECATED")).map(([route, sunset]) => ({ route, sunset })),
-    limits: { body_bytes: bodyBytes(), queue_messages: queueMessages(), queue_bytes: queueBytes() },
+    limits: { body_bytes: bodyBytes(), queue_messages: queueMessages(), queue_bytes: queueBytes(), art_bytes: MAX_ART_BYTES, preview_bytes: MAX_PREVIEW_BYTES },
   });
+  /** The registered signing keys of the services, so a shop can check a signed message was not made up by the hub. */
+  const serviceKeys = async () => Object.fromEntries((await q(`SELECT name, public_key FROM service_keys WHERE public_key IS NOT NULL AND revoked_at IS NULL`)).rows.map((r) => [`service:${r.name}`, r.public_key]));
   app.get("/v2/hello", guarded(async (c) => {
     checkClient(c, { required: false });
-    return c.json(hello());
+    return c.json({ ...hello(), keys: await serviceKeys() });
   }));
   app.post("/v2/hello", bodyLimit({ maxSize: 16 * 1024, onError: (c) => c.json({ error: "Too large." }, 413) }), guarded(async (c) => {
     const body = await c.req.json().catch(() => ({}));
@@ -179,7 +185,7 @@ export function registerSync({ app, admin, installByKey, fail, newId, allow, cli
       [p.caps, app_, version, JSON.stringify(types)],
     );
     const released = await releaseHeld(p);
-    return c.json({ ...hello(), released });
+    return c.json({ ...hello(), keys: await serviceKeys(), released });
   }));
   /** A hello may teach the hub that a recipient now understands what was held for it: those go back in the queue. */
   async function releaseHeld(p) {
@@ -243,20 +249,26 @@ export function registerSync({ app, admin, installByKey, fail, newId, allow, cli
 
   // ----- sending -----
   /** Who may send what to whom. Returns the opt-in row when one decides it. */
-  async function mayRoute(client, sender, recipient, type) {
+  async function mayRoute(client, sender, recipient, type, conversation) {
     const spec = TYPES[type];
     const sk = kindOf(sender);
     const rk = kindOf(recipient);
     if (!spec || (spec.from !== "any" && spec.from !== sk) || (spec.from === "any" && sk === "hub")) throw new Refusal(403, "not_allowed", `A ${sk} may not send ${type}.`);
     if (spec.to !== "any" && spec.to !== rk) throw new Refusal(403, "not_allowed", `${type} is not sent to a ${rk}.`);
     if (sk === "hub") return null;
+    const [shopId, service] = sk === "service" ? [recipient.slice(5), sender.slice(8)] : [sender.slice(5), recipient.slice(8)];
+    const order = ORDER_TYPES.has(type) ? (await client.query(`SELECT state, why_closed FROM sync_orders WHERE service = $1 AND conversation = $2 AND shop_id = $3`, [service, conversation, shopId])).rows[0] : null;
+    // A finished order still takes late messages (a delayed "collected", an answer that crossed a cancel), but one that lapsed was never
+    // handed to the shop, so nothing can be said about it.
+    if (ORDER_TYPES.has(type) && (!order || order.why_closed === "expired")) throw new Refusal(409, "no_such_order", "There is no order with that reference between this shop and this service.");
     if (sk === "service" && rk === "shop") {
-      const o = await client.query(`SELECT enabled, max_open, per_minute FROM shop_service_optins WHERE shop_id = $1 AND service = $2`, [recipient.slice(5), sender.slice(8)]);
-      if (!o.rows[0]?.enabled) throw new Refusal(403, "not_opted_in", "That shop doesn't take orders from this service.");
-      return o.rows[0];
+      const o = await client.query(`SELECT enabled, max_open, per_minute FROM shop_service_optins WHERE shop_id = $1 AND service = $2`, [shopId, service]);
+      // A shop that has stopped taking orders still hears about the orders it already has (a cancel, an answer to a proof).
+      if (!o.rows[0]?.enabled && !order) throw new Refusal(403, "not_opted_in", "That shop doesn't take orders from this service.");
+      return o.rows[0] ?? null;
     }
     if (sk === "shop" && rk === "service") {
-      const o = await client.query(`SELECT 1 FROM shop_service_optins WHERE shop_id = $1 AND service = $2`, [sender.slice(5), recipient.slice(8)]);
+      const o = await client.query(`SELECT 1 FROM shop_service_optins WHERE shop_id = $1 AND service = $2`, [shopId, service]);
       if (!o.rows[0]) throw new Refusal(403, "not_opted_in", "This shop hasn't opted in to that service.");
       return null;
     }
@@ -299,13 +311,30 @@ export function registerSync({ app, admin, installByKey, fail, newId, allow, cli
     if (p.kind === "program") needShop(p);
     if (p.kind === "service") needScope(p, "orders:send");
     const m = validateEnvelope(env, p);
+    let checked;
+    try {
+      checked = validateBody(m.type, env.version, env.body, { from: kindOf(p.address) });
+    } catch (e) {
+      if (e instanceof Bad) throw new Refusal(400, e.code, e.message);
+      throw e;
+    }
+    if (SIGNED_TYPES.has(m.type)) {
+      if (p.kind !== "service" || !p.publicKey) throw new Refusal(403, "unsigned", "This type has to be signed with the service's registered key; the hub admin sets the key first.");
+      // What is signed is what is delivered, so nothing may be cleaned or left out on the way.
+      if (checked.dropped.length || canonical(checked.body) !== canonical(env.body)) {
+        throw new Refusal(400, "not_normalized", `A signed message has to be sent exactly as it is delivered (${checked.dropped.length ? `these fields aren't part of the version: ${checked.dropped.join(", ")}` : "its text has extra spaces or control characters"}).`);
+      }
+      if (!verifySignature({ ...env, from: p.address }, p.publicKey)) throw new Refusal(403, "bad_signature", "The signature doesn't match the message and the service's registered key.");
+    }
+    m.json = JSON.stringify(checked.body);
+    m.bytes = Buffer.byteLength(m.json);
     const out = await tx(async (cl) => {
       await cl.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`sync:${m.to}`]);
       const recipientOk = m.to.startsWith("shop:")
         ? await cl.query(`SELECT s.id FROM shops s JOIN installs i ON i.id = s.install_id WHERE s.id = $1 AND NOT i.blocked`, [m.to.slice(5)])
         : await cl.query(`SELECT id FROM service_keys WHERE name = $1 AND revoked_at IS NULL`, [m.to.slice(8)]);
       if (!recipientOk.rows[0]) throw new Refusal(404, "unknown_recipient", "The hub doesn't know that recipient.");
-      const optin = await mayRoute(cl, p.address, m.to, m.type);
+      const optin = await mayRoute(cl, p.address, m.to, m.type, env.conversation);
       const sha256 = sha(m.json);
       const had = (await cl.query(`SELECT body_sha256, type FROM sync_messages WHERE sender = $1 AND id = $2`, [p.address, env.id])).rows[0];
       if (had) {
@@ -323,6 +352,19 @@ export function registerSync({ app, admin, installByKey, fail, newId, allow, cli
       if (recent >= perMinute) throw new Refusal(429, "rate_limit", `At most ${perMinute} messages a minute to that recipient.`);
       const taken = (await cl.query(`SELECT 1 FROM sync_messages WHERE sender = $1 AND conversation = $2 AND seq = $3`, [p.address, env.conversation, env.seq])).rows[0];
       if (taken) throw new Refusal(409, "seq_taken", "That seq is already used in this conversation by another message.");
+      for (const ref of fileRefs(m.type, checked.body)) {
+        const f = (await cl.query(`SELECT uploader, audience, kind, size, state FROM sync_files WHERE conversation = $1 AND sha256 = $2`, [env.conversation, ref.sha256])).rows[0];
+        if (!f || f.uploader !== p.address || f.audience !== m.to || f.state !== "ready" || f.size !== ref.size || f.kind !== ref.kind) {
+          throw new Refusal(400, "file_not_ready", `The file ${ref.sha256.slice(0, 12)}... has to be uploaded (POST /v2/files/put, then /v2/files/done) for this conversation, with the size you name, before a message points at it.`);
+        }
+      }
+      if (m.type === "order.placed") {
+        const shopId = m.to.slice(5);
+        const open = (await cl.query(`SELECT count(*)::int AS n FROM sync_orders WHERE shop_id = $1 AND service = $2 AND state = 'open'`, [shopId, p.name])).rows[0].n;
+        if (open >= (optin?.max_open ?? 200)) throw new Refusal(429, "shop_order_cap", `That shop already has ${open} open orders from this service and takes no more until some are finished.`);
+        const made = await cl.query(`INSERT INTO sync_orders (service, conversation, shop_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING RETURNING 1`, [p.name, env.conversation, shopId]);
+        if (!made.rowCount) throw new Refusal(409, "order_exists", "That order reference was already placed.");
+      }
       await cl.query(
         `INSERT INTO sync_messages (sender, id, type, version, conversation, seq, created_at, expires_at, body, body_sha256, body_bytes, sig)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
@@ -331,9 +373,14 @@ export function registerSync({ app, admin, installByKey, fail, newId, allow, cli
       const caps = await capsOf(m.to);
       const state = understands(caps, m.type, env.version) ? "queued" : "held_capability";
       await cl.query(`INSERT INTO sync_deliveries (sender, message_id, recipient, state) VALUES ($1, $2, $3, $4)`, [p.address, env.id, m.to, state]);
-      return { duplicate: false, state };
+      // An order is finished when it ships or is collected, or either side cancels it.
+      const finished = m.type === "order.cancel" ? "cancelled" : m.type === "order.status" && ["shipped", "collected"].includes(checked.body.status) ? checked.body.status : null;
+      if (finished) {
+        await cl.query(`UPDATE sync_orders SET state = 'closed', why_closed = $3, closed_at = now() WHERE service = $1 AND conversation = $2 AND state = 'open'`, [p.kind === "service" ? p.name : m.to.slice(8), env.conversation, finished]);
+      }
+      return { duplicate: false, state, dropped: checked.dropped };
     });
-    return c.json({ queued: true, duplicate: out.duplicate, state: out.state }, 202);
+    return c.json({ queued: true, duplicate: out.duplicate, state: out.state, ...(out.dropped?.length ? { dropped: out.dropped } : {}) }, 202);
   }));
 
   // ----- receiving -----
@@ -392,6 +439,117 @@ export function registerSync({ app, admin, installByKey, fail, newId, allow, cli
     return c.json({ messages: rows.map((r) => ({ id: r.message_id, to: r.recipient, state: r.state, delivered_at: r.delivered_at, acked_at: r.acked_at, expired_at: r.expired_at })) });
   }));
 
+  // ----- files by short-lived signed addresses -----
+  // Art and mock-ups never travel inside a message. The sender asks for an upload address, puts the bytes in the bucket, says
+  // it is done (the hub checks the size), and the message names the file by its SHA-256. The recipient asks for a download
+  // address when it wants the file; addresses are made at that moment and last minutes, so they are never stored or queued.
+  const UP_SECONDS = 900;
+  const DOWN_SECONDS = 600;
+  const fileKey = (conversation, hash) => `sync/${sha(conversation).slice(0, 32)}/${hash}`;
+  const storage = () => {
+    const cfg = s3Config();
+    if (!cfg) throw new Refusal(503, "no_storage", "This hub has no file storage set up, so it cannot carry files.");
+    return cfg;
+  };
+  const fileBody = async (c) => {
+    const b = await c.req.json().catch(() => ({}));
+    const conversation = String(b.conversation ?? "");
+    const hash = String(b.sha256 ?? "");
+    if (!conversation || conversation.length > 120) throw new Refusal(400, "bad_field", "conversation is the order's reference.");
+    if (!/^[0-9a-f]{64}$/.test(hash)) throw new Refusal(400, "bad_field", "sha256 is 64 lower-case hex characters.");
+    return { b, conversation, hash };
+  };
+  /** Who is on the other side of a conversation for this caller: a service names the shop (opted in); a shop's is the order's service. */
+  async function audienceOf(p, conversation, b) {
+    if (p.kind === "service") {
+      needScope(p, "orders:send");
+      const to = String(b.to ?? "");
+      if (!/^shop:[\w-]{1,64}$/.test(to)) throw new Refusal(400, "bad_field", "to is the shop the file is for (shop:<id>).");
+      if (!(await one(`SELECT 1 FROM shop_service_optins WHERE shop_id = $1 AND service = $2 AND enabled`, [to.slice(5), p.name]))) throw new Refusal(403, "not_opted_in", "That shop has not agreed to take this service's orders.");
+      return to;
+    }
+    needShop(p);
+    const order = await one(`SELECT service FROM sync_orders WHERE conversation = $1 AND shop_id = $2 AND state = 'open'`, [conversation, p.shop.id]);
+    if (!order) throw new Refusal(404, "no_such_order", "No open order with that reference for this shop.");
+    return `service:${order.service}`;
+  }
+  app.post("/v2/files/put", bodyLimit({ maxSize: 16 * 1024, onError: (c) => c.json({ error: "Too large." }, 413) }), guarded(async (c) => {
+    const p = await principalOf(c);
+    checkClient(c, { required: true });
+    const { b, conversation, hash } = await fileBody(c);
+    if (!allow(`sync:put:${p.address ?? p.caps}`, 600)) throw new Refusal(429, "rate_limit", "Too many uploads this hour.");
+    const kind = String(b.kind ?? "");
+    if (!["art", "mockup"].includes(kind)) throw new Refusal(400, "bad_field", 'kind is "art" or "mockup".');
+    if (kind === "mockup" && p.kind === "service") throw new Refusal(400, "bad_field", "A service sends art; the shop sends mock-ups (proofs).");
+    if (kind === "art" && p.kind === "program") throw new Refusal(400, "bad_field", "Art comes from the service; the shop sends mock-ups.");
+    const size = Number(b.size);
+    const limit = kind === "art" ? MAX_ART_BYTES : MAX_PREVIEW_BYTES;
+    if (!Number.isInteger(size) || size < 1 || size > limit) throw new Refusal(413, "file_too_large", `A ${kind} is 1 to ${limit} bytes.`);
+    const type = kind === "mockup" ? String(b.type ?? "") : null;
+    if (kind === "mockup" && !["image/png", "image/jpeg"].includes(type)) throw new Refusal(400, "bad_field", "A mock-up is image/png or image/jpeg.");
+    const audience = await audienceOf(p, conversation, b);
+    const have = await one(`SELECT uploader, size, state FROM sync_files WHERE conversation = $1 AND sha256 = $2`, [conversation, hash]);
+    if (have && have.uploader !== p.address) throw new Refusal(409, "file_exists", "Another sender already uploaded a file with that hash for this conversation.");
+    if (have?.state === "ready" && have.size === size) return c.json({ ready: true });
+    const cfg = storage();
+    await q(
+      `INSERT INTO sync_files (conversation, sha256, uploader, audience, kind, size, type, state, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, 'announced', now() + interval '1 day')
+       ON CONFLICT (conversation, sha256) DO UPDATE SET size = EXCLUDED.size, type = EXCLUDED.type, kind = EXCLUDED.kind, audience = EXCLUDED.audience, state = 'announced', expires_at = now() + interval '1 day'`,
+      [conversation, hash, p.address, audience, kind, size, type],
+    );
+    const headers = { "x-amz-checksum-sha256": Buffer.from(hash, "hex").toString("base64") };
+    if (type) headers["content-type"] = type;
+    const url = presign(cfg, "PUT", fileKey(conversation, hash), { expires: UP_SECONDS, headers: { "content-length": String(size), ...headers } });
+    return c.json({ ready: false, url, method: "PUT", expires_in: UP_SECONDS, headers: { "content-length": String(size), ...headers } });
+  }));
+  app.post("/v2/files/done", bodyLimit({ maxSize: 16 * 1024, onError: (c) => c.json({ error: "Too large." }, 413) }), guarded(async (c) => {
+    const p = await principalOf(c);
+    checkClient(c, { required: true });
+    const { conversation, hash } = await fileBody(c);
+    const f = await one(`SELECT uploader, size, state FROM sync_files WHERE conversation = $1 AND sha256 = $2`, [conversation, hash]);
+    if (!f || f.uploader !== (p.address ?? p.caps)) throw new Refusal(404, "no_such_file", "Ask for an upload address first (POST /v2/files/put).");
+    if (f.state === "ready") return c.json({ ready: true });
+    const cfg = storage();
+    let there;
+    try {
+      there = await headObject(cfg, fileKey(conversation, hash));
+    } catch {
+      throw new Refusal(502, "storage_unreachable", "The file storage could not be reached. Try again.");
+    }
+    if (there == null) throw new Refusal(409, "not_uploaded", "The file is not in the storage yet.");
+    if (there !== f.size) {
+      await deleteObject(cfg, fileKey(conversation, hash)).catch(() => {});
+      await q(`DELETE FROM sync_files WHERE conversation = $1 AND sha256 = $2`, [conversation, hash]);
+      throw new Refusal(400, "size_mismatch", "The uploaded file is not the size you announced. It was removed; start again.");
+    }
+    await q(`UPDATE sync_files SET state = 'ready', expires_at = now() + make_interval(days => $3) WHERE conversation = $1 AND sha256 = $2`, [conversation, hash, fileDays()]);
+    return c.json({ ready: true });
+  }));
+  app.post("/v2/files/get", bodyLimit({ maxSize: 16 * 1024, onError: (c) => c.json({ error: "Too large." }, 413) }), guarded(async (c) => {
+    const p = await principalOf(c);
+    checkClient(c, { required: true });
+    const { conversation, hash } = await fileBody(c);
+    const me = p.address;
+    const f = await one(`SELECT uploader, audience, size, type, kind FROM sync_files WHERE conversation = $1 AND sha256 = $2 AND state = 'ready' AND expires_at > now()`, [conversation, hash]);
+    // The same answer for "no such file" and "not yours", so a stranger learns nothing about what exists.
+    if (!f || !me || (me !== f.uploader && me !== f.audience)) throw new Refusal(404, "no_such_file", "No such file for you.");
+    return c.json({ url: presign(storage(), "GET", fileKey(conversation, hash), { expires: DOWN_SECONDS }), expires_in: DOWN_SECONDS, size: f.size, type: f.type, sha256: hash });
+  }));
+  /** Takes files past their time out of the bucket and the table; one the bucket will not delete stays listed for the next pass. */
+  async function sweepFiles() {
+    const { rows } = await q(`SELECT conversation, sha256 FROM sync_files WHERE expires_at <= now() ORDER BY expires_at LIMIT 200`);
+    if (!rows.length) return;
+    const cfg = s3Config();
+    for (const r of rows) {
+      try {
+        if (cfg) await deleteObject(cfg, fileKey(r.conversation, r.sha256));
+        await q(`DELETE FROM sync_files WHERE conversation = $1 AND sha256 = $2`, [r.conversation, r.sha256]);
+      } catch (e) {
+        console.error("sync file sweep:", e.message);
+      }
+    }
+  }
+
   // ----- expiry, erasing bodies, and deleting old stubs -----
   /** Gives up on what is past its time and tells each sender; erases acked bodies after SYNC_KEEP_DAYS; deletes stubs after a year. */
   async function sweepOnce() {
@@ -404,6 +562,7 @@ export function registerSync({ app, admin, installByKey, fail, newId, allow, cli
     ).rows;
     for (const e of expired) {
       await q(`UPDATE sync_messages SET body = NULL WHERE sender = $1 AND id = $2`, [e.sender, e.message_id]);
+      if (e.type === "order.placed") await q(`UPDATE sync_orders SET state = 'closed', why_closed = 'expired', closed_at = now() WHERE service = $1 AND conversation = $2 AND state = 'open'`, [e.sender.slice(8), e.conversation]);
       if (e.sender === "hub") continue;
       // Why it gave up: the recipient never said it understands this type (it needs updating), or it was just slow.
       const reason = understands(await capsOf(e.recipient), e.type, e.version) ? "expired" : "recipient_too_old";
@@ -430,6 +589,7 @@ export function registerSync({ app, admin, installByKey, fail, newId, allow, cli
     );
     await q(`UPDATE sync_messages m SET body = NULL FROM sync_deliveries d WHERE d.sender = m.sender AND d.message_id = m.id AND d.state = 'expired' AND m.body IS NOT NULL`);
     await q(`DELETE FROM sync_messages WHERE stored_at < now() - make_interval(days => $1)`, [STUB_DAYS]);
+    await sweepFiles();
     return expired.length;
   }
   const sweepMs = Math.min(posNum(process.env.SYNC_SWEEP_MS, 60_000), 2 ** 31 - 1);

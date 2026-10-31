@@ -1,0 +1,664 @@
+[
+  {
+    "name": "customer email key",
+    "type": "order.placed",
+    "from": "service",
+    "code": "personal_contact",
+    "body": {
+      "fulfilment": "ship",
+      "lines": [
+        {
+          "sku": "TEE-01",
+          "colour": "Navy",
+          "sizes": {
+            "M": 6,
+            "L": 6
+          },
+          "decorations": [
+            {
+              "method": "embroidery",
+              "placement": "left chest",
+              "art": {
+                "file": "logo.dst",
+                "size": 48210,
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            }
+          ]
+        }
+      ],
+      "preview": {
+        "size": 90112,
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "type": "image/png"
+      },
+      "customer": {
+        "name": "Pat Lee",
+        "ship_to": {
+          "name": "Pat Lee",
+          "line1": "12 Main St",
+          "city": "Providence",
+          "region": "RI",
+          "postal": "02903",
+          "country": "US"
+        },
+        "email": "pat@example.com"
+      },
+      "totals": {
+        "goods_cents": 9000,
+        "setup_cents": 2500,
+        "shipping_cents": 800,
+        "tax_cents": 0,
+        "paid_cents": 12300,
+        "fee_cents": 1150,
+        "card_fee_cents": 657,
+        "shop_gets_cents": 10493
+      },
+      "note": "Please match the navy of the school shirts."
+    }
+  },
+  {
+    "name": "customer phone key",
+    "type": "order.placed",
+    "from": "service",
+    "code": "personal_contact",
+    "body": {
+      "fulfilment": "ship",
+      "lines": [
+        {
+          "sku": "TEE-01",
+          "colour": "Navy",
+          "sizes": {
+            "M": 6,
+            "L": 6
+          },
+          "decorations": [
+            {
+              "method": "embroidery",
+              "placement": "left chest",
+              "art": {
+                "file": "logo.dst",
+                "size": 48210,
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            }
+          ]
+        }
+      ],
+      "preview": {
+        "size": 90112,
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "type": "image/png"
+      },
+      "customer": {
+        "name": "Pat Lee",
+        "ship_to": {
+          "name": "Pat Lee",
+          "line1": "12 Main St",
+          "city": "Providence",
+          "region": "RI",
+          "postal": "02903",
+          "country": "US"
+        },
+        "phone": "401-555-0100"
+      },
+      "totals": {
+        "goods_cents": 9000,
+        "setup_cents": 2500,
+        "shipping_cents": 800,
+        "tax_cents": 0,
+        "paid_cents": 12300,
+        "fee_cents": 1150,
+        "card_fee_cents": 657,
+        "shop_gets_cents": 10493
+      },
+      "note": "Please match the navy of the school shirts."
+    }
+  },
+  {
+    "name": "email typed into the note",
+    "type": "order.placed",
+    "from": "service",
+    "code": "personal_contact",
+    "body": {
+      "fulfilment": "ship",
+      "lines": [
+        {
+          "sku": "TEE-01",
+          "colour": "Navy",
+          "sizes": {
+            "M": 6,
+            "L": 6
+          },
+          "decorations": [
+            {
+              "method": "embroidery",
+              "placement": "left chest",
+              "art": {
+                "file": "logo.dst",
+                "size": 48210,
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            }
+          ]
+        }
+      ],
+      "preview": {
+        "size": 90112,
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "type": "image/png"
+      },
+      "customer": {
+        "name": "Pat Lee",
+        "ship_to": {
+          "name": "Pat Lee",
+          "line1": "12 Main St",
+          "city": "Providence",
+          "region": "RI",
+          "postal": "02903",
+          "country": "US"
+        }
+      },
+      "totals": {
+        "goods_cents": 9000,
+        "setup_cents": 2500,
+        "shipping_cents": 800,
+        "tax_cents": 0,
+        "paid_cents": 12300,
+        "fee_cents": 1150,
+        "card_fee_cents": 657,
+        "shop_gets_cents": 10493
+      },
+      "note": "write me at pat@example.com"
+    }
+  },
+  {
+    "name": "phone typed into the note",
+    "type": "order.placed",
+    "from": "service",
+    "code": "personal_contact",
+    "body": {
+      "fulfilment": "ship",
+      "lines": [
+        {
+          "sku": "TEE-01",
+          "colour": "Navy",
+          "sizes": {
+            "M": 6,
+            "L": 6
+          },
+          "decorations": [
+            {
+              "method": "embroidery",
+              "placement": "left chest",
+              "art": {
+                "file": "logo.dst",
+                "size": 48210,
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            }
+          ]
+        }
+      ],
+      "preview": {
+        "size": 90112,
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "type": "image/png"
+      },
+      "customer": {
+        "name": "Pat Lee",
+        "ship_to": {
+          "name": "Pat Lee",
+          "line1": "12 Main St",
+          "city": "Providence",
+          "region": "RI",
+          "postal": "02903",
+          "country": "US"
+        }
+      },
+      "totals": {
+        "goods_cents": 9000,
+        "setup_cents": 2500,
+        "shipping_cents": 800,
+        "tax_cents": 0,
+        "paid_cents": 12300,
+        "fee_cents": 1150,
+        "card_fee_cents": 657,
+        "shop_gets_cents": 10493
+      },
+      "note": "call 401 555 0100 after five"
+    }
+  },
+  {
+    "name": "ship order without an address",
+    "type": "order.placed",
+    "from": "service",
+    "code": "ship_to_missing",
+    "body": {
+      "fulfilment": "ship",
+      "lines": [
+        {
+          "sku": "TEE-01",
+          "colour": "Navy",
+          "sizes": {
+            "M": 6,
+            "L": 6
+          },
+          "decorations": [
+            {
+              "method": "embroidery",
+              "placement": "left chest",
+              "art": {
+                "file": "logo.dst",
+                "size": 48210,
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            }
+          ]
+        }
+      ],
+      "preview": {
+        "size": 90112,
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "type": "image/png"
+      },
+      "customer": {
+        "name": "Pat Lee"
+      },
+      "totals": {
+        "goods_cents": 9000,
+        "setup_cents": 2500,
+        "shipping_cents": 800,
+        "tax_cents": 0,
+        "paid_cents": 12300,
+        "fee_cents": 1150,
+        "card_fee_cents": 657,
+        "shop_gets_cents": 10493
+      },
+      "note": "Please match the navy of the school shirts."
+    }
+  },
+  {
+    "name": "pickup order with an address",
+    "type": "order.placed",
+    "from": "service",
+    "code": "ship_to_not_allowed",
+    "body": {
+      "fulfilment": "pickup",
+      "lines": [
+        {
+          "sku": "TEE-01",
+          "colour": "Navy",
+          "sizes": {
+            "M": 6,
+            "L": 6
+          },
+          "decorations": [
+            {
+              "method": "embroidery",
+              "placement": "left chest",
+              "art": {
+                "file": "logo.dst",
+                "size": 48210,
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            }
+          ]
+        }
+      ],
+      "preview": {
+        "size": 90112,
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "type": "image/png"
+      },
+      "customer": {
+        "name": "Pat Lee",
+        "ship_to": {
+          "name": "Pat Lee",
+          "line1": "12 Main St",
+          "city": "Providence",
+          "region": "RI",
+          "postal": "02903",
+          "country": "US"
+        }
+      },
+      "totals": {
+        "goods_cents": 9000,
+        "setup_cents": 2500,
+        "shipping_cents": 800,
+        "tax_cents": 0,
+        "paid_cents": 12300,
+        "fee_cents": 1150,
+        "card_fee_cents": 657,
+        "shop_gets_cents": 10493
+      },
+      "note": "Please match the navy of the school shirts."
+    }
+  },
+  {
+    "name": "art over 10 MB",
+    "type": "order.placed",
+    "from": "service",
+    "code": "bad_field",
+    "body": {
+      "fulfilment": "ship",
+      "lines": [
+        {
+          "sku": "TEE-01",
+          "colour": "Navy",
+          "sizes": {
+            "M": 6,
+            "L": 6
+          },
+          "decorations": [
+            {
+              "method": "embroidery",
+              "placement": "left chest",
+              "art": {
+                "file": "logo.dst",
+                "size": 10485761,
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            }
+          ]
+        }
+      ],
+      "preview": {
+        "size": 90112,
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "type": "image/png"
+      },
+      "customer": {
+        "name": "Pat Lee",
+        "ship_to": {
+          "name": "Pat Lee",
+          "line1": "12 Main St",
+          "city": "Providence",
+          "region": "RI",
+          "postal": "02903",
+          "country": "US"
+        }
+      },
+      "totals": {
+        "goods_cents": 9000,
+        "setup_cents": 2500,
+        "shipping_cents": 800,
+        "tax_cents": 0,
+        "paid_cents": 12300,
+        "fee_cents": 1150,
+        "card_fee_cents": 657,
+        "shop_gets_cents": 10493
+      },
+      "note": "Please match the navy of the school shirts."
+    }
+  },
+  {
+    "name": "preview over 2 MB",
+    "type": "order.placed",
+    "from": "service",
+    "code": "bad_field",
+    "body": {
+      "fulfilment": "ship",
+      "lines": [
+        {
+          "sku": "TEE-01",
+          "colour": "Navy",
+          "sizes": {
+            "M": 6,
+            "L": 6
+          },
+          "decorations": [
+            {
+              "method": "embroidery",
+              "placement": "left chest",
+              "art": {
+                "file": "logo.dst",
+                "size": 48210,
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            }
+          ]
+        }
+      ],
+      "preview": {
+        "size": 2097153,
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "type": "image/png"
+      },
+      "customer": {
+        "name": "Pat Lee",
+        "ship_to": {
+          "name": "Pat Lee",
+          "line1": "12 Main St",
+          "city": "Providence",
+          "region": "RI",
+          "postal": "02903",
+          "country": "US"
+        }
+      },
+      "totals": {
+        "goods_cents": 9000,
+        "setup_cents": 2500,
+        "shipping_cents": 800,
+        "tax_cents": 0,
+        "paid_cents": 12300,
+        "fee_cents": 1150,
+        "card_fee_cents": 657,
+        "shop_gets_cents": 10493
+      },
+      "note": "Please match the navy of the school shirts."
+    }
+  },
+  {
+    "name": "preview that is a gif",
+    "type": "order.placed",
+    "from": "service",
+    "code": "bad_field",
+    "body": {
+      "fulfilment": "ship",
+      "lines": [
+        {
+          "sku": "TEE-01",
+          "colour": "Navy",
+          "sizes": {
+            "M": 6,
+            "L": 6
+          },
+          "decorations": [
+            {
+              "method": "embroidery",
+              "placement": "left chest",
+              "art": {
+                "file": "logo.dst",
+                "size": 48210,
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            }
+          ]
+        }
+      ],
+      "preview": {
+        "size": 90112,
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "type": "image/gif"
+      },
+      "customer": {
+        "name": "Pat Lee",
+        "ship_to": {
+          "name": "Pat Lee",
+          "line1": "12 Main St",
+          "city": "Providence",
+          "region": "RI",
+          "postal": "02903",
+          "country": "US"
+        }
+      },
+      "totals": {
+        "goods_cents": 9000,
+        "setup_cents": 2500,
+        "shipping_cents": 800,
+        "tax_cents": 0,
+        "paid_cents": 12300,
+        "fee_cents": 1150,
+        "card_fee_cents": 657,
+        "shop_gets_cents": 10493
+      },
+      "note": "Please match the navy of the school shirts."
+    }
+  },
+  {
+    "name": "art hash not a sha-256",
+    "type": "order.placed",
+    "from": "service",
+    "code": "bad_field",
+    "body": {
+      "fulfilment": "ship",
+      "lines": [
+        {
+          "sku": "TEE-01",
+          "colour": "Navy",
+          "sizes": {
+            "M": 6,
+            "L": 6
+          },
+          "decorations": [
+            {
+              "method": "embroidery",
+              "placement": "left chest",
+              "art": {
+                "file": "logo.dst",
+                "size": 48210,
+                "sha256": "abc"
+              }
+            }
+          ]
+        }
+      ],
+      "preview": {
+        "size": 90112,
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "type": "image/png"
+      },
+      "customer": {
+        "name": "Pat Lee",
+        "ship_to": {
+          "name": "Pat Lee",
+          "line1": "12 Main St",
+          "city": "Providence",
+          "region": "RI",
+          "postal": "02903",
+          "country": "US"
+        }
+      },
+      "totals": {
+        "goods_cents": 9000,
+        "setup_cents": 2500,
+        "shipping_cents": 800,
+        "tax_cents": 0,
+        "paid_cents": 12300,
+        "fee_cents": 1150,
+        "card_fee_cents": 657,
+        "shop_gets_cents": 10493
+      },
+      "note": "Please match the navy of the school shirts."
+    }
+  },
+  {
+    "name": "a missing total",
+    "type": "order.placed",
+    "from": "service",
+    "code": "bad_field",
+    "body": {
+      "fulfilment": "ship",
+      "lines": [
+        {
+          "sku": "TEE-01",
+          "colour": "Navy",
+          "sizes": {
+            "M": 6,
+            "L": 6
+          },
+          "decorations": [
+            {
+              "method": "embroidery",
+              "placement": "left chest",
+              "art": {
+                "file": "logo.dst",
+                "size": 48210,
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            }
+          ]
+        }
+      ],
+      "preview": {
+        "size": 90112,
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "type": "image/png"
+      },
+      "customer": {
+        "name": "Pat Lee",
+        "ship_to": {
+          "name": "Pat Lee",
+          "line1": "12 Main St",
+          "city": "Providence",
+          "region": "RI",
+          "postal": "02903",
+          "country": "US"
+        }
+      },
+      "totals": {
+        "goods_cents": 9000,
+        "setup_cents": 2500,
+        "shipping_cents": 800,
+        "paid_cents": 12300,
+        "fee_cents": 1150,
+        "card_fee_cents": 657,
+        "shop_gets_cents": 10493
+      },
+      "note": "Please match the navy of the school shirts."
+    }
+  },
+  {
+    "name": "status that does not exist",
+    "type": "order.status",
+    "from": "shop",
+    "code": "bad_field",
+    "body": {
+      "status": "teleported"
+    }
+  },
+  {
+    "name": "customer cancel from the shop",
+    "type": "order.cancel",
+    "from": "shop",
+    "code": "bad_field",
+    "body": {
+      "by": "customer",
+      "why": "x"
+    }
+  },
+  {
+    "name": "proof answer is not yes/no",
+    "type": "proof.answer",
+    "from": "service",
+    "code": "bad_field",
+    "body": {
+      "proof": 1,
+      "answer": "maybe"
+    }
+  },
+  {
+    "name": "mock-up with no hash",
+    "type": "proof.sent",
+    "from": "shop",
+    "code": "bad_field",
+    "body": {
+      "proof": 1,
+      "mockup": {
+        "size": 10,
+        "type": "image/png"
+      }
+    }
+  }
+]
