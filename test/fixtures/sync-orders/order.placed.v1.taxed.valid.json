@@ -1,0 +1,51 @@
+{
+  "fulfilment": "ship",
+  "lines": [
+    {
+      "sku": "TEE-01",
+      "colour": "Navy",
+      "sizes": {
+        "M": 6,
+        "L": 6
+      },
+      "decorations": [
+        {
+          "method": "embroidery",
+          "placement": "left chest",
+          "art": {
+            "file": "logo.dst",
+            "size": 48210,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        }
+      ]
+    }
+  ],
+  "preview": {
+    "size": 90112,
+    "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "type": "image/png"
+  },
+  "customer": {
+    "name": "Pat Lee",
+    "ship_to": {
+      "line1": "12 Elm St",
+      "line2": "",
+      "city": "Elmwood",
+      "region": "OH",
+      "postcode": "44000",
+      "country": "US"
+    }
+  },
+  "totals": {
+    "goods_cents": 20000,
+    "setup_cents": 2500,
+    "shipping_cents": 1849,
+    "tax_cents": 1603,
+    "paid_cents": 25952,
+    "fee_cents": 2435,
+    "card_fee_cents": 783,
+    "shop_gets_cents": 21131
+  },
+  "note": "Please match the navy of the school shirts."
+}

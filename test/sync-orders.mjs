@@ -27,6 +27,17 @@ for (const type of ["catalog", "order.placed", "order.status", "proof.sent", "pr
   assert.deepEqual(out.dropped, [], `${type}: nothing dropped from the valid fixture`);
   assert.deepEqual(out.body, body, `${type}: a valid body comes out unchanged`);
 }
+// Variants that must also pass: a taxed order (the tax is outside the shop's share, the postcode is `postcode`, an empty line2) and an empty tracking.
+for (const [file, type, from] of [["order.placed.v1.taxed.valid.json", "order.placed", "service"], ["order.status.v1.empty-tracking.valid.json", "order.status", "shop"]]) {
+  const body = fixture(file);
+  const out = validateBody(type, 1, body, { from });
+  assert.deepEqual(out.dropped, [], `${file}: nothing dropped`);
+  assert.deepEqual(out.body, body, `${file}: comes out unchanged`);
+}
+{
+  const t = fixture("order.placed.v1.taxed.valid.json").totals;
+  assert.equal(t.shop_gets_cents, t.paid_cents - t.tax_cents - t.fee_cents - t.card_fee_cents, "a taxed order's earnings exclude the tax");
+}
 for (const f of fixture("invalid.json")) {
   try {
     validateBody(f.type, 1, f.body, { from: f.from });
@@ -176,7 +187,7 @@ try {
   refused(await send(M, orderMsg(`shop:${idA}`, "o-1", { sign: false })), 403, "bad_signature", "unsigned (no sig at all)");
   refused(await send(M, orderMsg(`shop:${idA}`, "o-1", { key: otherKey })), 403, "bad_signature", "signed with another key");
   const tampered = orderMsg(`shop:${idA}`, "o-1");
-  tampered.body.totals.shop_gets_cents += 1;
+  tampered.body.note = "changed after it was signed"; // still a valid body, so it is the signature that refuses it
   refused(await send(M, tampered), 403, "bad_signature", "body changed after signing");
   const leaky = fixtureBody("o-1");
   leaky.customer.email = "pat@example.com";
@@ -339,6 +350,30 @@ try {
   assert.equal(back.length, queued.length, "the shop catches up with every one");
   expect(await place("o-after-full", idD), 202, "and the queue takes more once it caught up");
   console.log("  ok  a full queue refuses new orders, loses none, and takes more once the shop has caught up");
+
+  // ----- shipping by the piece, the pick-up address, and sales tax that is the marketplace's (decided 2026-10-31) -----
+  const catalogMsg = { id: uuid(), type: "catalog", version: 1, conversation: "catalog", seq: 1, to: "service:makerfoundry", created_at: new Date().toISOString(), body: fixture("catalog.v1.valid.json") };
+  expect(await send(A, catalogMsg), 202, "the full catalogue goes through");
+  const heard = expect(await get(M), 200, "service reads the catalogue").messages.find((x) => x.id === catalogMsg.id);
+  assert.deepEqual(heard?.body, catalogMsg.body, "the catalogue is passed on unchanged: shipping by the piece, the pick-up address, the account, the garment price");
+  expect(await ack(M, [catalogMsg.id]), 200, "ack");
+  const taxed = fixture("order.placed.v1.taxed.valid.json");
+  const art4 = Buffer.from("taxed order art");
+  const h4 = sha256(art4);
+  taxed.lines[0].decorations[0].art = { file: "logo.dst", size: art4.length, sha256: h4 };
+  delete taxed.preview;
+  const u4 = expect(await put(M, { conversation: "o-tax", sha256: h4, size: art4.length, kind: "art", to: `shop:${idD}` }), 200, "put taxed art");
+  assert.equal(await upload(u4, art4), 200);
+  expect(await call("/v2/files/done", { ...M, json: { conversation: "o-tax", sha256: h4 } }), 200, "done taxed art");
+  const taxedMsg = placed(`shop:${idD}`, "o-tax", { body: taxed });
+  expect(await send(M, taxedMsg), 202, "a taxed order is signed and delivered");
+  const gotTaxed = expect(await get(D), 200, "shop reads the taxed order").messages.find((x) => x.id === taxedMsg.id);
+  assert.deepEqual(gotTaxed?.body, taxed, "delivered exactly as signed: the tax outside the shop's share, the postcode as sent");
+  assert.equal(gotTaxed.body.totals.shop_gets_cents, 21131, "$259.52 paid, $16.03 tax, $24.35 and $7.83 in fees: the shop gets $211.31");
+  const wrong = JSON.parse(JSON.stringify(taxed));
+  wrong.totals.shop_gets_cents = 25952 - 2435 - 783; // earnings that count the tax as the shop's
+  refused(await send(M, placed(`shop:${idD}`, "o-tax2", { body: wrong })), 400, "totals_dont_add_up", "earnings that include the tax");
+  console.log("  ok  shipping by the piece and the pick-up address pass through; a taxed order is delivered as signed and one that counts the tax as earnings is refused");
 
   // ----- files are cleaned up: expired ones leave the bucket, one the bucket won't delete stays listed -----
   const keyOf = (conv, h) => `sync/${sha256(conv).slice(0, 32)}/${h}`;

@@ -94,19 +94,29 @@ const free = (v, max, path, opts) => {
 const art = (v, path, d) => shaped(v, path, { file: [true, (x, p) => text(x, 120, p, { re: FILE_NAME })], size: [true, (x, p) => int(x, 1, MAX_ART_BYTES, p)], sha256: [true, sha256] }, d);
 const preview = (v, path, d) => shaped(v, path, { size: [true, (x, p) => int(x, 1, MAX_PREVIEW_BYTES, p)], sha256: [true, sha256], type: [true, (x, p) => oneOf(x, ["image/png", "image/jpeg"], p)] }, d);
 const money = (x, p) => int(x, 0, 100_000_000, p);
-const METHODS = ["embroidery", "screen_print"];
-const shipTo = (v, path, d) =>
-  shaped(v, path, {
-    name: [true, (x, p) => free(x, 120, p)], line1: [true, (x, p) => text(x, 120, p)], line2: [false, (x, p) => text(x, 120, p)], city: [true, (x, p) => text(x, 80, p)],
-    region: [false, (x, p) => text(x, 40, p)], postal: [true, (x, p) => text(x, 20, p)], country: [true, (x, p) => text(x, 2, p, { re: /^[A-Z]{2}$/ })],
+const METHODS = ["embroidery", "screen_print", "dtg"];
+/**
+ * An address: a shipping address (customer.ship_to) or the shop's pick-up address (catalog shop.address). The postcode is `postcode`
+ * (what MakerFoundry sends); `postal` is read too, so a sender that used the first draft's name still works. One of them is needed, and not empty.
+ * An empty line2 or region is allowed and kept as sent (a signed message is delivered exactly as it was signed).
+ */
+const address = (v, path, d) => {
+  const out = shaped(v, path, {
+    name: [false, (x, p) => free(x, 120, p)], line1: [true, (x, p) => text(x, 120, p)], line2: [false, (x, p) => text(x, 120, p, { min: 0 })], city: [true, (x, p) => text(x, 80, p)],
+    region: [false, (x, p) => text(x, 40, p, { min: 0 })], postcode: [false, (x, p) => text(x, 20, p, { min: 0 })], postal: [false, (x, p) => text(x, 20, p, { min: 0 })],
+    country: [true, (x, p) => text(x, 2, p, { re: /^[A-Z]{2}$/ })],
   }, d);
+  if (!(out.postcode || out.postal)) bad("bad_field", `${path}.postcode is missing or empty.`);
+  return out;
+};
+const shipTo = address;
 
 const BODIES = {
   catalog: (b, d) =>
     shaped(b, "body", {
-      shop: [true, (x, p) => shaped(x, p, { name: [true, (y, q) => text(y, 120, q)], town: [false, (y, q) => text(y, 80, q)], ships: [true, bool], pickup: [true, bool] }, d)],
+      shop: [true, (x, p) => shaped(x, p, { name: [true, (y, q) => text(y, 120, q)], town: [false, (y, q) => text(y, 80, q)], ships: [true, bool], pickup: [true, bool], account: [false, (y, q) => int(y, 1, 2_147_483_647, q)], address: [false, (y, q) => address(y, q, d)] }, d)],
       products: [true, (x, p) => list(x, 200, p, (y, q) => shaped(y, q, {
-        sku: [true, (z, r) => text(z, 60, r, { re: SKU })], name: [true, (z, r) => text(z, 120, r)], kind: [true, (z, r) => text(z, 30, r)],
+        sku: [true, (z, r) => text(z, 60, r, { re: SKU })], name: [true, (z, r) => text(z, 120, r)], kind: [true, (z, r) => text(z, 30, r)], cents: [false, (z, r) => money(z, r)],
         colours: [true, (z, r) => list(z, 50, r, (w, s) => text(w, 40, s))], sizes: [true, (z, r) => list(z, 20, r, (w, s) => text(w, 10, s))],
         methods: [true, (z, r) => list(z, 6, r, (w, s) => shaped(w, s, {
           method: [true, (u, t) => oneOf(u, METHODS, t)], placements: [true, (u, t) => list(u, 10, t, (a, c) => text(a, 40, c), 1)],
@@ -114,7 +124,8 @@ const BODIES = {
           setup_cents: [true, money],
         }, d), 1)],
       }, d))],
-      shipping: [true, (x, p) => shaped(x, p, { flat_cents: [true, money] }, d)],
+      // The price for one piece, then so much for each piece after the first, and free when goods and set-up reach free_over_cents (0 = never); the last two are optional and default to 0.
+      shipping: [true, (x, p) => shaped(x, p, { flat_cents: [true, money], per_extra_piece_cents: [false, money], free_over_cents: [false, money] }, d)],
       currency: [true, (x, p) => oneOf(x, ["usd"], p)],
     }, d),
   "order.placed": (b, d) => {
@@ -133,6 +144,11 @@ const BODIES = {
       totals: [true, (x, p) => shaped(x, p, Object.fromEntries(["goods_cents", "setup_cents", "shipping_cents", "tax_cents", "paid_cents", "fee_cents", "card_fee_cents", "shop_gets_cents"].map((k) => [k, [true, money]])), d)],
       note: [false, (x, p) => free(x, 500, p)],
     }, d);
+    // The marketplace collects the sales tax (tax_cents): it is part of what was paid and outside the shop's share. The 10% (fee_cents) is of the price
+    // before tax, the card fee of everything paid. A message whose totals don't add up is refused rather than shown to a shop as its earnings.
+    const t = out.totals;
+    if (t.goods_cents + t.setup_cents + t.shipping_cents + t.tax_cents !== t.paid_cents) bad("totals_dont_add_up", "totals: goods + set-up + shipping + tax has to equal paid_cents.");
+    if (t.paid_cents - t.tax_cents - t.fee_cents - t.card_fee_cents !== t.shop_gets_cents) bad("totals_dont_add_up", "totals: shop_gets_cents has to be paid_cents - tax_cents - fee_cents - card_fee_cents.");
     if (out.fulfilment === "ship" && !out.customer.ship_to) bad("ship_to_missing", "An order to be shipped needs the shipping address (customer.ship_to).");
     if (out.fulfilment === "pickup" && out.customer.ship_to) bad("ship_to_not_allowed", "The shipping address goes only with an order that is to be shipped; leave it out of a pickup.");
     return out;
@@ -140,7 +156,7 @@ const BODIES = {
   "order.status": (b, d) =>
     shaped(b, "body", {
       status: [true, (x, p) => oneOf(x, ["received", "proof_sent", "approved", "in_production", "ready", "shipped", "collected"], p)],
-      tracking: [false, (x, p) => text(x, 80, p)], note: [false, (x, p) => free(x, 500, p)],
+      tracking: [false, (x, p) => text(x, 80, p, { min: 0 })], note: [false, (x, p) => free(x, 500, p)],
     }, d),
   "proof.sent": (b, d) =>
     shaped(b, "body", { proof: [true, (x, p) => int(x, 1, 1000, p)], mockup: [true, (x, p) => preview(x, p, d)], note: [false, (x, p) => free(x, 500, p)] }, d),
