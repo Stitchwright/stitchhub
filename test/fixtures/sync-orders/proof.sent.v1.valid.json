@@ -1,0 +1,9 @@
+{
+  "proof": 1,
+  "mockup": {
+    "size": 90112,
+    "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "type": "image/png"
+  },
+  "note": "Here is the first proof."
+}
