@@ -1,0 +1,6 @@
+{
+  "id": "6f1f6bde-6b1a-4f6e-9a5e-0c2a0f2d9a11",
+  "type": "order.placed",
+  "conversation": "mf-1",
+  "reason": "expired"
+}

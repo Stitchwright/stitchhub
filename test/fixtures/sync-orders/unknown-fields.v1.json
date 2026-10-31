@@ -1,0 +1,10 @@
+{
+  "type": "order.status",
+  "body": {
+    "status": "ready",
+    "internal_cost": 123
+  },
+  "dropped": [
+    "body.internal_cost"
+  ]
+}
