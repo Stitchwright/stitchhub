@@ -13,7 +13,9 @@ import crypto from "node:crypto";
 import net from "node:net";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import fs from "node:fs";
 import pg from "pg";
+import { signEnvelope } from "../src/sync-orders.mjs";
 
 const DB = process.env.DATABASE_URL;
 assert.ok(DB, "set DATABASE_URL to a scratch database");
@@ -63,8 +65,27 @@ const SHOP = (key, ref) => ({ key, headers: { "X-Shop-Ref": ref, "X-Client": "st
 const SVC = (key) => ({ key, headers: { "X-Client": "makerfoundry/0.1.0" } });
 const shopHello = (s, types = { "order.placed": [1], "order.status": [1], "proof.sent": [1], "order.cancel": [1], "message.expired": [1] }) => call("/v2/hello", { ...s, json: { app: "stitchshop", version: "1.8.0", types } });
 const svcHello = (s) => call("/v2/hello", { ...s, json: { app: "makerfoundry", version: "0.1.0", types: { "message.expired": [1], "order.status": [1], "proof.sent": [1], "order.cancel": [1], catalog: [1] } } });
-const env = (to, o = {}) => ({ id: uuid(), type: "order.placed", version: 1, conversation: "mf-1", seq: 1, to, created_at: new Date().toISOString(), body: { lines: [] }, ...o });
-const send = (s, e) => call("/v2/messages", { ...s, json: e });
+const env = (to, o = {}) => ({ id: uuid(), type: "order.placed", version: 1, conversation: "mf-1", seq: 1, to, created_at: new Date().toISOString(), body: ORDER_BODY(), ...o });
+// order.placed is checked and has to be signed (#34): the bodies here are the shared valid fixture, signed with the key registered below,
+// and the art it names is put in the file table directly (test/sync-orders.mjs goes through the real upload).
+const ART_HASH = "a".repeat(64);
+const ORDER_BODY = () => {
+  const b = JSON.parse(fs.readFileSync(path.join(ROOT, "test/fixtures/sync-orders/order.placed.v1.valid.json"), "utf8"));
+  delete b.preview;
+  return b;
+};
+const SIGN = { kp: null, key: null };
+const send = async (s, e) => {
+  if (e.type === "order.placed" && SIGN.kp && s.key === SIGN.key && !e.sig && String(e.to).startsWith("shop:")) {
+    await db.query(
+      `INSERT INTO sync_files (conversation, sha256, uploader, audience, kind, size, state, expires_at) VALUES ($1, $2, 'service:makerfoundry', $3, 'art', 48210, 'ready', now() + interval '1 day')
+       ON CONFLICT (conversation, sha256) DO UPDATE SET audience = EXCLUDED.audience`,
+      [e.conversation, ART_HASH, e.to],
+    );
+    e = { ...e, sig: signEnvelope({ ...e, from: "service:makerfoundry" }, SIGN.kp.privateKey) };
+  }
+  return call("/v2/messages", { ...s, json: e });
+};
 const get = (s, q = "") => call(`/v2/messages${q}`, s);
 const ack = (s, ids) => call("/v2/messages/ack", { ...s, json: { ids } });
 const status = async (s, ids) => (await call(`/v2/messages/status?ids=${ids.join(",")}`, s)).body.messages;
@@ -118,6 +139,8 @@ try {
   const kp = crypto.generateKeyPairSync("ed25519");
   assert.equal((await adminCall(`/service-keys/${made.id}/public-key`, { method: "PUT", json: { publicKey: "garbage" } })).status, 400);
   expect(await adminCall(`/service-keys/${made.id}/public-key`, { method: "PUT", json: { publicKey: kp.publicKey.export({ type: "spki", format: "der" }).toString("base64") } }), 200, "public key");
+  SIGN.kp = kp;
+  SIGN.key = made.key;
   expect(await adminCall(`/service-keys/${limited.id}`, { method: "DELETE" }), 200, "revoke");
   assert.equal((await call("/v2/shops", SVC(limited.key))).status, 401, "a revoked key stops working");
   expect(await call("/v2/shops", MF), 200, "use the key once");
@@ -152,7 +175,7 @@ try {
   function lstReady(shops, id) { return shops.find((s) => s.id === `shop:${id}`).ready; }
   const dup = expect(await send(MF, first), 202, "send again");
   assert.equal(dup.duplicate, true, "the same id twice is stored once");
-  assert.equal((await send(MF, { ...first, body: { lines: [1] } })).body.code, "id_reused", "an id used for a different message");
+  assert.equal((await send(MF, { ...first, body: { ...first.body, note: "a different order" } })).body.code, "id_reused", "an id used for a different message");
   const got = expect(await get(A), 200, "get");
   assert.equal(got.messages.length, 1);
   assert.deepEqual([got.messages[0].id, got.messages[0].from, got.messages[0].type, got.messages[0].conversation, got.messages[0].seq], [first.id, "service:makerfoundry", "order.placed", "mf-A", 1]);
@@ -174,19 +197,21 @@ try {
   console.log("  ok  sending and receiving: held until hello, dedupe by id, offered again until acked, the cursor, the sender's status");
 
   // ----- ordering per conversation -----
-  expect(await shopHello(B), 200, "hello B");
+  expect(await shopHello(B, { "order.placed": [1], "proof.answer": [1], "message.expired": [1] }), 200, "hello B");
   const order = [];
-  const sent = [env(`shop:${idB}`, { conversation: "o-1", seq: 3 }), env(`shop:${idB}`, { conversation: "o-1", seq: 1 }), env(`shop:${idB}`, { conversation: "o-1", seq: 2 }), env(`shop:${idB}`, { conversation: "o-2", seq: 1 })];
+  const answer = (conversation, seq) => env(`shop:${idB}`, { type: "proof.answer", conversation, seq, body: { proof: 1, answer: "approved" } });
+  expect(await send(MF, env(`shop:${idB}`, { conversation: "o-1", seq: 4 })), 202, "open the order");
+  const sent = [answer("o-1", 3), answer("o-1", 1), answer("o-1", 2), env(`shop:${idB}`, { conversation: "o-2", seq: 1 })];
   for (const e of sent) expect(await send(MF, e), 202, "send");
   const seen = [];
   for (let i = 0; i < 5; i++) for (const m of expect(await get(B), 200, "get").messages) if (!seen.some((s) => s.id === m.id)) seen.push(m);
   const inConv = (c) => seen.filter((m) => m.conversation === c).map((m) => m.seq);
-  assert.deepEqual(inConv("o-1"), [1, 2, 3], "sent 3, 1, 2: handed out 1, 2, 3");
+  assert.deepEqual(inConv("o-1"), [1, 2, 3, 4], "sent 4, 3, 1, 2: handed out 1, 2, 3, 4");
   assert.deepEqual(inConv("o-2"), [1], "another conversation isn't held up");
   assert.equal(seen[0].conversation === "o-1" && seen[0].seq === 1 || seen[0].conversation === "o-2", true, "seq 3 never comes before 1");
   expect(await ack(B, seen.map((m) => m.id)), 200, "ack all");
   order.push(...seen);
-  assert.equal((await send(MF, env(`shop:${idB}`, { conversation: "o-1", seq: 2 }))).body.code, "seq_taken", "a seq already used in a conversation");
+  assert.equal((await send(MF, answer("o-1", 2))).body.code, "seq_taken", "a seq already used in a conversation");
   console.log("  ok  ordering: out-of-order sends come out in seq order per conversation, conversations are independent");
 
   // ----- capabilities: a type the recipient can't read is held, then released -----
@@ -203,7 +228,7 @@ try {
   console.log("  ok  capabilities: an old client holds a newer type until its next hello lists it; unknown type and version refused");
 
   // ----- who may send what, and the rules of an envelope -----
-  assert.equal((await send(A, env(`shop:${idB}`, { type: "order.status", conversation: "z", seq: 1 }))).status, 403, "shop to shop isn't open");
+  assert.equal((await send(A, env(`shop:${idB}`, { type: "order.status", conversation: "z", seq: 1, body: { status: "received" } }))).status, 403, "shop to shop isn't open");
   assert.equal((await send(A, env("service:makerfoundry", { type: "order.placed", conversation: "z", seq: 1 }))).status, 403, "a shop can't send order.placed");
   assert.equal((await send(MF, env("service:makerfoundry", { conversation: "z", seq: 1 }))).status, 403, "a service to a service");
   assert.equal((await send(MF, env(`shop:${idA}`, { created_at: new Date(Date.now() - 3600_000).toISOString(), conversation: "old", seq: 1 }))).body.code, "bad_time", "a message an hour old is a replay");
@@ -226,7 +251,7 @@ try {
   const life = (await db.query(`SELECT expires_at - now() AS left FROM sync_messages WHERE id = $1`, [farOff.id])).rows[0].left;
   assert.ok(life.days <= 7, "the longest life is the type's (7 days for an order), whatever the sender asked");
   await shopHello(C);
-  const heldType = env(`shop:${idC}`, { type: "proof.answer", conversation: "ex-3", seq: 1, expires_at: new Date(Date.now() + 1500).toISOString(), body: { proof: 1, answer: "approved" } });
+  const heldType = env(`shop:${idC}`, { type: "proof.answer", conversation: "ex-2", seq: 2, expires_at: new Date(Date.now() + 1500).toISOString(), body: { proof: 1, answer: "approved" } });
   expect(await send(MF, heldType), 202, "send held");
   for (let i = 0; i < 40 && (await stateOf(MF, soon.id)) !== "expired"; i++) await sleep(250);
   assert.equal(await stateOf(MF, soon.id), "expired");
