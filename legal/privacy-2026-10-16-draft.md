@@ -181,8 +181,7 @@ and whether aggregated, de-identified statistics should be reserved or ruled out
 
 From one mailbox we control, we send: account emails (confirm your address, password resets, connecting a shop),
 notices about changes to these terms and this policy, and, on the hosted service, password-reset emails to your staff.
-We don't send you marketing.
-[OWNER: name the mail provider here once chosen.]
+We don't send you marketing. We send these emails through Resend, our email provider.
 
 ### 5.7 The Assistant (optional)
 
@@ -310,7 +309,7 @@ We share only:
   - **Stripe**: payments in your online shop, only if you use the hosted service's Stripe account (Terms, section 13);
   - **GitHub**: bug reports, as issues (section 5.2b);
   - **Cloudflare**: hosting our website;
-  - **[OWNER: mail provider]**: our account and password-reset emails;
+  - **Resend**: our account and password-reset emails;
   - **Anthropic**: only for the Assistant, only what section 5.7 lists, only when someone presses a button;
   - **Discord**: short announcements on the community channel (section 5.3).
 - **Donations** are handled by [DONATION PLATFORM], an independent company, which gets your card details itself. We
