@@ -72,7 +72,7 @@ You choose how each shop runs. You can change your mind later (section 16).
 | What it is | The program installed on your shop PC | Your shop is one company on our shared online service | You run the program on your own server or your own cloud account |
 | Where your shop's data is | On your PC (and your backups) | On our hosting provider's servers, which we manage for you | On your server, which you manage |
 | Who can get at it | You. We can't. | You, and us as the operator (section 11) | You. We can't. |
-| Who pays for the computer | You | Free: we pay for the hosting (sections 5 and 6) [OWNER: confirm, including any dedicated hosted copy] | You |
+| Who pays for the computer | You | Free: we pay for the hosting (sections 5 and 6) | You |
 | Backups | The program backs up every night to your PC; you keep copies safe | We keep database backups [OWNER: how often, how long] | You |
 
 **A repair shop hosting StitchShop for its partner shops.** A repair shop may run its own copy and put its partner
@@ -95,13 +95,12 @@ only, no redistribution").] [LAWYER: draft that licence.]
 - **There is no subscription.** Nothing renews, nothing is charged to you, and we hold no payment details for you.
 - **The Assistant** (section 14) is the one thing that may cost money, because every request it makes costs us money.
   It is not built yet. If we offer it, we'll show any limit or price where you turn it on, and you won't be charged
-  unless you say yes. [OWNER: decide whether the Assistant will be free, limited, or paid, and say so here.]
+  unless you say yes.
 - **Limits.** To keep the free hosted service fair for everyone, we may limit how much a shop can store or send (for
-  example photos, backups, or messages through the hub). We'll say what the limits are where they apply. [OWNER: list
-  any limits you will set, or delete this bullet.]
-- **If we ever charge.** We have no plan to. If we ever did, we would email every account at least [90] days before
+  example photos, backups, or messages through the hub). We'll say what the limits are where they apply.
+- **If we ever charge.** We have no plan to. If we ever did, we would email every account at least 90 days before
   it applied, it would apply only to what you use after that, nothing would be deleted because you chose not to pay,
-  and you could export everything and move (section 15). [OWNER: confirm you want to make this promise.]
+  and you could export everything and move (section 15).
 - **Taxes.** We charge you nothing, so there is no sales tax to add. You are responsible for any taxes on your own
   sales to your customers.
 
@@ -120,9 +119,8 @@ channel** and with **donations** from people who find the programs useful. Not t
     one that gives every month;
   - the platform takes your payment under its own terms, and we never see your card number;
   - donations are **not refundable**, except where the platform's rules or the law require it. If you gave by mistake,
-    write to bwattendorf@gmail.com and we'll try to put it right; [OWNER: confirm.]
-  - a donation to us is **not a tax-deductible charitable contribution**. [OWNER/LAWYER: true while the project is
-    run by a business and not a registered charity. Change this if that changes.]
+    write to bwattendorf@gmail.com and we'll try to put it right.
+  - a donation to us is **not a tax-deductible charitable contribution**.
 - **No pressure.** Nothing in the programs or the hub will lock or slow down because you haven't donated.
 
 [LAWYER: check how donations and YouTube income should be described for a small business (gifts versus income,
@@ -136,10 +134,9 @@ Because the services are free, nothing ends for want of payment. These are the w
   programs may check a **licence key** the hub signs for your shop. Keys are free and run for many years. A Windows
   program that never connects to a hub keeps working.
 - **We may change or stop things.** We may change what the services do, limit how much each shop can send, or stop
-  offering the hub or the hosted service. We'll give at least [90] days' notice where we can, and help you move your
+  offering the hub or the hosted service. We'll give at least 90 days' notice where we can, and help you move your
   company to a Windows PC or your own server (section 15). The Windows program and a self-hosted copy keep working
   without us, except for the things that need the hub (sharing, partner shops, the marketplace, the Assistant).
-  [OWNER: confirm the notice.]
 - **Suspension.** If we suspend a shop because it seriously broke these terms (section 16), the shop becomes
   **read-only**. **We never delete your data because a shop was suspended.** While read-only, you and your staff can
   still: look at everything, search, print, and export your data; finish and close open tickets and repairs; take
@@ -181,10 +178,9 @@ between shops, and counts of parts used. The Privacy Policy lists exactly what i
 
 **Sharing is your choice, item by item.** The program sends something to the community only when you choose to
 "offer" it: a hint about a model, a part on the marketplace or to your partners, a fix to a manual link or a part
-entry. Sending your monthly parts-used counts is a setting, off until you turn it on. [OWNER: one exception exists in
-the code today. When the program draws a small figure from a manual on your PC for a factory setting, it sends that
-picture to the hub automatically. Either make it an "offer" or say so here and in the Privacy Policy (the draft
-Privacy Policy says so).]
+entry. Sending your monthly parts-used counts is a setting, off until you turn it on. One exception: when the program draws
+a small figure from a manual on your PC for a factory setting, it sends that picture to the hub automatically, as the
+Privacy Policy says.
 
 **What you share.** When you share something on the hub:
 
@@ -241,9 +237,8 @@ numbers, repairs, photos, purchases, messages, and their consent to messages.
   advertising, and we don't look at it otherwise. The Privacy Policy says more. [LAWYER: is this enough as a "service
   provider" contract under the California CCPA and similar state laws, or do we need a separate data processing
   addendum (DPA)? If we may ever have EU or UK customers, a GDPR Article 28 DPA too.]
-- **Deleting a customer.** [OWNER: the program doesn't yet let a shop delete or merge a customer record (decided, not
-  built: HANDOFF section 4, L126). Until it does, say how a shop handles a customer's deletion request (on hosted: ask
-  us).] Some records you should keep even if asked, such as opt-outs and consent records (section 12).
+- **Deleting a customer.** The program doesn't yet let a shop delete or merge a customer record. Until it does, a shop on the hosted service
+  asks us at bwattendorf@gmail.com and we do it; a shop on its own PC or server can ask us how. Some records you should keep even if asked, such as opt-outs and consent records (section 12).
 
 ## 12. Email and texts to your customers
 
@@ -287,8 +282,8 @@ Checkout, Stripe's own payment page. Card numbers never reach the program or us.
   Stripe apply. You handle refunds, disputes and sales tax. Your Stripe keys are stored in your shop's database,
   encrypted.
 - **The hosted service's Stripe account** ("through StitchShop's account"), where we offer it. We take the payment for
-  you and **pay it to you by hand**. [OWNER: say when and how you pay out (for example weekly by bank transfer), what
-  fees you take off (Stripe's fees at least), and who bears refunds and chargebacks (the shop, deducted from payouts).]
+  you and **pay it to you by hand**. We pay out weekly by bank transfer. We take off Stripe's fees. The shop bears refunds and chargebacks, which we
+  deduct from its payouts.
   You are still the seller: you are responsible for the goods, delivery, refunds, and sales tax at your own rate
   (Stripe's tax service is offered only with your own account). [LAWYER: important. Taking payments for other
   businesses and paying them out may break Stripe's Services Agreement (for example its restriction on acting as a
@@ -342,12 +337,11 @@ or your hosted company.
 or put other shops or the hub at risk. Except for urgent cases (security, illegal use), we'll email you first and give
 you a chance to fix it. A suspension makes the shop read-only (section 7); it doesn't delete anything.
 
-**If the hosted service ends for your shop,** we keep your company read-only for at least [90] days so you can export
-it or move it, then delete it, after emailing you. [OWNER: choose the period. The decision so far is "never data loss
-because a shop was suspended"; this is about closing an account.] [LAWYER: check.]
+**If the hosted service ends for your shop,** we keep your company read-only for at least 90 days so you can export
+it or move it, then delete it, after emailing you. [LAWYER: check.]
 
-If we stop offering the hosted service entirely, we'll give at least [90] days' notice and help you move your
-company to a Windows PC or your own server. [OWNER: confirm.]
+If we stop offering the hosted service entirely, we'll give at least 90 days' notice and help you move your
+company to a Windows PC or your own server.
 
 Sections 6 (donations), 10 (the content licence), 11, 12, 15, 19 to 22 and 24 to 25 continue after the agreement ends.
 
@@ -383,8 +377,7 @@ electrical or safety-related. You are responsible for your repairs. [LAWYER: is 
 We provide the services **"as is" and "as available"**. To the extent the law allows, we make no promises beyond
 those in these terms, including that the services will always be available, free of errors, or right for your
 purpose. The hub and the hosted service may be down at times (for updates, problems, or our providers' outages). The
-Windows program keeps working when the internet is down. [OWNER: do you want to promise any uptime for the hosted
-service? Recommended: no.] [LAWYER: wording of the warranty disclaimer; some states limit it.]
+Windows program keeps working when the internet is down. We do not promise any uptime for the hosted service. [LAWYER: wording of the warranty disclaimer; some states limit it.]
 
 ## 21. Limit on our responsibility
 
@@ -416,7 +409,7 @@ makes a claim against us because of:
 
 Each version of these terms and of the Privacy Policy has a **version date** in the form **YYYY-MM-DD**, shown at the
 top. Every version is published on the hub at [HUB ADDRESS]/terms and [HUB ADDRESS]/privacy, and earlier versions stay
-available there. [OWNER: the archive of old versions is a proposal; see README.]
+available there.
 
 The hub records which version your account accepted, and when: at sign-up, and again each time you accept an update.
 

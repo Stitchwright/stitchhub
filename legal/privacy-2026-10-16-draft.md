@@ -102,8 +102,7 @@ optional, shown to the person before sending, and may show whatever was on the s
 which they can choose to leave out. When the program meets an error, it sends the error's message and technical trace
 and the page, with anything that looks like an email address, a phone number or a card number removed, and never form
 contents. We keep this until we have dealt with it (pictures are deleted 90 days after that) and use it only to fix
-and improve the programs and to answer the person; we do not share it or use it to advertise. [OWNER: confirm who
-reads it and how long the words are kept after an item is handled.]
+and improve the programs and to answer the person; we do not share it or use it to advertise.
 
 ### 5.2b Bug reports
 
@@ -145,8 +144,7 @@ offers it. What can be shared:
 - **Parts-used counts** (only if you turn on the setting): how many of each part number you used each month. No
   customers, tickets or prices. The community list shows a part only when at least three shops used it.
 - **Figure pictures**: small crops of manual pages that show a timing or adjustment. These contain nothing about your
-  shop or customers. [OWNER: the program sends a figure to the hub automatically when it draws one for a factory
-  setting; it is not an item-by-item choice today. Keep this sentence, or change the program.]
+  shop or customers. The program sends a figure to the hub automatically when it draws one for a factory setting; it is not an item-by-item choice.
 
 Every shop on the hub can see what you share there, except orders and partner messages. The hub may post a short
 announcement of new notes, link fixes, listings and new members (with the shop's name) to the community's Discord
@@ -183,7 +181,7 @@ and whether aggregated, de-identified statistics should be reserved or ruled out
 
 From one mailbox we control, we send: account emails (confirm your address, password resets, connecting a shop),
 notices about changes to these terms and this policy, and, on the hosted service, password-reset emails to your staff.
-We don't send you marketing. [OWNER: confirm. If you ever send product news, it must have an unsubscribe link.]
+We don't send you marketing.
 [OWNER: name the mail provider here once chosen.]
 
 ### 5.7 The Assistant (optional)
@@ -268,14 +266,14 @@ analytics or tracking cookies. The online shop keeps the cart in the page's addr
 ### 5.11 Our website and videos
 
 - **Our website** (stitchbench.app) is a set of pages with information and links: no accounts, no forms, no
-  advertising and no analytics or tracking cookies. [OWNER: confirm you add no analytics; if you do, say what here.]
+  advertising and no analytics or tracking cookies.
   Cloudflare, which hosts it, may keep ordinary request logs (including internet addresses) for a short time. [OWNER:
   check Cloudflare's log settings and say how long.]
 - **Links to other sites.** The website links to YouTube, GitHub, the donation page and the hub. When you follow one,
   that site's own privacy policy applies, not this one.
 - **Our YouTube channel.** What you do on YouTube (watching, liking, subscribing, commenting) is handled by YouTube
   under its own policy. We see what YouTube shows the channel's owner: public comments and overall figures such as
-  views. We don't connect any of it to a shop's data or its hub account. [OWNER: confirm.]
+  views. We don't connect any of it to a shop's data or its hub account.
 
 ## 6. Your customers' information
 
@@ -336,9 +334,9 @@ We share only:
 | Reset and link codes | Minutes to a day; each works once |
 | Partner messages on the hub | A year after delivery; never more than three years |
 | Things you shared on the hub (notes, link and part edits, listings, ratings) | Until you remove them, or for as long as the community uses them (section 9) |
-| Help button items and error reports (the words) | Until we have dealt with them, then as long as they help improve the programs [OWNER: choose]; pictures 90 days after they are dealt with |
-| Assistant counts on the hub (no text) | [OWNER: choose, e.g. 2 years] |
-| Your shop's data on the hosted service | While your shop is on the service. **A suspension never deletes it.** After you close the account: [OWNER: e.g. 90 days], then deleted |
+| Help button items and error reports (the words) | Until we have dealt with them, then as long as they help improve the programs; pictures 90 days after they are dealt with |
+| Assistant counts on the hub (no text) | 2 years |
+| Your shop's data on the hosted service | While your shop is on the service. **A suspension never deletes it.** After you close the account: 90 days, then deleted |
 | Bug reports (issues on GitHub) | Until we close and delete them. A public one can be read or copied by anyone meanwhile. A report's copy on the hub (StitchBench and StitchShop) is kept like a Help button item |
 | Hosted database backups | [OWNER: Railway's backup schedule and retention] |
 | A move file | Not stored on the server when you make one: it streams straight to your download. One uploaded to the hosted service for an import is deleted from the server within 24 hours |
