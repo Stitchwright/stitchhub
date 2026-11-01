@@ -16,7 +16,7 @@ English. If something isn't clear, write to us at [CONTACT EMAIL] before you agr
 
 ## 1. Who we are
 
-We are [OWNER LEGAL NAME] ("we", "us"), of [ADDRESS]. We make:
+We are [OWNER LEGAL NAME] ("we", "us"), of 8 Maplewood Drive, Mapleville, RI 02839. We make:
 
 - **StitchBench**, a program for sewing, embroidery, quilting machine, vacuum and small appliance repair shops;
 - **StitchShop**, the same program set up for sewing and quilt shops; and
@@ -445,12 +445,12 @@ otherwise.]
   services, and we'll tell you.
 - If part of these terms can't be enforced, the rest still applies.
 - If we don't enforce something straight away, we can still enforce it later.
-- We send notices by email to the account's address. You send notices to [CONTACT EMAIL] and by post to [ADDRESS].
+- We send notices by email to the account's address. You send notices to [CONTACT EMAIL] and by post to 8 Maplewood Drive, Mapleville, RI 02839.
 - Neither of us is responsible for delays caused by things outside our reasonable control (power cuts, internet
   outages, providers' failures, natural disasters).
 
 ## 26. Contact
 
 [OWNER LEGAL NAME]
-[ADDRESS]
+8 Maplewood Drive, Mapleville, RI 02839
 [CONTACT EMAIL]

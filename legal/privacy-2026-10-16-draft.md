@@ -15,7 +15,7 @@ about it. It covers StitchBench and StitchShop (the programs), StitchHub (the co
 
 ## 1. Who we are
 
-We are [OWNER LEGAL NAME] ("we", "us"), of [ADDRESS]. Contact us about privacy at [CONTACT EMAIL].
+We are [OWNER LEGAL NAME] ("we", "us"), of 8 Maplewood Drive, Mapleville, RI 02839. Contact us about privacy at [CONTACT EMAIL].
 
 "You" means the shop that uses our services, and the shop's owner and staff. "Your customers" means the people your
 shop serves.
@@ -421,5 +421,5 @@ terms" on the hub and in Settings → Account. [LAWYER: same question as the Ter
 ## 15. Contact
 
 [OWNER LEGAL NAME]
-[ADDRESS]
+8 Maplewood Drive, Mapleville, RI 02839
 [CONTACT EMAIL]
