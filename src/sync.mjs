@@ -294,6 +294,7 @@ export function registerSync({ app, admin, installByKey, fail, newId, allow, cli
     if (env.from !== undefined && env.from !== p.address) throw new Refusal(403, "bad_from", "from has to be the caller's own address.");
     const to = String(env.to ?? "");
     if (!kindOf(to) || to === "hub") throw new Refusal(400, "bad_to", "to is shop:<id> or service:<name>.");
+    if (String(env.created_at ?? "").length > 64 || String(env.expires_at ?? "").length > 64) throw new Refusal(400, "bad_time", "created_at and expires_at are times like 2026-11-01T09:30:00Z.");
     const created = Date.parse(String(env.created_at ?? ""));
     if (!Number.isFinite(created) || Math.abs(Date.now() - created) > skewMs()) throw new Refusal(400, "bad_time", "created_at has to be the current time (within 10 minutes), to refuse a replayed message.");
     const longest = Date.now() + spec.days * 86_400_000;
@@ -308,7 +309,10 @@ export function registerSync({ app, admin, installByKey, fail, newId, allow, cli
     const bytes = Buffer.byteLength(json);
     if (bytes > bodyBytes()) throw new Refusal(413, "body_too_large", `A message body may be ${bodyBytes()} bytes at most; send files by signed address.`);
     if (env.sig !== undefined && env.sig !== null && (typeof env.sig !== "object" || JSON.stringify(env.sig).length > 2048)) throw new Refusal(400, "bad_sig", "sig is a small object.");
-    return { type, spec, to, created: new Date(created), expires: new Date(expires), json, bytes };
+    // A signed message's times as the sender wrote them are kept beside the hub's own, since the signature covers that exact text
+    // (migration 042). Other types are delivered with the hub's own form of the times, as before.
+    const asSent = SIGNED_TYPES.has(type);
+    return { type, spec, to, created: new Date(created), expires: new Date(expires), createdSent: asSent ? String(env.created_at) : null, expiresSent: asSent && env.expires_at !== undefined ? String(env.expires_at) : null, json, bytes };
   }
 
   app.post("/v2/messages", bodyLimit({ maxSize: 512 * 1024, onError: (c) => c.json({ error: "Too large." }, 413) }), guarded(async (c) => {
@@ -373,9 +377,9 @@ export function registerSync({ app, admin, installByKey, fail, newId, allow, cli
         if (!made.rowCount) throw new Refusal(409, "order_exists", "That order reference was already placed.");
       }
       await cl.query(
-        `INSERT INTO sync_messages (sender, id, type, version, conversation, seq, created_at, expires_at, body, body_sha256, body_bytes, sig)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-        [p.address, env.id, m.type, env.version, env.conversation, env.seq, m.created, m.expires, m.json, sha256, m.bytes, env.sig ? JSON.stringify(env.sig) : null],
+        `INSERT INTO sync_messages (sender, id, type, version, conversation, seq, created_at, expires_at, body, body_sha256, body_bytes, sig, created_at_sent, expires_at_sent)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+        [p.address, env.id, m.type, env.version, env.conversation, env.seq, m.created, m.expires, m.json, sha256, m.bytes, env.sig ? JSON.stringify(env.sig) : null, m.createdSent, m.expiresSent],
       );
       const caps = await capsOf(m.to);
       const state = understands(caps, m.type, env.version) ? "queued" : "held_capability";
@@ -394,7 +398,7 @@ export function registerSync({ app, admin, installByKey, fail, newId, allow, cli
   async function drain(recipient, after, limit) {
     return tx(async (cl) => {
       const { rows } = await cl.query(
-        `SELECT d.delivery_seq, d.state, m.sender, m.id, m.type, m.version, m.conversation, m.seq, m.created_at, m.expires_at, m.body, m.sig
+        `SELECT d.delivery_seq, d.state, m.sender, m.id, m.type, m.version, m.conversation, m.seq, m.created_at, m.expires_at, m.created_at_sent, m.expires_at_sent, m.body, m.sig
          FROM sync_deliveries d JOIN sync_messages m ON m.sender = d.sender AND m.id = d.message_id
          WHERE d.recipient = $1 AND d.delivery_seq > $2 AND d.state IN ('queued', 'delivered')
            AND NOT EXISTS (
@@ -421,6 +425,12 @@ export function registerSync({ app, admin, installByKey, fail, newId, allow, cli
       return { rows, next };
     });
   }
+  // The times a message is delivered with: a signed one's as the sender wrote them (the signature covers that text; expires_at is
+  // null when the sender sent none), others' in the hub's form; and hub_expires_at, when the hub gives up on it. Rows stored before
+  // migration 042 have no sent text and are delivered as before.
+  const timesOf = (r) => (r.created_at_sent == null
+    ? { created_at: r.created_at, expires_at: r.expires_at, hub_expires_at: r.expires_at }
+    : { created_at: r.created_at_sent, expires_at: r.expires_at_sent, hub_expires_at: r.expires_at });
   app.get("/v2/messages", guarded(async (c) => {
     checkClient(c, { required: true });
     const p = await principalOf(c);
@@ -436,7 +446,7 @@ export function registerSync({ app, admin, installByKey, fail, newId, allow, cli
       ({ rows, next } = await drain(p.address, after, limit));
     }
     return c.json({
-      messages: rows.map((r) => ({ id: r.id, from: r.sender, to: p.address, type: r.type, version: r.version, conversation: r.conversation, seq: r.seq, created_at: r.created_at, expires_at: r.expires_at, body: r.body, sig: r.sig, delivery_seq: String(r.delivery_seq) })),
+      messages: rows.map((r) => ({ id: r.id, from: r.sender, to: p.address, type: r.type, version: r.version, conversation: r.conversation, seq: r.seq, ...timesOf(r), body: r.body, sig: r.sig, delivery_seq: String(r.delivery_seq) })),
       next,
     });
   }));

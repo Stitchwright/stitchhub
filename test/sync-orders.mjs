@@ -13,7 +13,7 @@ import net from "node:net";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import pg from "pg";
-import { Bad, signEnvelope, validateBody } from "../src/sync-orders.mjs";
+import { Bad, signEnvelope, validateBody, verifySignature } from "../src/sync-orders.mjs";
 import { startBucket } from "./bucket-mock.mjs";
 
 const FIX = path.join(import.meta.dirname, "fixtures", "sync-orders");
@@ -383,10 +383,19 @@ try {
   const u4 = expect(await put(M, { conversation: "o-tax", sha256: h4, size: art4.length, kind: "art", to: `shop:${idD}` }), 200, "put taxed art");
   assert.equal(await upload(u4, art4), 200);
   expect(await call("/v2/files/done", { ...M, json: { conversation: "o-tax", sha256: h4 } }), 200, "done taxed art");
-  const taxedMsg = placed(`shop:${idD}`, "o-tax", { body: taxed });
+  // Sent as MakerFoundry writes it: created_at to the second ("...:39Z") and no expires_at.
+  const secondsOnly = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+  const taxedMsg = placed(`shop:${idD}`, "o-tax", { body: taxed, env: { created_at: secondsOnly } });
+  assert.equal(taxedMsg.expires_at, undefined);
   expect(await send(M, taxedMsg), 202, "a taxed order is signed and delivered");
   const gotTaxed = expect(await get(D), 200, "shop reads the taxed order").messages.find((x) => x.id === taxedMsg.id);
   assert.deepEqual(gotTaxed?.body, taxed, "delivered exactly as signed: the tax outside the shop's share, the postcode as sent");
+  assert.equal(gotTaxed.created_at, secondsOnly, "created_at is delivered byte for byte, not as the hub would write it");
+  assert.equal(gotTaxed.expires_at, null, "no expires_at was sent, so none is delivered (the signature covers its absence)");
+  assert.ok(Date.parse(gotTaxed.hub_expires_at) > Date.now(), "when the hub gives up on it is said apart");
+  const published = expect(await call("/v2/hello"), 200, "hello").keys["service:makerfoundry"];
+  assert.equal(verifySignature(gotTaxed, published), true, "the shop can check the delivered order with the published key");
+  assert.equal(typeof heard.expires_at, "string", "an unsigned message still comes with the hub's expiry");
   assert.equal(gotTaxed.body.totals.shop_gets_cents, 21131, "$259.52 paid, $16.03 tax, $24.35 and $7.83 in fees: the shop gets $211.31");
   const wrong = JSON.parse(JSON.stringify(taxed));
   wrong.totals.shop_gets_cents = 25952 - 2435 - 783; // earnings that count the tax as the shop's

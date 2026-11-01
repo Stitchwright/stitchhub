@@ -579,7 +579,7 @@ A version handshake and a durable, acknowledged queue between programs and servi
 | `POST /v2/hello { app, version, types }` | program or service | says what it understands; messages held for it are released |
 | `PUT /v2/optin { service, enabled, maxOpen?, perMinute? }` | a shop's program | takes orders from a service (no row: not listed, orders refused) |
 | `GET /v2/shops` | a service | the shops that opted in to it (`ready`: its program understands `order.placed`) |
-| `POST /v2/messages` | program or service | an envelope `{ id, type, version, conversation, seq, to, created_at, expires_at?, body, sig? }` → `202` |
+| `POST /v2/messages` | program or service | an envelope `{ id, type, version, conversation, seq, to, created_at, expires_at?, body, sig? }` → `202`. A signed `order.placed` is delivered with `created_at` and `expires_at` exactly as sent (`expires_at` null when none was sent), so its signature checks against the keys `/v2/hello` publishes; every delivered message also has `hub_expires_at`, when the hub gives up on it |
 | `GET /v2/messages?after&limit&wait` | the recipient | the oldest unacknowledged messages and `next`, the cursor to poll with (it never passes a message still held back, behind an earlier `seq` or for an update, so a repeat is possible: de-duplicate by `id`); `POST /v2/messages/ack { ids }` after applying them |
 | `GET /v2/messages/status?ids` | the sender | `queued`, `held_capability`, `delivered`, `acked` or `expired` for each |
 | `POST/GET/DELETE /v1/admin/service-keys`, `GET /v1/admin/sync/summary` | the admin | issue (shown once), list, revoke; the queue by state and recipient |
