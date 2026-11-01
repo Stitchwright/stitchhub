@@ -20,7 +20,7 @@ We are [OWNER LEGAL NAME] ("we", "us"), of 8 Maplewood Drive, Mapleville, RI 028
 
 - **StitchBench**, a program for sewing, embroidery, quilting machine, vacuum and small appliance repair shops;
 - **StitchShop**, the same program set up for sewing and quilt shops; and
-- **StitchHub**, the community server the programs connect to, at [HUB ADDRESS].
+- **StitchHub**, the community server the programs connect to, at https://stitchhub.app.
 
 In these terms, "the programs" means StitchBench and StitchShop, "the hub" means StitchHub, and "the services" means
 all three, plus the hosted service described in section 4.
@@ -44,7 +44,7 @@ You agree to these terms when you tick the box to accept them, either in the pro
 sign-up page, or when you accept an update to these terms. The hub records the **version** you accepted and the date (section 23). If you
 don't agree, don't use the services.
 
-Our **Privacy Policy** (at [HUB ADDRESS]/privacy) is part of these terms. It says what data we hold, where it sits and
+Our **Privacy Policy** (at https://stitchhub.app/privacy) is part of these terms. It says what data we hold, where it sits and
 who sees it.
 
 You must be 18 or older to accept these terms. [LAWYER: confirm.]
@@ -408,7 +408,7 @@ makes a claim against us because of:
 ## 23. Changes to these terms, and versions
 
 Each version of these terms and of the Privacy Policy has a **version date** in the form **YYYY-MM-DD**, shown at the
-top. Every version is published on the hub at [HUB ADDRESS]/terms and [HUB ADDRESS]/privacy, and earlier versions stay
+top. Every version is published on the hub at https://stitchhub.app/terms and https://stitchhub.app/privacy, and earlier versions stay
 available there.
 
 The hub records which version your account accepted, and when: at sign-up, and again each time you accept an update.
