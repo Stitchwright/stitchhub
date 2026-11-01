@@ -430,10 +430,10 @@ Small fixes (spelling, contact details) may apply straight away.
 
 ## 24. The law, and disagreements
 
-These terms are governed by the laws of [STATE OF GOVERNING LAW] and of the United States.
+These terms are governed by the laws of Rhode Island and of the United States.
 
 If you have a problem, please write to us first at bwattendorf@gmail.com; we'll try to sort it out within 30 days. If we
-can't, a claim goes to the state or federal courts in [STATE OF GOVERNING LAW], except that either of us may use
+can't, a claim goes to the state or federal courts in Rhode Island, except that either of us may use
 small-claims court for a claim that qualifies. [LAWYER: courts or arbitration? Venue (county)? A class-action waiver?
 Recommended for a small company: courts plus small claims, no arbitration clause, unless the lawyer advises
 otherwise.]
