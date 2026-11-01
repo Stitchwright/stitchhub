@@ -15,7 +15,7 @@ about it. It covers StitchBench and StitchShop (the programs), StitchHub (the co
 
 ## 1. Who we are
 
-We are [OWNER LEGAL NAME] ("we", "us"), of [ADDRESS]. Contact us about privacy at [CONTACT EMAIL].
+We are [OWNER LEGAL NAME] ("we", "us"), of 8 Maplewood Drive, Mapleville, RI 02839. Contact us about privacy at bwattendorf@gmail.com.
 
 "You" means the shop that uses our services, and the shop's owner and staff. "Your customers" means the people your
 shop serves.
@@ -30,13 +30,10 @@ shop serves.
 - **Your customers' contact details never go to the community.** Partner shops see only what a repair needs (first
   name and last initial, not phone or address).
 - **We take no payment from you, so we hold no card details.** The programs are free. If you give a donation, it goes
-  through [DONATION PLATFORM], which handles your card.
+  through Buy Me a Coffee, which handles your card.
 - **We don't sell information, and we don't show ads.** No advertising or tracking cookies.
 - **Bug reports go to GitHub.** If you press Report a bug, what you type is filed as an issue on GitHub. For the
   open-source programs it is public. Your shop's name and email are not put in it (section 5.2b).
-- **The optional Assistant** sends the text of a ticket (with customer names, emails and phone numbers taken out) to
-  Anthropic, through the hub, only when someone presses a button. The hub doesn't keep it. Anthropic doesn't train on
-  it.
 
 ## 3. Two kinds of information, two roles
 
@@ -56,7 +53,7 @@ business/service-provider framing, and whether a separate DPA is needed (see the
 | How you run | Where the shop's data is | Who can get at it |
 |---|---|---|
 | **Windows program** | On the shop PC, in the program's database (`%APPDATA%\StitchBench`, or `StitchShop`), with nightly backups in `Documents\StitchBench Backups` | You. We have no copy and no access |
-| **Hosted by us** | In a database on Railway, our hosting provider, in [OWNER: region, e.g. the United States] | You and your staff; us as the operator (section 6.2); Railway as our provider |
+| **Hosted by us** | In a database on Railway, our hosting provider, in Virginia, in the United States | You and your staff; us as the operator (section 6.2); Railway as our provider |
 | **Self-hosted** | On your own server or cloud account | You. We have no copy and no access |
 | **Hosted by your repair shop** (a StitchShop the repair shop runs for its partner shops) | On the repair shop's server | The repair shop, as your host. Ask it how it looks after your data |
 
@@ -87,7 +84,7 @@ the shop's standing (free, unless we have suspended it) and licence key. The hub
 
 **Internet (IP) addresses.** The hub uses the address a request comes from, for a short time, to limit abuse (for
 example, too many sign-in attempts). It holds this in memory and doesn't save it to its database. Our hosting
-provider may record addresses in its request logs. [OWNER: check Railway's log retention and say it here.]
+provider may record addresses in its request logs, which it keeps for 30 days.
 [LAWYER: confirm this is enough.]
 
 ### 5.2a The Help button and error reports
@@ -102,8 +99,7 @@ optional, shown to the person before sending, and may show whatever was on the s
 which they can choose to leave out. When the program meets an error, it sends the error's message and technical trace
 and the page, with anything that looks like an email address, a phone number or a card number removed, and never form
 contents. We keep this until we have dealt with it (pictures are deleted 90 days after that) and use it only to fix
-and improve the programs and to answer the person; we do not share it or use it to advertise. [OWNER: confirm who
-reads it and how long the words are kept after an item is handled.]
+and improve the programs and to answer the person; we do not share it or use it to advertise.
 
 ### 5.2b Bug reports
 
@@ -124,8 +120,7 @@ your email address or your internet address.**
 - The hub uses your internet address for a short time to limit abuse (not saved to its database). GitHub's own privacy
   statement applies to what GitHub holds. We read reports only to fix and improve the programs.
 - A maintainer can have an AI assistant (Claude, made by Anthropic) work on an issue to propose a fix. It reads the
-  issue text and our code, not your shop's data. [OWNER: confirm you want this stated; check Anthropic's terms for
-  that use, and the section 5.7 wording on training.]
+  issue text and our code, not your shop's data.
 
 ### 5.3 What you share on the hub
 
@@ -145,8 +140,7 @@ offers it. What can be shared:
 - **Parts-used counts** (only if you turn on the setting): how many of each part number you used each month. No
   customers, tickets or prices. The community list shows a part only when at least three shops used it.
 - **Figure pictures**: small crops of manual pages that show a timing or adjustment. These contain nothing about your
-  shop or customers. [OWNER: the program sends a figure to the hub automatically when it draws one for a factory
-  setting; it is not an item-by-item choice today. Keep this sentence, or change the program.]
+  shop or customers. The program sends a figure to the hub automatically when it draws one for a factory setting; it is not an item-by-item choice.
 
 Every shop on the hub can see what you share there, except orders and partner messages. The hub may post a short
 announcement of new notes, link fixes, listings and new members (with the shop's name) to the community's Discord
@@ -183,68 +177,21 @@ and whether aggregated, de-identified statistics should be reserved or ruled out
 
 From one mailbox we control, we send: account emails (confirm your address, password resets, connecting a shop),
 notices about changes to these terms and this policy, and, on the hosted service, password-reset emails to your staff.
-We don't send you marketing. [OWNER: confirm. If you ever send product news, it must have an unsubscribe link.]
-[OWNER: name the mail provider here once chosen.]
+We don't send you marketing. We send these emails through Resend, our email provider.
 
-### 5.7 The Assistant (optional)
+### 5.7 The Assistant
 
-[OWNER: the Assistant is built on branch `assistant` except "Ask the manuals" and the parts helpers (rows marked "later"
-below, which can stay or go until they ship). Publish this section when the Assistant ships, and check it against what
-shipped. The hub keeps counts, tokens and cost only (migration 040); the "first time on each ticket" preview is built.]
-
-The Assistant uses AI models made by **Anthropic**. It runs **only when someone presses a button**: never on a page
-load, a timer or in the background.
-
-**The path.** Your program sends the request to the hub. The hub sends it to Anthropic, gets the answer, and passes it
-back. **The hub does not keep the text** it sends or gets back. It keeps only counts per shop and month (requests,
-their size in "tokens", cost, which feature, how long, errors), to meter your allowance.
-
-**What is taken out first, every time.** Email addresses, phone numbers, the ticket's customer name, the trade
-account's name and your known customers' names are replaced with "[customer]". The customer's record (contact
-details, address) is never read into a request at all. Customer **first names** are sent for drafts only if you turn
-on "Offer customer first names to the Assistant" in Settings → Assistant (it starts **off**); otherwise the draft says
-{first_name} and the program fills it in on your PC. The first time on each ticket, the program shows exactly what
-will be sent before it goes.
-
-**What each feature sends:**
-
-| Feature | What is sent |
-|---|---|
-| Draft it (write-ups) | The ticket's service requested, problem, diagnosis, work done and the tech's notes; your shop's name and your "how we write" sample. Not the customer, serial number, payments or photos |
-| What's likely wrong | The same for this ticket; the problem, diagnosis, work done and part and service lines of up to 20 of your closed tickets on the same model (no customers, no serial numbers); matching community notes, tension specs, factory settings and test-mode procedures |
-| Read the plate | The one photo of the machine's rating plate that the tech chooses, and a list of brand names. The serial number comes back and is written only into the form; the log keeps it masked. No other photo is ever sent. If a photo shows a name tag, that would go too, so the program shows the photo first |
-| Ask the manuals (later) | The question, brand and model, and the text of up to 12 matching pages of that model's manuals. The manuals themselves stay on your PC |
-| Parts helpers (later) | Part numbers, descriptions and fits, and matching cross-reference entries; for an import, the column headings and three sample rows of a parts list |
-
-**At Anthropic.** We use Anthropic's API under its Commercial Terms. As we read them on 3 October 2026:
-
-- Anthropic's [Commercial Terms of Service](https://www.anthropic.com/legal/commercial-terms) (effective 17 June 2025),
-  section B, say: "Anthropic may not train models on Customer Content from Services." The customer (us) retains the
-  rights to its inputs and owns the outputs.
-- Anthropic's Privacy Center, ["Is my data used for model training?"](https://privacy.claude.com/en/articles/7996868-is-my-data-used-for-model-training)
-  (updated 18 August 2026), says: "By default, we will not use your inputs or outputs from our commercial products
-  (e.g. Claude for Work, Anthropic API, Claude Gov, etc.) to train our models." The exception is feedback sent to
-  Anthropic; the Assistant's "Use this" and "Not useful" buttons stay in your program and send nothing to Anthropic.
-- Anthropic's Privacy Center, ["How long do you store my organization's data?"](https://privacy.claude.com/en/articles/7996866-how-long-do-you-store-my-organization-s-data)
-  (updated 1 July 2026), says: "For Anthropic API users, we automatically delete inputs and outputs on our backend
-  within 30 days of receipt or generation", except where a request is flagged under its Usage Policy (then kept up
-  to 2 years) or the law requires longer.
-
-[LAWYER: Anthropic's Data Processing Addendum is incorporated into its Commercial Terms by reference. Check it covers
-our use as a processor for shops, and list Anthropic as a subprocessor (section 7). Re-check these quotes when
-publishing.]
-
-**In your program.** Each request and answer is logged in your shop's own data (Settings → Assistant shows "What was
-sent" for each), so you can check it. It is part of your data: it's in your backups and exports, and on the Windows
-program it stays on your PC.
+The Assistant is not available yet and sends nothing anywhere. Before it ships we'll publish an updated policy that says
+exactly what it sends, to whom, and for how long, and we'll ask you to accept it.
 
 ### 5.8 Payments and donations
 
 - **The programs are free,** so we take no payment from you and hold no card details, bank details or billing address
   for you.
-- **Donations.** If you give a donation, [DONATION PLATFORM] takes it under its own terms and privacy policy. We receive
-  from it only what it passes on to us (for example the name or email you gave, the amount, and any message) [OWNER:
-  depends on the platform: say exactly what you receive]. We use that to thank you and for our own records, and we
+- **Donations.** If you give a donation, Buy Me a Coffee takes it under its own terms and privacy policy, with Stripe handling the payment. We receive
+  from it only what it passes on to us: the name or display name you gave, your email address, your message, the amount
+  and the date. On Buy Me a Coffee, a supporter's name and message show publicly unless the supporter changes that in
+  their own settings there. We use that to thank you and for our own records, and we
   don't share it. We never see your card number.
 - **Your online shop.** Stripe Checkout takes your customers' cards. Card numbers never reach the program or us. The
   order (the customer's name, email or phone, shipping address, items and amounts) is kept in your shop's data.
@@ -268,14 +215,13 @@ analytics or tracking cookies. The online shop keeps the cart in the page's addr
 ### 5.11 Our website and videos
 
 - **Our website** (stitchbench.app) is a set of pages with information and links: no accounts, no forms, no
-  advertising and no analytics or tracking cookies. [OWNER: confirm you add no analytics; if you do, say what here.]
-  Cloudflare, which hosts it, may keep ordinary request logs (including internet addresses) for a short time. [OWNER:
-  check Cloudflare's log settings and say how long.]
+  advertising and no analytics or tracking cookies.
+  Cloudflare, which hosts it, keeps ordinary request logs (including internet addresses) under its own policy, and we can see them in its dashboard. We don't export them or keep our own copy.
 - **Links to other sites.** The website links to YouTube, GitHub, the donation page and the hub. When you follow one,
   that site's own privacy policy applies, not this one.
 - **Our YouTube channel.** What you do on YouTube (watching, liking, subscribing, commenting) is handled by YouTube
   under its own policy. We see what YouTube shows the channel's owner: public comments and overall figures such as
-  views. We don't connect any of it to a shop's data or its hub account. [OWNER: confirm.]
+  views. We don't connect any of it to a shop's data or its hub account.
 
 ## 6. Your customers' information
 
@@ -283,9 +229,7 @@ analytics or tracking cookies. The online shop keeps the cart in the page's addr
 
 Your shop decides what to collect about its customers and staff and what to do with it. Your shop must give them any
 notice the law requires (for example a privacy notice on your website if you use online booking or the online shop),
-and answer their requests to see, correct or delete their information. [OWNER: the program can't yet delete or merge
-a customer record (decided, not built: HANDOFF section 4, L126). Until it can, a hosted shop asks us; say how a
-Windows shop does it.]
+and answer their requests to see, correct or delete their information. The program can't yet delete or merge a customer record. Until it can, a hosted shop asks us and we do it; a shop on its own PC or server can ask us how.
 
 ### 6.2 What we do with it on the hosted service
 
@@ -314,10 +258,9 @@ We share only:
   - **Stripe**: payments in your online shop, only if you use the hosted service's Stripe account (Terms, section 13);
   - **GitHub**: bug reports, as issues (section 5.2b);
   - **Cloudflare**: hosting our website;
-  - **[OWNER: mail provider]**: our account and password-reset emails;
-  - **Anthropic**: only for the Assistant, only what section 5.7 lists, only when someone presses a button;
+  - **Resend**: our account and password-reset emails;
   - **Discord**: short announcements on the community channel (section 5.3).
-- **Donations** are handled by [DONATION PLATFORM], an independent company, which gets your card details itself. We
+- **Donations** are handled by Buy Me a Coffee, an independent company, which gets your card details itself. We
   don't pass it anything about your shop.
 - **With other shops**, only what you share on the hub (section 5.3), and with a partner shop only the partner
   messages (section 5.4).
@@ -336,19 +279,17 @@ We share only:
 | Reset and link codes | Minutes to a day; each works once |
 | Partner messages on the hub | A year after delivery; never more than three years |
 | Things you shared on the hub (notes, link and part edits, listings, ratings) | Until you remove them, or for as long as the community uses them (section 9) |
-| Help button items and error reports (the words) | Until we have dealt with them, then as long as they help improve the programs [OWNER: choose]; pictures 90 days after they are dealt with |
-| Assistant counts on the hub (no text) | [OWNER: choose, e.g. 2 years] |
-| Your shop's data on the hosted service | While your shop is on the service. **A suspension never deletes it.** After you close the account: [OWNER: e.g. 90 days], then deleted |
+| Help button items and error reports (the words) | Until we have dealt with them, then as long as they help improve the programs; pictures 90 days after they are dealt with |
+| Your shop's data on the hosted service | While your shop is on the service. **A suspension never deletes it.** After you close the account: 90 days, then deleted |
 | Bug reports (issues on GitHub) | Until we close and delete them. A public one can be read or copied by anyone meanwhile. A report's copy on the hub (StitchBench and StitchShop) is kept like a Help button item |
-| Hosted database backups | [OWNER: Railway's backup schedule and retention] |
+| Hosted database backups | A backup every day, each kept for 6 days, then deleted |
 | A move file | Not stored on the server when you make one: it streams straight to your download. One uploaded to the hosted service for an import is deleted from the server within 24 hours |
 | The old copy after a move | Read-only, kept until someone deletes it (allowed after 30 days) |
 | Your shop's data on Windows or self-hosted | You decide. The program never deletes consent records or opt-outs, and keeps sent messages and replies |
-| At Anthropic (Assistant) | Deleted within 30 days, per Anthropic's terms (section 5.7) |
 
 ## 9. Deleting your information
 
-- **Your hub account.** Ask us at [CONTACT EMAIL]. We delete the account and detach its shops. What your shop shared with the community (notes, link and part edits, listings) stays, under your install's
+- **Your hub account.** Ask us at bwattendorf@gmail.com. We delete the account and detach its shops. What your shop shared with the community (notes, link and part edits, listings) stays, under your install's
   name, because other shops rely on it, unless you remove it first or ask us to remove it. [LAWYER: is keeping shared
   contributions after an account deletion acceptable, especially names of people in edit history? Consider replacing
   people's names with the shop's on deletion.]
@@ -393,9 +334,8 @@ You can:
 
 - see and change your account email and password on the hub, and your shop's details in the program;
 - turn off sharing of parts-used counts, remove what you shared, and choose what you offer;
-- turn the Assistant on or off, feature by feature, and decide whether first names are offered;
 - export everything (section 10), and ask us to delete your account or hosted company (section 9);
-- ask us what information we hold about you, at [CONTACT EMAIL]. We'll answer within [45] days and may need to check
+- ask us what information we hold about you, at bwattendorf@gmail.com. We'll answer within 45 days and may need to check
   it's really you.
 
 Depending on where you live, privacy laws may give you more rights. We'll honour them where they apply. [LAWYER:
@@ -414,12 +354,12 @@ enrolling children in classes through online booking raises anything for us on t
 ## 14. Changes to this policy, and versions
 
 Each version has a version date in the form **YYYY-MM-DD** at the top, and is published on the hub at
-[HUB ADDRESS]/privacy, with earlier versions kept there. The hub records which version your account accepted. If we
-make a change that matters, we'll email your account at least [30] days before it applies and show "We updated our
+https://hub.stitchbench.app/privacy, with earlier versions kept there. The hub records which version your account accepted. If we
+make a change that matters, we'll email your account at least 30 days before it applies and show "We updated our
 terms" on the hub and in Settings → Account. [LAWYER: same question as the Terms, section 23.]
 
 ## 15. Contact
 
 [OWNER LEGAL NAME]
-[ADDRESS]
-[CONTACT EMAIL]
+8 Maplewood Drive, Mapleville, RI 02839
+bwattendorf@gmail.com

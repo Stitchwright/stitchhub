@@ -10,17 +10,17 @@ _Rewritten for the free model (16 Oct 2026): the programs, the hub and the hoste
 and donations._
 
 These terms are the agreement between your business and us. Please read them. We've tried to write them in plain
-English. If something isn't clear, write to us at [CONTACT EMAIL] before you agree.
+English. If something isn't clear, write to us at bwattendorf@gmail.com before you agree.
 
 ---
 
 ## 1. Who we are
 
-We are [OWNER LEGAL NAME] ("we", "us"), of [ADDRESS]. We make:
+We are [OWNER LEGAL NAME] ("we", "us"), of 8 Maplewood Drive, Mapleville, RI 02839. We make:
 
 - **StitchBench**, a program for sewing, embroidery, quilting machine, vacuum and small appliance repair shops;
 - **StitchShop**, the same program set up for sewing and quilt shops; and
-- **StitchHub**, the community server the programs connect to, at [HUB ADDRESS].
+- **StitchHub**, the community server the programs connect to, at https://hub.stitchbench.app.
 
 In these terms, "the programs" means StitchBench and StitchShop, "the hub" means StitchHub, and "the services" means
 all three, plus the hosted service described in section 4.
@@ -44,7 +44,7 @@ You agree to these terms when you tick the box to accept them, either in the pro
 sign-up page, or when you accept an update to these terms. The hub records the **version** you accepted and the date (section 23). If you
 don't agree, don't use the services.
 
-Our **Privacy Policy** (at [HUB ADDRESS]/privacy) is part of these terms. It says what data we hold, where it sits and
+Our **Privacy Policy** (at https://hub.stitchbench.app/privacy) is part of these terms. It says what data we hold, where it sits and
 who sees it.
 
 You must be 18 or older to accept these terms. [LAWYER: confirm.]
@@ -56,7 +56,7 @@ You must be 18 or older to accept these terms. [LAWYER: confirm.]
   email the owner uses to sign in to the program.
 - Staff sign-ins inside the program are separate. You decide who gets one and what they can do, and you're responsible
   for what they do with it.
-- Keep your password private. Tell us at once at [CONTACT EMAIL] if you think someone else has used your account.
+- Keep your password private. Tell us at once at bwattendorf@gmail.com if you think someone else has used your account.
 - On the Windows program you can choose to **allow a password reset from your StitchHub account** (off unless you turn
   it on). If you turn it on, someone who controls your hub account can reset the owner's password on the shop PC. The
   new password is shown only on that PC's screen.
@@ -72,17 +72,15 @@ You choose how each shop runs. You can change your mind later (section 16).
 | What it is | The program installed on your shop PC | Your shop is one company on our shared online service | You run the program on your own server or your own cloud account |
 | Where your shop's data is | On your PC (and your backups) | On our hosting provider's servers, which we manage for you | On your server, which you manage |
 | Who can get at it | You. We can't. | You, and us as the operator (section 11) | You. We can't. |
-| Who pays for the computer | You | Free: we pay for the hosting (sections 5 and 6) [OWNER: confirm, including any dedicated hosted copy] | You |
-| Backups | The program backs up every night to your PC; you keep copies safe | We keep database backups [OWNER: how often, how long] | You |
+| Who pays for the computer | You | Free: we pay for the hosting (sections 5 and 6) | You |
+| Backups | The program backs up every night to your PC; you keep copies safe | We keep a database backup every day, each for 6 days | You |
 
 **A repair shop hosting StitchShop for its partner shops.** A repair shop may run its own copy and put its partner
 sewing shops in it as separate companies. Then the repair shop is the host for those shops, not us. The repair shop
 must treat their data as section 11 says we treat yours, and must have its own agreement with them. [LAWYER: is this
 enough, or should these terms require the hosting shop to sign something with each hosted shop?]
 
-**Self-hosting.** We give self-hosting shops access to the program's code as we agree with them. [OWNER: StitchBench
-has no software licence file today. Decide what licence the code is given under (for example "for your own shop
-only, no redistribution").] [LAWYER: draft that licence.]
+**Self-hosting.** The StitchBench and StitchShop programs' code is open source under the MIT licence or the Apache License 2.0, at your choice; the licence texts come with the code. A shop that runs its own copy may use, change and share that code as those licences allow. These terms do not take away any right the open-source licences give you.
 
 **The hub** is the same for everyone. It is optional: a Windows program that never connects keeps working.
 
@@ -93,15 +91,11 @@ only, no redistribution").] [LAWYER: draft that licence.]
   add-on (for example Vac Shop, Small Appliance Repair, Scheduling and Marketing) is included, for every shop, however
   it runs (section 4).
 - **There is no subscription.** Nothing renews, nothing is charged to you, and we hold no payment details for you.
-- **The Assistant** (section 14) is the one thing that may cost money, because every request it makes costs us money.
-  It is not built yet. If we offer it, we'll show any limit or price where you turn it on, and you won't be charged
-  unless you say yes. [OWNER: decide whether the Assistant will be free, limited, or paid, and say so here.]
 - **Limits.** To keep the free hosted service fair for everyone, we may limit how much a shop can store or send (for
-  example photos, backups, or messages through the hub). We'll say what the limits are where they apply. [OWNER: list
-  any limits you will set, or delete this bullet.]
-- **If we ever charge.** We have no plan to. If we ever did, we would email every account at least [90] days before
+  example photos, backups, or messages through the hub). We'll say what the limits are where they apply.
+- **If we ever charge.** We have no plan to. If we ever did, we would email every account at least 90 days before
   it applied, it would apply only to what you use after that, nothing would be deleted because you chose not to pay,
-  and you could export everything and move (section 15). [OWNER: confirm you want to make this promise.]
+  and you could export everything and move (section 15).
 - **Taxes.** We charge you nothing, so there is no sales tax to add. You are responsible for any taxes on your own
   sales to your customers.
 
@@ -110,19 +104,18 @@ only, no redistribution").] [LAWYER: draft that licence.]
 The services cost us money to run (hosting, email, and our time). We pay for them with the income from our **YouTube
 channel** and with **donations** from people who find the programs useful. Not the shops that use them.
 
-- **YouTube.** We make videos about the programs and the work they are made for, at [YOUTUBE CHANNEL LINK]. The
+- **YouTube.** We make videos about the programs and the work they are made for, at https://www.youtube.com/@MakerFoundryApp. The
   channel, the videos and their comments are on YouTube and are covered by YouTube's own terms and privacy policy, not
   by these terms. Whatever the videos earn (advertising, memberships, sponsorships) is separate from the services. **The
   services show no advertising**, and nothing in them is sponsored content.
-- **Donations.** You can give a donation, once or every month, at [DONATE LINK], through [DONATION PLATFORM]. A
+- **Donations.** You can give a donation, once or every month, at https://buymeacoffee.com/bwattendorf, through Buy Me a Coffee. A
   donation is a **voluntary gift**, not a payment for the services, and it creates no contract:
   - it does **not** buy extra features, support or priority. A shop that gives nothing has exactly the same services as
     one that gives every month;
   - the platform takes your payment under its own terms, and we never see your card number;
   - donations are **not refundable**, except where the platform's rules or the law require it. If you gave by mistake,
-    write to [CONTACT EMAIL] and we'll try to put it right; [OWNER: confirm.]
-  - a donation to us is **not a tax-deductible charitable contribution**. [OWNER/LAWYER: true while the project is
-    run by a business and not a registered charity. Change this if that changes.]
+    write to bwattendorf@gmail.com and we'll try to put it right.
+  - a donation to us is **not a tax-deductible charitable contribution**.
 - **No pressure.** Nothing in the programs or the hub will lock or slow down because you haven't donated.
 
 [LAWYER: check how donations and YouTube income should be described for a small business (gifts versus income,
@@ -136,10 +129,9 @@ Because the services are free, nothing ends for want of payment. These are the w
   programs may check a **licence key** the hub signs for your shop. Keys are free and run for many years. A Windows
   program that never connects to a hub keeps working.
 - **We may change or stop things.** We may change what the services do, limit how much each shop can send, or stop
-  offering the hub or the hosted service. We'll give at least [90] days' notice where we can, and help you move your
+  offering the hub or the hosted service. We'll give at least 90 days' notice where we can, and help you move your
   company to a Windows PC or your own server (section 15). The Windows program and a self-hosted copy keep working
-  without us, except for the things that need the hub (sharing, partner shops, the marketplace, the Assistant).
-  [OWNER: confirm the notice.]
+  without us, except for the things that need the hub (sharing, partner shops, the marketplace).
 - **Suspension.** If we suspend a shop because it seriously broke these terms (section 16), the shop becomes
   **read-only**. **We never delete your data because a shop was suspended.** While read-only, you and your staff can
   still: look at everything, search, print, and export your data; finish and close open tickets and repairs; take
@@ -151,17 +143,17 @@ Because the services are free, nothing ends for want of payment. These are the w
 ## 8. Stopping, and refunds
 
 - **Stopping.** You can stop using the services at any time. There is nothing to cancel. To close your hub account or
-  your hosted company, write to [CONTACT EMAIL] (section 16). You can export your data whenever you want (section 15).
+  your hosted company, write to bwattendorf@gmail.com (section 16). You can export your data whenever you want (section 15).
 - **Refunds.** The services are free, so there is nothing to refund. Donations are covered in section 6.
 
 ## 9. Using the programs: what you may and may not do
 
 We give you a limited, non-exclusive, non-transferable right to use the programs for your own shop's business while
-these terms apply.
+these terms apply. This is the right to use the programs and the hosted service; it does not limit the open-source licence on the code.
 
 You may not:
 
-- resell, rent out or sublicense the programs, except as section 4 allows for a repair shop hosting its partner shops;
+- resell, rent out or sublicense the programs or our hosted service, except as section 4 allows for a repair shop hosting its partner shops, or as the code's open-source licence allows for the code itself;
 - get around, copy or forge licence keys or the suspension rules;
 - use the services for anything illegal, to send spam, or to harass anyone;
 - try to break into the hub, the hosted service or another shop's data, or overload them on purpose;
@@ -181,10 +173,9 @@ between shops, and counts of parts used. The Privacy Policy lists exactly what i
 
 **Sharing is your choice, item by item.** The program sends something to the community only when you choose to
 "offer" it: a hint about a model, a part on the marketplace or to your partners, a fix to a manual link or a part
-entry. Sending your monthly parts-used counts is a setting, off until you turn it on. [OWNER: one exception exists in
-the code today. When the program draws a small figure from a manual on your PC for a factory setting, it sends that
-picture to the hub automatically. Either make it an "offer" or say so here and in the Privacy Policy (the draft
-Privacy Policy says so).]
+entry. Sending your monthly parts-used counts is a setting, off until you turn it on. One exception: when the program draws
+a small figure from a manual on your PC for a factory setting, it sends that picture to the hub automatically, as the
+Privacy Policy says.
 
 **What you share.** When you share something on the hub:
 
@@ -212,7 +203,7 @@ only carries the messages between the two programs.
 
 **The hub is free and may change.** We may change what the hub does, limit how much each shop can send, or stop
 running it, with reasonable notice where we can. The programs keep working without it, except for the things that
-need it (sharing, partners, the marketplace, the Assistant).
+need it (sharing, partners, the marketplace).
 
 **Other people's hubs.** Anyone may run their own hub with the open-source code. A hub someone else runs is theirs,
 not ours, and these terms don't cover it.
@@ -234,16 +225,14 @@ numbers, repairs, photos, purchases, messages, and their consent to messages.
   your website if you use online booking or the online shop), and answer their requests to see, correct or delete
   their information.
 - **Windows program and self-hosted:** your customers' information stays on your computer or server. We don't have it
-  and can't see it, except what you choose to send to the hub (section 10) or to a partner shop, or what the
-  Assistant sends (section 14).
+  and can't see it, except what you choose to send to the hub (section 10) or to a partner shop.
 - **Hosted by us:** we hold it for you, as your service provider. We use it only to run the service for you, to keep
   it secure, to fix problems you ask us to fix, and when the law requires. We don't sell it, we don't use it for
   advertising, and we don't look at it otherwise. The Privacy Policy says more. [LAWYER: is this enough as a "service
   provider" contract under the California CCPA and similar state laws, or do we need a separate data processing
   addendum (DPA)? If we may ever have EU or UK customers, a GDPR Article 28 DPA too.]
-- **Deleting a customer.** [OWNER: the program doesn't yet let a shop delete or merge a customer record (decided, not
-  built: HANDOFF section 4, L126). Until it does, say how a shop handles a customer's deletion request (on hosted: ask
-  us).] Some records you should keep even if asked, such as opt-outs and consent records (section 12).
+- **Deleting a customer.** The program doesn't yet let a shop delete or merge a customer record. Until it does, a shop on the hosted service
+  asks us at bwattendorf@gmail.com and we do it; a shop on its own PC or server can ask us how. Some records you should keep even if asked, such as opt-outs and consent records (section 12).
 
 ## 12. Email and texts to your customers
 
@@ -287,8 +276,8 @@ Checkout, Stripe's own payment page. Card numbers never reach the program or us.
   Stripe apply. You handle refunds, disputes and sales tax. Your Stripe keys are stored in your shop's database,
   encrypted.
 - **The hosted service's Stripe account** ("through StitchShop's account"), where we offer it. We take the payment for
-  you and **pay it to you by hand**. [OWNER: say when and how you pay out (for example weekly by bank transfer), what
-  fees you take off (Stripe's fees at least), and who bears refunds and chargebacks (the shop, deducted from payouts).]
+  you and **pay it to you by hand**. We pay out weekly by bank transfer. We take off Stripe's fees. The shop bears refunds and chargebacks, which we
+  deduct from its payouts.
   You are still the seller: you are responsible for the goods, delivery, refunds, and sales tax at your own rate
   (Stripe's tax service is offered only with your own account). [LAWYER: important. Taking payments for other
   businesses and paying them out may break Stripe's Services Agreement (for example its restriction on acting as a
@@ -297,28 +286,10 @@ Checkout, Stripe's own payment page. Card numbers never reach the program or us.
 
 **The marketplace on the hub** doesn't take payments at all: the buyer pays the seller directly (section 10).
 
-## 14. The Assistant (optional)
+## 14. The Assistant
 
-The Assistant is an optional add-on that drafts text and suggests likely causes, using an AI model made by
-**Anthropic**. [OWNER: the Assistant is designed but not built yet. Publish this section when it ships, and check it
-against what shipped.]
-
-- **It only runs when someone presses a button** (Ask, Draft it, Read the plate). Never on its own.
-- **What it sends** goes from your program to the hub, and from the hub to Anthropic. The Privacy Policy lists exactly
-  what is sent for each feature. Customers' contact details are never sent. Email addresses, phone numbers and
-  customer names in the text are replaced with "[customer]" before it leaves. First names are sent for drafts only
-  if you turn that switch on (it starts off). Serial numbers are sent only inside a photo of a rating plate you choose.
-- **The hub does not keep what was sent or what came back**, only counts (how many requests, their size and cost).
-  Your program keeps a log of each request and answer, in your own data, so you can check what was sent.
-- **Anthropic does not train its models on what we send it** under its commercial terms (see the Privacy Policy for
-  the exact wording and links).
-- **Answers can be wrong.** Read every suggestion before you use it. A person must check drafts before they go to a
-  customer, and repair suggestions before acting on them. You are responsible for what you send to your customers and
-  for your repairs.
-- **Use it lawfully.** Don't use it to make anything Anthropic's Usage Policy forbids
-  (https://www.anthropic.com/legal/aup). [LAWYER: do our terms need to pass through more of Anthropic's terms?]
-- Each feature has its own switch in Settings → Assistant. We may change the AI model behind a feature, for example
-  when a newer one is available.
+The Assistant is an optional add-on that is not available yet. Before it ships we'll publish its terms and ask you to accept
+them; nothing in these terms covers it, and nothing is sent to an AI service until you turn it on after that.
 
 ## 15. Your data: yours to keep, export and move
 
@@ -335,19 +306,18 @@ against what shipped.]
 
 ## 16. Ending the agreement
 
-**You** can stop using the services at any time (section 8), and ask us at [CONTACT EMAIL] to delete your hub account
+**You** can stop using the services at any time (section 8), and ask us at bwattendorf@gmail.com to delete your hub account
 or your hosted company.
 
 **We** may suspend or end your use of the services if you break these terms in a serious way, use them illegally,
 or put other shops or the hub at risk. Except for urgent cases (security, illegal use), we'll email you first and give
 you a chance to fix it. A suspension makes the shop read-only (section 7); it doesn't delete anything.
 
-**If the hosted service ends for your shop,** we keep your company read-only for at least [90] days so you can export
-it or move it, then delete it, after emailing you. [OWNER: choose the period. The decision so far is "never data loss
-because a shop was suspended"; this is about closing an account.] [LAWYER: check.]
+**If the hosted service ends for your shop,** we keep your company read-only for at least 90 days so you can export
+it or move it, then delete it, after emailing you. [LAWYER: check.]
 
-If we stop offering the hosted service entirely, we'll give at least [90] days' notice and help you move your
-company to a Windows PC or your own server. [OWNER: confirm.]
+If we stop offering the hosted service entirely, we'll give at least 90 days' notice and help you move your
+company to a Windows PC or your own server.
 
 Sections 6 (donations), 10 (the content licence), 11, 12, 15, 19 to 22 and 24 to 25 continue after the agreement ends.
 
@@ -365,10 +335,10 @@ We work to keep the services secure (the Privacy Policy explains how). You must 
 ## 18. Other companies' services
 
 The services work with other companies' services: Railway (our hosting), Stripe (payments in your online shop, if you
-use it), Twilio and your mail provider (your messages), Anthropic (the Assistant), GitHub (bug reports), Discord
+use it), Twilio and your mail provider (your messages), GitHub (bug reports), Discord
 (community chat), UPCitemdb (barcode lookups, the barcode number only), Tailscale or Cloudflare (if you set up a
 tunnel), and manufacturers' websites (manual downloads). Our website runs on Cloudflare, our videos on YouTube, and
-donations go through [DONATION PLATFORM]. Their
+donations go through Buy Me a Coffee. Their
 own terms apply to your use of them. We aren't responsible for them, for their prices, or for them being available.
 
 ## 19. Repair information
@@ -383,8 +353,7 @@ electrical or safety-related. You are responsible for your repairs. [LAWYER: is 
 We provide the services **"as is" and "as available"**. To the extent the law allows, we make no promises beyond
 those in these terms, including that the services will always be available, free of errors, or right for your
 purpose. The hub and the hosted service may be down at times (for updates, problems, or our providers' outages). The
-Windows program keeps working when the internet is down. [OWNER: do you want to promise any uptime for the hosted
-service? Recommended: no.] [LAWYER: wording of the warranty disclaimer; some states limit it.]
+Windows program keeps working when the internet is down. We do not promise any uptime for the hosted service. [LAWYER: wording of the warranty disclaimer; some states limit it.]
 
 ## 21. Limit on our responsibility
 
@@ -415,12 +384,12 @@ makes a claim against us because of:
 ## 23. Changes to these terms, and versions
 
 Each version of these terms and of the Privacy Policy has a **version date** in the form **YYYY-MM-DD**, shown at the
-top. Every version is published on the hub at [HUB ADDRESS]/terms and [HUB ADDRESS]/privacy, and earlier versions stay
-available there. [OWNER: the archive of old versions is a proposal; see README.]
+top. Every version is published on the hub at https://hub.stitchbench.app/terms and https://hub.stitchbench.app/privacy, and earlier versions stay
+available there.
 
 The hub records which version your account accepted, and when: at sign-up, and again each time you accept an update.
 
-If we change these terms in a way that matters to you, we'll email the account at least [30] days before the change
+If we change these terms in a way that matters to you, we'll email the account at least 30 days before the change
 applies, and show "We updated our terms" when you next sign in to the hub and in Settings → Account. If you don't
 agree, you can stop using the services before the change applies (section 8). If you keep using the services after that, the new
 version applies. [LAWYER: is "keep using = agree" enough, or must we require a fresh tick for material changes?
@@ -430,10 +399,10 @@ Small fixes (spelling, contact details) may apply straight away.
 
 ## 24. The law, and disagreements
 
-These terms are governed by the laws of [STATE OF GOVERNING LAW] and of the United States.
+These terms are governed by the laws of Rhode Island and of the United States.
 
-If you have a problem, please write to us first at [CONTACT EMAIL]; we'll try to sort it out within 30 days. If we
-can't, a claim goes to the state or federal courts in [STATE OF GOVERNING LAW], except that either of us may use
+If you have a problem, please write to us first at bwattendorf@gmail.com; we'll try to sort it out within 30 days. If we
+can't, a claim goes to the state or federal courts in Rhode Island, except that either of us may use
 small-claims court for a claim that qualifies. [LAWYER: courts or arbitration? Venue (county)? A class-action waiver?
 Recommended for a small company: courts plus small claims, no arbitration clause, unless the lawyer advises
 otherwise.]
@@ -445,12 +414,12 @@ otherwise.]
   services, and we'll tell you.
 - If part of these terms can't be enforced, the rest still applies.
 - If we don't enforce something straight away, we can still enforce it later.
-- We send notices by email to the account's address. You send notices to [CONTACT EMAIL] and by post to [ADDRESS].
+- We send notices by email to the account's address. You send notices to bwattendorf@gmail.com and by post to 8 Maplewood Drive, Mapleville, RI 02839.
 - Neither of us is responsible for delays caused by things outside our reasonable control (power cuts, internet
   outages, providers' failures, natural disasters).
 
 ## 26. Contact
 
 [OWNER LEGAL NAME]
-[ADDRESS]
-[CONTACT EMAIL]
+8 Maplewood Drive, Mapleville, RI 02839
+bwattendorf@gmail.com
