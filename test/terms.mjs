@@ -273,6 +273,7 @@ try {
   // The code the hub runs (AGPL): the footer's Source code link and GET /source, the repository when nothing else is set.
   const SOURCE = "https://github.com/Stitchwright/stitchhub";
   assert.ok(home.includes(`<a href="${SOURCE}">Source code</a>`) && b.includes(`<a href="${SOURCE}">Source code</a>`), "every public page's footer links the source code");
+  assert.ok(home.includes('href="https://www.youtube.com/@MakerFoundryApp"') && home.includes('href="https://buymeacoffee.com/bwattendorf"') && b.includes('href="https://buymeacoffee.com/bwattendorf"'), "and the videos and the donation page");
   const toSource = await fetch(`${HUB}/source`, { redirect: "manual" });
   assert.deepEqual([toSource.status, toSource.headers.get("location")], [302, SOURCE], "GET /source redirects to the same address");
   const acctPage = (await html("/account")).body;
