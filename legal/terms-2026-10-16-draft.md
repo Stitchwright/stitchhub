@@ -73,7 +73,7 @@ You choose how each shop runs. You can change your mind later (section 16).
 | Where your shop's data is | On your PC (and your backups) | On our hosting provider's servers, which we manage for you | On your server, which you manage |
 | Who can get at it | You. We can't. | You, and us as the operator (section 11) | You. We can't. |
 | Who pays for the computer | You | Free: we pay for the hosting (sections 5 and 6) | You |
-| Backups | The program backs up every night to your PC; you keep copies safe | We keep database backups [OWNER: how often, how long] | You |
+| Backups | The program backs up every night to your PC; you keep copies safe | We keep a database backup every day, each for 6 days | You |
 
 **A repair shop hosting StitchShop for its partner shops.** A repair shop may run its own copy and put its partner
 sewing shops in it as separate companies. Then the repair shop is the host for those shops, not us. The repair shop
@@ -91,9 +91,6 @@ enough, or should these terms require the hosting shop to sign something with ea
   add-on (for example Vac Shop, Small Appliance Repair, Scheduling and Marketing) is included, for every shop, however
   it runs (section 4).
 - **There is no subscription.** Nothing renews, nothing is charged to you, and we hold no payment details for you.
-- **The Assistant** (section 14) is the one thing that may cost money, because every request it makes costs us money.
-  It is not built yet. If we offer it, we'll show any limit or price where you turn it on, and you won't be charged
-  unless you say yes.
 - **Limits.** To keep the free hosted service fair for everyone, we may limit how much a shop can store or send (for
   example photos, backups, or messages through the hub). We'll say what the limits are where they apply.
 - **If we ever charge.** We have no plan to. If we ever did, we would email every account at least 90 days before
@@ -134,7 +131,7 @@ Because the services are free, nothing ends for want of payment. These are the w
 - **We may change or stop things.** We may change what the services do, limit how much each shop can send, or stop
   offering the hub or the hosted service. We'll give at least 90 days' notice where we can, and help you move your
   company to a Windows PC or your own server (section 15). The Windows program and a self-hosted copy keep working
-  without us, except for the things that need the hub (sharing, partner shops, the marketplace, the Assistant).
+  without us, except for the things that need the hub (sharing, partner shops, the marketplace).
 - **Suspension.** If we suspend a shop because it seriously broke these terms (section 16), the shop becomes
   **read-only**. **We never delete your data because a shop was suspended.** While read-only, you and your staff can
   still: look at everything, search, print, and export your data; finish and close open tickets and repairs; take
@@ -206,7 +203,7 @@ only carries the messages between the two programs.
 
 **The hub is free and may change.** We may change what the hub does, limit how much each shop can send, or stop
 running it, with reasonable notice where we can. The programs keep working without it, except for the things that
-need it (sharing, partners, the marketplace, the Assistant).
+need it (sharing, partners, the marketplace).
 
 **Other people's hubs.** Anyone may run their own hub with the open-source code. A hub someone else runs is theirs,
 not ours, and these terms don't cover it.
@@ -228,8 +225,7 @@ numbers, repairs, photos, purchases, messages, and their consent to messages.
   your website if you use online booking or the online shop), and answer their requests to see, correct or delete
   their information.
 - **Windows program and self-hosted:** your customers' information stays on your computer or server. We don't have it
-  and can't see it, except what you choose to send to the hub (section 10) or to a partner shop, or what the
-  Assistant sends (section 14).
+  and can't see it, except what you choose to send to the hub (section 10) or to a partner shop.
 - **Hosted by us:** we hold it for you, as your service provider. We use it only to run the service for you, to keep
   it secure, to fix problems you ask us to fix, and when the law requires. We don't sell it, we don't use it for
   advertising, and we don't look at it otherwise. The Privacy Policy says more. [LAWYER: is this enough as a "service
@@ -290,28 +286,10 @@ Checkout, Stripe's own payment page. Card numbers never reach the program or us.
 
 **The marketplace on the hub** doesn't take payments at all: the buyer pays the seller directly (section 10).
 
-## 14. The Assistant (optional)
+## 14. The Assistant
 
-The Assistant is an optional add-on that drafts text and suggests likely causes, using an AI model made by
-**Anthropic**. [OWNER: the Assistant is designed but not built yet. Publish this section when it ships, and check it
-against what shipped.]
-
-- **It only runs when someone presses a button** (Ask, Draft it, Read the plate). Never on its own.
-- **What it sends** goes from your program to the hub, and from the hub to Anthropic. The Privacy Policy lists exactly
-  what is sent for each feature. Customers' contact details are never sent. Email addresses, phone numbers and
-  customer names in the text are replaced with "[customer]" before it leaves. First names are sent for drafts only
-  if you turn that switch on (it starts off). Serial numbers are sent only inside a photo of a rating plate you choose.
-- **The hub does not keep what was sent or what came back**, only counts (how many requests, their size and cost).
-  Your program keeps a log of each request and answer, in your own data, so you can check what was sent.
-- **Anthropic does not train its models on what we send it** under its commercial terms (see the Privacy Policy for
-  the exact wording and links).
-- **Answers can be wrong.** Read every suggestion before you use it. A person must check drafts before they go to a
-  customer, and repair suggestions before acting on them. You are responsible for what you send to your customers and
-  for your repairs.
-- **Use it lawfully.** Don't use it to make anything Anthropic's Usage Policy forbids
-  (https://www.anthropic.com/legal/aup). [LAWYER: do our terms need to pass through more of Anthropic's terms?]
-- Each feature has its own switch in Settings → Assistant. We may change the AI model behind a feature, for example
-  when a newer one is available.
+The Assistant is an optional add-on that is not available yet. Before it ships we'll publish its terms and ask you to accept
+them; nothing in these terms covers it, and nothing is sent to an AI service until you turn it on after that.
 
 ## 15. Your data: yours to keep, export and move
 
@@ -357,7 +335,7 @@ We work to keep the services secure (the Privacy Policy explains how). You must 
 ## 18. Other companies' services
 
 The services work with other companies' services: Railway (our hosting), Stripe (payments in your online shop, if you
-use it), Twilio and your mail provider (your messages), Anthropic (the Assistant), GitHub (bug reports), Discord
+use it), Twilio and your mail provider (your messages), GitHub (bug reports), Discord
 (community chat), UPCitemdb (barcode lookups, the barcode number only), Tailscale or Cloudflare (if you set up a
 tunnel), and manufacturers' websites (manual downloads). Our website runs on Cloudflare, our videos on YouTube, and
 donations go through [DONATION PLATFORM]. Their
@@ -411,7 +389,7 @@ available there.
 
 The hub records which version your account accepted, and when: at sign-up, and again each time you accept an update.
 
-If we change these terms in a way that matters to you, we'll email the account at least [30] days before the change
+If we change these terms in a way that matters to you, we'll email the account at least 30 days before the change
 applies, and show "We updated our terms" when you next sign in to the hub and in Settings → Account. If you don't
 agree, you can stop using the services before the change applies (section 8). If you keep using the services after that, the new
 version applies. [LAWYER: is "keep using = agree" enough, or must we require a fresh tick for material changes?
