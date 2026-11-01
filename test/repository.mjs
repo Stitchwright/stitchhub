@@ -16,6 +16,7 @@ import { spawn } from "node:child_process";
 import pg from "pg";
 import { inspectPdf, inspectPdfIsolated } from "../src/pdfcheck.mjs";
 import { startR2Mock } from "./r2-mock.mjs";
+import { EICAR, startFakeClamd } from "./fake-clamd.mjs";
 
 const BASE_DB = process.env.DATABASE_URL;
 assert.ok(BASE_DB, "set DATABASE_URL to a database on a server where the role may create databases (the test makes fresh ones beside it)");
@@ -576,6 +577,35 @@ try {
   assert.equal(refused.status, 400);
   assert.match((await refused.json()).error, /object key/);
   console.log("export and import: ok");
+
+  // ----- the virus scan (src/clamav.mjs): a flagged PDF is refused, a scanner that can't answer reopens the slot -----
+  const clamd = await startFakeClamd();
+  try {
+    await stopHub(hub);
+    hub = await startHub(FRESH[0], { REPO_UPLOADS: "on", REPO_OPERATOR_ACCOUNTS: OPERATOR_EMAIL, CLAMAV_HOST: "127.0.0.1", CLAMAV_PORT: String(clamd.port), CLAMAV_TIMEOUT_MS: "1500" });
+    on = hub.url;
+    await company(key1, "av-co");
+    const bad = Buffer.concat([makePdf({ pages: ["Brother AV test page that carries the test string"] }), Buffer.from("\n%"), EICAR]);
+    const walkBad = await walk(key1, "av-co", bad);
+    assert.equal(walkBad.done.state, "refused");
+    assert.match(walkBad.done.reason, /virus scanner flagged this file \(Eicar-Test-Signature\)/);
+    assert.deepEqual(incoming(), [], "a flagged file's incoming object is removed");
+    assert.equal((await db.query(`SELECT 1 FROM manual_files WHERE sha256 = $1`, [sha(bad)])).rowCount, 0, "and nothing is filed for it");
+    // A silent scanner: the answer is 503, and the slot is open for another try.
+    const clean = makePdf({ pages: ["Brother AV test: a clean page of text for the scanner to look at"] });
+    const slot = await ok(await offer(key1, "av-co", clean));
+    assert.equal((await put(slot, clean)).status, 200);
+    clamd.knobs.mode = "silent";
+    const held = await status(await sent(key1, "av-co", slot.uploadId), 503, "scanner silent");
+    assert.match(held.error, /virus scanner could not check/);
+    assert.equal((await db.query(`SELECT state FROM uploads WHERE id = $1`, [slot.uploadId])).rows[0].state, "slot", "the slot is open again");
+    clamd.knobs.mode = "normal";
+    assert.deepEqual(await ok(await sent(key1, "av-co", slot.uploadId)), { state: "pending", reason: null });
+    assert.equal((await db.query(`SELECT checks->>'antivirus' AS av FROM manual_files WHERE sha256 = $1`, [sha(clean)])).rows[0].av, "clean", "the review sees that it was scanned");
+    console.log("antivirus: ok");
+  } finally {
+    await clamd.close();
+  }
 } catch (e) {
   console.error(e);
   console.error("--- hub log ---\n" + hub.log.split("\n").slice(-30).join("\n"));

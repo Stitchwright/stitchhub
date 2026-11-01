@@ -37,6 +37,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run test:r2
+      - run: npm run test:clamav
       - run: npm run test:xpart-dups
 
   # The tests that start a hub of their own on a scratch Postgres. The role is a superuser because several tests

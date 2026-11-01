@@ -3,6 +3,7 @@
 // figure snapshots, data sets) and push what their techs share. Manual PDFs are stored only in the manual repository
 // (src/repository.mjs: private R2 storage, a tech's offer, the owner's review, off until REPO_UPLOADS=on); everywhere else
 // the hub holds links to them.
+import { clamavConfig } from "./clamav.mjs";
 import "./env.mjs"; // first: reads .env before the modules below read their variables
 import fs from "node:fs";
 import path from "node:path";
@@ -1036,7 +1037,11 @@ await startFeeds();
 if (!(await getSetting("join_key")) && process.env.JOIN_KEY?.trim()) await setSetting("join_key", process.env.JOIN_KEY.trim());
 if (process.env.LINK_CHECKER !== "off") startChecker();
 const port = Number(process.env.PORT ?? 8080);
-const server = serve({ fetch: app.fetch, port, hostname: "0.0.0.0" }, () => console.log(`${HUB_NAME} listening on :${port}`));
+const server = serve({ fetch: app.fetch, port, hostname: "0.0.0.0" }, () => {
+  console.log(`${HUB_NAME} listening on :${port}`);
+  const av = clamavConfig();
+  console.log(av ? `antivirus: ClamAV at ${av.host}:${av.port}${av.required ? " (required)" : " (a file it can't scan is taken, marked)"}` : "antivirus: off (CLAMAV_HOST is not set)");
+});
 
 // Something left running in the background that fails (a Discord post, a last-seen update) is logged; it mustn't stop
 // the hub for everyone.

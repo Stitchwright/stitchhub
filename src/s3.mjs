@@ -61,6 +61,18 @@ export async function headObject(cfg, key) {
   return Number.isFinite(n) ? n : null;
 }
 
+/** The object's bytes, or null when it isn't there. More than `max` bytes is an error (nothing larger is read). */
+export async function getObject(cfg, key, max) {
+  const r = await fetch(presign(cfg, "GET", key, { expires: 120 }), { signal: AbortSignal.timeout(120_000) });
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`the bucket answered ${r.status}`);
+  const len = Number(r.headers.get("content-length"));
+  if (Number.isFinite(len) && len > max) throw new Error("the object is bigger than expected");
+  const buf = Buffer.from(await r.arrayBuffer());
+  if (buf.length > max) throw new Error("the object is bigger than expected");
+  return buf;
+}
+
 /** Deletes the object; one that is already gone is fine. */
 export async function deleteObject(cfg, key) {
   const r = await fetch(presign(cfg, "DELETE", key, { expires: 60 }), { method: "DELETE", signal: AbortSignal.timeout(20_000) });
