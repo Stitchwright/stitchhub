@@ -90,7 +90,7 @@ jobs:
       # (gh attestation verify oci://ghcr.io/stitchwright/stitchhub:<version> --repo Stitchwright/stitchhub).
       - name: Attest the image
         if: github.ref_type == 'tag'
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-name: ${{ env.IMAGE }}
           subject-digest: ${{ steps.build.outputs.digest }}
