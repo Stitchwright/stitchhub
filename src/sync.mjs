@@ -396,9 +396,22 @@ export function registerSync({ app, admin, installByKey, fail, newId, allow, cli
          ORDER BY d.delivery_seq LIMIT $3`,
         [recipient, after, limit],
       );
+      // The cursor (`next`) must never pass a message that is still to come: one held back behind an earlier seq of its conversation,
+      // or held until the recipient's program understands its type (released later, it keeps its delivery number). Pollers resume
+      // from `next`, so passing it would skip that message for good. So `next` stops just before the oldest such message in the
+      // page's range; what was handed out above it comes again on the next poll unless acked, and receivers de-duplicate by id.
+      let next = rows.length ? String(rows[rows.length - 1].delivery_seq) : after;
+      if (rows.length) {
+        const held = (await cl.query(
+          `SELECT min(delivery_seq)::text AS seq FROM sync_deliveries
+           WHERE recipient = $1 AND delivery_seq > $2 AND delivery_seq < $3 AND state IN ('queued', 'held_capability') AND NOT (delivery_seq = ANY($4::bigint[]))`,
+          [recipient, after, next, rows.map((r) => r.delivery_seq)],
+        )).rows[0]?.seq;
+        if (held) next = (BigInt(held) - 1n).toString();
+      }
       const fresh = rows.filter((r) => r.state === "queued").map((r) => r.delivery_seq);
       if (fresh.length) await cl.query(`UPDATE sync_deliveries SET state = 'delivered', delivered_at = now() WHERE delivery_seq = ANY($1::bigint[])`, [fresh]);
-      return rows;
+      return { rows, next };
     });
   }
   app.get("/v2/messages", guarded(async (c) => {
@@ -410,14 +423,14 @@ export function registerSync({ app, admin, installByKey, fail, newId, allow, cli
     const after = /^\d+$/.test(c.req.query("after") ?? "") ? c.req.query("after") : "0";
     const limit = Math.min(Math.max(Number(c.req.query("limit")) || 50, 1), 200);
     const wait = Math.min(Math.max(Number(c.req.query("wait")) || 0, 0), 25);
-    let rows = await drain(p.address, after, limit);
+    let { rows, next } = await drain(p.address, after, limit);
     for (let waited = 0; !rows.length && waited < wait; waited++) {
       await new Promise((r) => setTimeout(r, 1000));
-      rows = await drain(p.address, after, limit);
+      ({ rows, next } = await drain(p.address, after, limit));
     }
     return c.json({
       messages: rows.map((r) => ({ id: r.id, from: r.sender, to: p.address, type: r.type, version: r.version, conversation: r.conversation, seq: r.seq, created_at: r.created_at, expires_at: r.expires_at, body: r.body, sig: r.sig, delivery_seq: String(r.delivery_seq) })),
-      next: rows.length ? String(rows[rows.length - 1].delivery_seq) : after,
+      next,
     });
   }));
   app.post("/v2/messages/ack", bodyLimit({ maxSize: 64 * 1024, onError: (c) => c.json({ error: "Too large." }, 413) }), guarded(async (c) => {
