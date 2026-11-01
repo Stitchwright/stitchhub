@@ -80,9 +80,7 @@ sewing shops in it as separate companies. Then the repair shop is the host for t
 must treat their data as section 11 says we treat yours, and must have its own agreement with them. [LAWYER: is this
 enough, or should these terms require the hosting shop to sign something with each hosted shop?]
 
-**Self-hosting.** We give self-hosting shops access to the program's code as we agree with them. [OWNER: StitchBench
-has no software licence file today. Decide what licence the code is given under (for example "for your own shop
-only, no redistribution").] [LAWYER: draft that licence.]
+**Self-hosting.** The StitchBench and StitchShop programs' code is open source under the MIT licence or the Apache License 2.0, at your choice; the licence texts come with the code. A shop that runs its own copy may use, change and share that code as those licences allow. These terms do not take away any right the open-source licences give you.
 
 **The hub** is the same for everyone. It is optional: a Windows program that never connects keeps working.
 
@@ -154,11 +152,11 @@ Because the services are free, nothing ends for want of payment. These are the w
 ## 9. Using the programs: what you may and may not do
 
 We give you a limited, non-exclusive, non-transferable right to use the programs for your own shop's business while
-these terms apply.
+these terms apply. This is the right to use the programs and the hosted service; it does not limit the open-source licence on the code.
 
 You may not:
 
-- resell, rent out or sublicense the programs, except as section 4 allows for a repair shop hosting its partner shops;
+- resell, rent out or sublicense the programs or our hosted service, except as section 4 allows for a repair shop hosting its partner shops, or as the code's open-source licence allows for the code itself;
 - get around, copy or forge licence keys or the suspension rules;
 - use the services for anything illegal, to send spam, or to harass anyone;
 - try to break into the hub, the hosted service or another shop's data, or overload them on purpose;
