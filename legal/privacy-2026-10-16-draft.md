@@ -56,7 +56,7 @@ business/service-provider framing, and whether a separate DPA is needed (see the
 | How you run | Where the shop's data is | Who can get at it |
 |---|---|---|
 | **Windows program** | On the shop PC, in the program's database (`%APPDATA%\StitchBench`, or `StitchShop`), with nightly backups in `Documents\StitchBench Backups` | You. We have no copy and no access |
-| **Hosted by us** | In a database on Railway, our hosting provider, in [OWNER: region, e.g. the United States] | You and your staff; us as the operator (section 6.2); Railway as our provider |
+| **Hosted by us** | In a database on Railway, our hosting provider, in Virginia, in the United States | You and your staff; us as the operator (section 6.2); Railway as our provider |
 | **Self-hosted** | On your own server or cloud account | You. We have no copy and no access |
 | **Hosted by your repair shop** (a StitchShop the repair shop runs for its partner shops) | On the repair shop's server | The repair shop, as your host. Ask it how it looks after your data |
 
