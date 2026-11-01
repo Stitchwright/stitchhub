@@ -410,7 +410,7 @@ enrolling children in classes through online booking raises anything for us on t
 ## 14. Changes to this policy, and versions
 
 Each version has a version date in the form **YYYY-MM-DD** at the top, and is published on the hub at
-https://stitchhub.app/privacy, with earlier versions kept there. The hub records which version your account accepted. If we
+https://hub.stitchbench.app/privacy, with earlier versions kept there. The hub records which version your account accepted. If we
 make a change that matters, we'll email your account at least [30] days before it applies and show "We updated our
 terms" on the hub and in Settings → Account. [LAWYER: same question as the Terms, section 23.]
 
