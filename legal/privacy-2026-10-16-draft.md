@@ -87,7 +87,7 @@ the shop's standing (free, unless we have suspended it) and licence key. The hub
 
 **Internet (IP) addresses.** The hub uses the address a request comes from, for a short time, to limit abuse (for
 example, too many sign-in attempts). It holds this in memory and doesn't save it to its database. Our hosting
-provider may record addresses in its request logs. [OWNER: check Railway's log retention and say it here.]
+provider may record addresses in its request logs, which it keeps for 30 days.
 [LAWYER: confirm this is enough.]
 
 ### 5.2a The Help button and error reports
