@@ -31,6 +31,9 @@ const str = (v, max) => {
   return s ? s.slice(0, max) : null;
 };
 const oneLine = (v, max) => str(String(v ?? "").replace(/\s+/g, " "), max);
+/** A version as a program says it (1.8.0, 0.3.1-beta+42): only letters, digits and . + -, so nobody's typing can put a mention, a
+ *  link or a picture in the issue through it. Anything else is dropped; null when nothing is left. */
+export const cleanVersion = (v) => String(v ?? "").replace(/[^0-9A-Za-z.+-]/g, "").slice(0, 40) || null;
 
 /** The repository a program's bugs go to, or null for a program that isn't one of ours. */
 export const repoFor = (program) => REPOS[String(program ?? "").toLowerCase().replace(/\s+/g, "")] ?? null;
@@ -61,7 +64,9 @@ export function issueBody(fields, source) {
   section("What should have happened", fields.expected);
   section("System", fields.system);
   section("Log or error text", fields.log);
-  parts.push("---", `Program: ${fields.programName}${fields.version ? ` ${fields.version}` : ""}. Source: ${source}.`);
+  // The version is cleaned again here (StitchBench's route sends one too) and shown as code, so even "www.x.y" isn't made a link.
+  const version = cleanVersion(fields.version);
+  parts.push("---", `Program: ${fields.programName}${version ? ` \`${version}\`` : ""}. Source: ${source}.`);
   return parts.join("\n");
 }
 
@@ -105,7 +110,7 @@ export function cleanReport(raw, fail) {
     kind,
     title,
     fields: {
-      version: oneLine(raw.version, 40),
+      version: cleanVersion(raw.version),
       what,
       steps: str(raw.steps, 3000),
       expected: str(raw.expected, 2000),
