@@ -752,6 +752,27 @@ lawyer's review, a takedown and a restore run on a test hub). With it unset, `PO
   make `COPYRIGHT_EMAIL` a working mailbox and send a test notice through the form; set `REPO_NOTICE_EMAIL`; have the
   lawyer review the process; run a takedown and a restore on a test hub; then `REPO_UPLOADS=on`.
 
+## Virus scanning (ClamAV)
+Optional, off until `CLAMAV_HOST` is set. The hub talks to a ClamAV daemon (`clamd`) over its plain TCP protocol (`src/clamav.mjs`, no
+dependency). What is scanned: PDFs offered to the manual repository (before the structure check) and the design files and pictures
+of MakerFoundry orders (at `/v2/files/done`, before the file counts as ready). Not scanned: anything else the hub stores.
+
+- **Run clamd as its own Railway service** from the image `clamav/clamav` (port 3310; it needs about 1 to 2 GB of memory and downloads the
+  signature database on start, a few minutes; it updates itself). Set on that service `CLAMD_CONF_StreamMaxLength=200M` (the image's default
+  is 25M, smaller than `REPO_MAX_MB`'s 150 MB) and `CLAMD_CONF_MaxFileSize=200M`. Keep it on the private network: no public domain, no port exposed.
+- **On the hub:** `CLAMAV_HOST` (the service's private name, for example `clamav.railway.internal`), `CLAMAV_PORT` (3310),
+  `CLAMAV_TIMEOUT_MS` (60000), `CLAMAV_REQUIRED` (true when unset).
+- **A flagged file** is refused with the signature's name: a manual upload is `refused` (nothing is filed), an order file is deleted from the
+  bucket and `/v2/files/done` answers `400 infected`.
+- **A scanner that can't answer** (down, timed out, a file over its size limit): with `CLAMAV_REQUIRED` on, the manual upload's slot opens again
+  and the call answers `503`, and `/v2/files/done` answers `503 scanner_unavailable`; the sender tries again. With `CLAMAV_REQUIRED=false` the file
+  is taken and a "Not checked by the virus scanner" flag shows in the manual review (order files pass, with a line in the hub's log).
+- **Seeing it work:** the hub logs `antivirus: ClamAV at host:port` on start, `GET /v1/admin/antivirus` (admin token) answers `reachable` and the engine
+  and signature version, and a manual's review `checks.antivirus` says `clean`, `not scanned` or `off`. To test end to end, upload the EICAR
+  test file (the industry's harmless test string, https://www.eicar.org/download-anti-malware-testfile/) as the design file of a test order.
+- `npm run test:clamav` checks the client against a stand-in clamd (test/fake-clamd.mjs); `test:repository` and `test:sync-orders` run the hub's
+  flows through the same stand-in.
+
 ## Checking a hub
 ```
 HUB_URL=http://localhost:8080 ADMIN_TOKEN=... JOIN_KEY=... npm test

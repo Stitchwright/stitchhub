@@ -22,7 +22,8 @@ import { bodyLimit } from "hono/body-limit";
 import { one, q, tx } from "./db.mjs";
 import { TYPES, hubTypes } from "./sync-types.mjs";
 import { Bad, MAX_ART_BYTES, MAX_PREVIEW_BYTES, SIGNED_TYPES, canonical, fileRefs, validateBody, verifySignature } from "./sync-orders.mjs";
-import { deleteObject, headObject, presign, s3Config } from "./s3.mjs";
+import { deleteObject, getObject, headObject, presign, s3Config } from "./s3.mjs";
+import { clamavConfig, clamavStatus, scanBuffer } from "./clamav.mjs";
 
 const HUB_VERSION = "2.0.0";
 const posNum = (v, fallback) => (Number(v) > 0 ? Number(v) : fallback);
@@ -552,6 +553,28 @@ export function registerSync({ app, admin, installByKey, fail, newId, allow, cli
       await q(`DELETE FROM sync_files WHERE conversation = $1 AND sha256 = $2`, [conversation, hash]);
       throw new Refusal(400, "size_mismatch", "The uploaded file is not the size you announced. It was removed; start again.");
     }
+    // The virus scan (src/clamav.mjs), when it is set up: an infected file is removed and the sender told; a scanner that can't be
+    // reached holds the file back (CLAMAV_REQUIRED, the default) so the sender asks again, or lets it through marked in the log.
+    const av = clamavConfig();
+    if (av) {
+      let bytes;
+      try {
+        bytes = await getObject(cfg, fileKey(conversation, hash), f.size);
+      } catch {
+        throw new Refusal(502, "storage_unreachable", "The file storage could not be reached. Try again.");
+      }
+      const scan = bytes ? await scanBuffer(bytes, av) : { unavailable: "the file went missing" };
+      if (scan.infected) {
+        await deleteObject(cfg, fileKey(conversation, hash)).catch(() => {});
+        await q(`DELETE FROM sync_files WHERE conversation = $1 AND sha256 = $2`, [conversation, hash]);
+        console.warn(`antivirus: ${scan.infected} in a file for conversation ${conversation} (${hash.slice(0, 12)}); removed`);
+        throw new Refusal(400, "infected", "The virus scanner flagged the file, so it was removed. Upload a clean file.");
+      }
+      if (scan.unavailable) {
+        console.warn(`antivirus: could not scan ${hash.slice(0, 12)}: ${scan.unavailable}`);
+        if (av.required) throw new Refusal(503, "scanner_unavailable", "The virus scanner could not check the file just now. Try again in a minute.");
+      }
+    }
     await q(`UPDATE sync_files SET state = 'ready', expires_at = now() + make_interval(days => $3) WHERE conversation = $1 AND sha256 = $2`, [conversation, hash, fileDays()]);
     return c.json({ ready: true });
   }));
@@ -654,6 +677,7 @@ export function registerSync({ app, admin, installByKey, fail, newId, allow, cli
     if (!r.rowCount) throw fail(404, "No such service key, or it was revoked.");
     return c.json({ id: r.rows[0].id, name: r.rows[0].name, scopes: r.rows[0].scopes, key, note: "This key is shown once. The old key no longer works. Put the new one in the service's secret settings." });
   });
+  admin.get("/antivirus", async (c) => c.json(await clamavStatus()));
   admin.put("/service-keys/:id/public-key", async (c) => {
     const body = await c.req.json().catch(() => ({}));
     try {

@@ -20,6 +20,7 @@
     "test:terms": "node test/terms.mjs",
     "test:limits": "node test/limits.mjs",
     "test:r2": "node test/r2.mjs",
+    "test:clamav": "node test/clamav.mjs",
     "test:repository": "node test/repository.mjs",
     "test:takedown": "node test/takedown.mjs",
     "test:ocr": "node test/ocr.mjs",

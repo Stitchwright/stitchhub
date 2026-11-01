@@ -25,6 +25,7 @@ import { one, q, tx, feedLimit } from "./db.mjs";
 import { standingOf } from "./billing.mjs";
 import { r2FromEnv } from "./r2.mjs";
 import { inspectPdfIsolated } from "./pdfcheck.mjs";
+import { clamavConfig, scanBuffer } from "./clamav.mjs";
 import { ocrOn, ocrMarkings, ocrQueue } from "./ocr.mjs";
 
 const MB = 1024 * 1024;
@@ -214,14 +215,26 @@ export function registerRepository({ app, member, admin, acct, fail, newId, allo
         if (bytes.length !== Number(up.size_bytes)) return { refused: "The file in storage isn't the size that was offered." };
         const sha = sha256of(bytes);
         if (sha !== up.sha256) return { refused: "The file's contents don't match its sha256: it changed or broke on the way. Offer it again." };
+        // The virus scan (src/clamav.mjs), when it is set up, before anything else reads the file.
+        const av = clamavConfig();
+        const scan = av ? await scanBuffer(bytes, av) : { skipped: true };
+        if (scan.infected) return { refused: `The virus scanner flagged this file (${scan.infected}), so it was not taken.` };
+        if (scan.unavailable && av.required) return { unavailable: scan.unavailable };
         // In a worker thread with a time and memory limit (src/pdfcheck.mjs): a file that runs over is refused.
         const look = await inspectPdfIsolated(bytes, { ocr: ocrOn() });
         if (look.refused) return { refused: look.refused };
-        return { sha, sha1: sha1of(bytes), look };
+        // A scanner that was set up but could not be reached (CLAMAV_REQUIRED=false): taken, and said so where the owner reviews it.
+        if (scan.unavailable) look.flags = [...(look.flags ?? []), { code: "not_scanned", text: `Not checked by the virus scanner: ${scan.unavailable}.` }];
+        return { sha, sha1: sha1of(bytes), look, antivirus: scan.skipped ? "off" : scan.unavailable ? "not scanned" : "clean" };
       });
       if (result.refused) return c.json(await refuseUpload(up.id, result.refused));
+      if (result.unavailable) {
+        // Not an answer about the file: the slot opens again so the program can ask again.
+        await q(`UPDATE uploads SET state = 'slot', updated_at = now() WHERE id = $1 AND state = 'sent'`, [up.id]);
+        throw fail(503, "The virus scanner could not check the file just now. Try again in a few minutes.");
+      }
       const { look } = result;
-      const checks = { structure: { ok: true, flags: look.flags }, markings: look.markings, pages: look.pages };
+      const checks = { structure: { ok: true, flags: look.flags }, markings: look.markings, pages: look.pages, antivirus: result.antivirus };
       const state = await tx(async (client) => {
         const f = (await client.query(`SELECT * FROM manual_files WHERE sha256 = $1 FOR UPDATE`, [up.sha256])).rows[0];
         if (f && (f.status === "pending" || f.status === "published")) {

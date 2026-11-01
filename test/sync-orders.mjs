@@ -15,6 +15,7 @@ import { spawn } from "node:child_process";
 import pg from "pg";
 import { Bad, signEnvelope, validateBody, verifySignature } from "../src/sync-orders.mjs";
 import { startBucket } from "./bucket-mock.mjs";
+import { EICAR, startFakeClamd } from "./fake-clamd.mjs";
 
 const FIX = path.join(import.meta.dirname, "fixtures", "sync-orders");
 const fixture = (n) => JSON.parse(fs.readFileSync(path.join(FIX, n), "utf8"));
@@ -65,11 +66,13 @@ const ROOT = path.resolve(import.meta.dirname, "..");
 const freePort = () => new Promise((r) => net.createServer().listen(0, "127.0.0.1", function () { const p = this.address().port; this.close(() => r(p)); }));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const bucket = await startBucket();
+// Every file of this test goes through the virus scan (src/clamav.mjs) against a stand-in clamd.
+const clamd = await startFakeClamd();
 const port = await freePort();
 const HUB = `http://127.0.0.1:${port}`;
 const hub = spawn(process.execPath, ["src/server.mjs"], {
   cwd: ROOT,
-  env: { ...process.env, ...bucket.env, DATABASE_URL: DB, ADMIN_TOKEN: ADMIN, JOIN_KEY: JOIN, PORT: String(port), LINK_CHECKER: "off", PROGRAM_FREE: "off", RAILWAY_ENVIRONMENT_ID: "", HUB_NAME: "Orders Test Hub", TRUST_PROXY: "true", SYNC_SWEEP_MS: "600", SYNC_QUEUE_MESSAGES: "8" },
+  env: { ...process.env, ...bucket.env, CLAMAV_HOST: "127.0.0.1", CLAMAV_PORT: String(clamd.port), CLAMAV_TIMEOUT_MS: "1500", DATABASE_URL: DB, ADMIN_TOKEN: ADMIN, JOIN_KEY: JOIN, PORT: String(port), LINK_CHECKER: "off", PROGRAM_FREE: "off", RAILWAY_ENVIRONMENT_ID: "", HUB_NAME: "Orders Test Hub", TRUST_PROXY: "true", SYNC_SWEEP_MS: "600", SYNC_QUEUE_MESSAGES: "8" },
   stdio: ["ignore", "pipe", "pipe"],
 });
 let log = "";
@@ -181,6 +184,30 @@ try {
   expect(await call("/v2/files/done", { ...M, json: { conversation: "o-1", sha256: artHash } }), 200, "done");
   assert.equal(expect(await put(M, { conversation: "o-1", sha256: artHash, size: art.length, kind: "art", to: `shop:${idA}` }), 200, "put again").ready, true, "the same file again is already there");
   console.log("  ok  files: size limit, signed length and SHA-256 enforced by the bucket, confirmed once, then ready");
+
+  // ----- the virus scan: a flagged file is removed, a scanner that can't answer holds the file back -----
+  const scansBefore = clamd.seen.scans;
+  {
+    const bad = Buffer.concat([Buffer.from("PK-looking art "), EICAR]);
+    const badHash = sha256(bad);
+    const pb = expect(await put(M, { conversation: "o-av", sha256: badHash, size: bad.length, kind: "art", to: `shop:${idA}` }), 200, "put flagged");
+    assert.equal(await upload(pb, bad), 200);
+    refused(await call("/v2/files/done", { ...M, json: { conversation: "o-av", sha256: badHash } }), 400, "infected", "a flagged file is refused");
+    assert.equal(expect(await put(M, { conversation: "o-av", sha256: badHash, size: bad.length, kind: "art", to: `shop:${idA}` }), 200, "put flagged again").ready, false, "and it was removed: the sender has to start again");
+    const clean = Buffer.from("clean design bytes for the scan test");
+    const cleanHash = sha256(clean);
+    const pc = expect(await put(M, { conversation: "o-av2", sha256: cleanHash, size: clean.length, kind: "art", to: `shop:${idA}` }), 200, "put clean");
+    assert.equal(await upload(pc, clean), 200);
+    clamd.knobs.mode = "silent";
+    refused(await call("/v2/files/done", { ...M, json: { conversation: "o-av2", sha256: cleanHash } }), 503, "scanner_unavailable", "no answer from the scanner: held back, not passed");
+    clamd.knobs.mode = "normal";
+    expect(await call("/v2/files/done", { ...M, json: { conversation: "o-av2", sha256: cleanHash } }), 200, "done once the scanner is back");
+    assert.ok(clamd.seen.scans > scansBefore, "the scanner saw the files");
+    const st = expect(await call("/v1/admin/antivirus", { key: ADMIN }), 200, "antivirus status");
+    assert.equal(st.reachable, true);
+    assert.match(st.version, /ClamAV/);
+  }
+  console.log("  ok  antivirus: a flagged file is removed and refused, a silent scanner holds the file back (503) until it answers, status for the admin");
 
   // ----- the signed order.placed and the privacy rules -----
   const orderMsg = (to, conv, o = {}) => placed(to, conv, { body: fixtureBody(conv), ...o });
@@ -428,4 +455,5 @@ try {
   hub.kill();
   await db.end();
   await bucket.close();
+  await clamd.close();
 }
