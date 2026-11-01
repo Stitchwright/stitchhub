@@ -14,7 +14,7 @@
 //          GET /v1/admin/sync/summary
 //
 // Every /v2 call after the hello carries X-Client: <app>/<version>; below the minimum for that app the answer is 426.
-// Callers: a program (install key + X-Shop-Ref, or ?shopRef) or a service (a key the admin issued, svk_...).
+// Callers: a program (a member install key + X-Shop-Ref, or ?shopRef; pending and partner-only installs are refused) or a service (a key the admin issued, svk_...).
 // Settings (names only): SYNC_MIN_CLIENT (JSON {app: "x.y.z"}), SYNC_DEPRECATED (JSON {path prefix: "YYYY-MM-DD"}), SYNC_UPDATE_URL,
 // SYNC_QUEUE_MESSAGES, SYNC_QUEUE_MB, SYNC_BODY_KB, SYNC_KEEP_DAYS, SYNC_SKEW_MIN, SYNC_SWEEP_MS.
 import crypto from "node:crypto";
@@ -129,6 +129,13 @@ export function registerSync({ app, admin, installByKey, fail, newId, allow, cli
       return { kind: "service", address: `service:${row.name}`, name: row.name, scopes: row.scopes ?? [], caps: `service:${row.name}`, publicKey: row.public_key };
     }
     const inst = await installByKey(key);
+    // The same rule as the member middleware for /v1: an install that joined with a partner code only, or started an account whose
+    // email isn't verified yet, isn't a member, and sync v2 (opting in to services, taking orders) is for members.
+    if (inst.scope !== "member") {
+      throw new Refusal(403, "not_member", inst.scope === "pending"
+        ? "Finish setting up your StitchHub account first: open the link in the email we sent (Settings → Account)."
+        : "This shop is connected to its partner shops only. Join the community with a join key to use this.");
+    }
     const ref = (c.req.header("x-shop-ref") ?? c.req.query("shopRef") ?? body?.shopRef ?? "").toString().trim().slice(0, 64);
     const shop = ref ? await one(`SELECT id, name FROM shops WHERE install_id = $1 AND shop_ref = $2`, [inst.id, ref]) : null;
     return { kind: "program", install: inst, shop, address: shop ? `shop:${shop.id}` : null, caps: `install:${inst.id}` };
@@ -239,7 +246,7 @@ export function registerSync({ app, admin, installByKey, fail, newId, allow, cli
     needScope(p, "shops:list");
     const { rows } = await q(
       `SELECT s.id, s.name FROM shop_service_optins o JOIN shops s ON s.id = o.shop_id JOIN installs i ON i.id = s.install_id
-       WHERE o.service = $1 AND o.enabled AND NOT i.blocked ORDER BY s.name LIMIT 500`,
+       WHERE o.service = $1 AND o.enabled AND NOT i.blocked AND i.scope = 'member' ORDER BY s.name LIMIT 500`,
       [p.name],
     );
     const out = [];
@@ -331,7 +338,7 @@ export function registerSync({ app, admin, installByKey, fail, newId, allow, cli
     const out = await tx(async (cl) => {
       await cl.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`sync:${m.to}`]);
       const recipientOk = m.to.startsWith("shop:")
-        ? await cl.query(`SELECT s.id FROM shops s JOIN installs i ON i.id = s.install_id WHERE s.id = $1 AND NOT i.blocked`, [m.to.slice(5)])
+        ? await cl.query(`SELECT s.id FROM shops s JOIN installs i ON i.id = s.install_id WHERE s.id = $1 AND NOT i.blocked AND i.scope = 'member'`, [m.to.slice(5)])
         : await cl.query(`SELECT id FROM service_keys WHERE name = $1 AND revoked_at IS NULL`, [m.to.slice(8)]);
       if (!recipientOk.rows[0]) throw new Refusal(404, "unknown_recipient", "The hub doesn't know that recipient.");
       const optin = await mayRoute(cl, p.address, m.to, m.type, env.conversation);
