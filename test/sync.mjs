@@ -1,6 +1,7 @@
 // Checks hub sync v2 (src/sync.mjs, docs/hub-sync-design.md): a hub of its own on a free port against a scratch database.
 // Covers: the handshake (public hello, minimum version and 426, the missing X-Client, Deprecation headers); service keys (issued
-// once, hashed, scopes, revoked, a public key); shops opting in (not listed and refused until they do, per-shop caps); sending
+// once, hashed, scopes, revoked, a public key); shops opting in (not listed and refused until they do, per-shop caps; members
+// only, not a pending or partner-code install); sending
 // (dedupe by id, an id reused for another message, wrong direction, replay window, size, unknown type and version); receiving (the
 // same message offered again until acked, the cursor, acks, the sender's status; the cursor never passing a held-back message); ordering per conversation (out-of-order sends,
 // conversations independent); capabilities (a message the recipient can't read is held and released by its next hello); expiry
@@ -176,6 +177,30 @@ try {
   assert.equal(expect(await call("/v2/optin?service=makerfoundry", A), 200, "read optin").enabled, true);
   assert.equal((await call("/v2/shops", A)).status, 403, "a program can't list shops");
   console.log("  ok  opt-in: not listed and refused until a shop says so; per-shop caps; only a service lists");
+
+  // ----- only members: an account whose email isn't verified yet (pending) or a partner-code install can't use v2 -----
+  const P = await reg("Install P");
+  await claim(P.installKey, "p1", "Unverified Shop");
+  const idP = await shopId("p1", P.installId);
+  const PS = SHOP(P.installKey, "p1");
+  for (const scope of ["pending", "partner"]) {
+    await db.query(`UPDATE installs SET scope = $2 WHERE id = $1`, [P.installId, scope]);
+    const r = await call("/v2/optin", { ...PS, method: "PUT", json: { service: "makerfoundry" } });
+    assert.equal(r.status, 403, `a ${scope} install can't opt in: ${JSON.stringify(r.body)}`);
+    assert.equal(r.body.code, "not_member");
+    assert.equal((await shopHello(PS)).status, 403, `a ${scope} install can't say hello`);
+    assert.equal((await call("/v2/optin?service=makerfoundry", PS)).status, 403, `or read its opt-in (${scope})`);
+  }
+  assert.equal((await db.query(`SELECT count(*)::int AS n FROM shop_service_optins WHERE shop_id = $1`, [idP])).rows[0].n, 0, "nothing was stored");
+  // Even with an opt-in and a hello on file (made while it was a member, say), a non-member's shop isn't listed or sent to.
+  await db.query(`INSERT INTO shop_service_optins (shop_id, service, enabled) VALUES ($1, 'makerfoundry', true)`, [idP]);
+  await db.query(`INSERT INTO sync_caps (principal, app, version, types) VALUES ($1, 'stitchshop', '1.8.0', $2)`, [`install:${P.installId}`, JSON.stringify({ "order.placed": [1] })]);
+  assert.ok(!expect(await call("/v2/shops", MF), 200, "shops").shops.some((x) => x.id === `shop:${idP}`), "a pending shop isn't listed as ready, or at all");
+  assert.equal((await send(MF, env(`shop:${idP}`, { conversation: "pend-1" }))).body.code, "unknown_recipient", "and orders to it are refused");
+  await db.query(`UPDATE installs SET scope = 'member' WHERE id = $1`, [P.installId]);
+  expect(await call("/v2/optin", { ...PS, method: "PUT", json: { service: "makerfoundry" } }), 200, "once a member, it opts in");
+  assert.ok(expect(await call("/v2/shops", MF), 200, "shops").shops.some((x) => x.id === `shop:${idP}`), "and is listed");
+  console.log("  ok  only members: a pending or partner-code install can't opt in, say hello or be listed or sent to");
 
   // ----- two services (a test and a production identity) never see each other's shops -----
   const testSvc = expect(await adminCall("/service-keys", { json: { name: "makerfoundry-test" } }), 200, "a test service");

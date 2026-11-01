@@ -571,7 +571,7 @@ first, then the row, so a failed delete is tried again at the next sweep. `npm r
 
 ## Hub sync v2: versions and a queue
 
-A version handshake and a durable, acknowledged queue between programs and services (design: [`docs/hub-sync-design.md`](docs/hub-sync-design.md), code: `src/sync.mjs`). Polling, no new infrastructure. Every `/v2` call after the hello carries `X-Client: <app>/<version>`; below the minimum for that app the answer is `426`. Callers are a program (install key plus `X-Shop-Ref`) or a service (a key the admin issues).
+A version handshake and a durable, acknowledged queue between programs and services (design: [`docs/hub-sync-design.md`](docs/hub-sync-design.md), code: `src/sync.mjs`). Polling, no new infrastructure. Every `/v2` call after the hello carries `X-Client: <app>/<version>`; below the minimum for that app the answer is `426`. Callers are a program (install key plus `X-Shop-Ref`; a member install only: one that joined with a partner code only, or whose account email is not verified yet, gets `403 not_member`, and its shops are not listed or sent to) or a service (a key the admin issues).
 
 | Call | Who | What |
 |---|---|---|
