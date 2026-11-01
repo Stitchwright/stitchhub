@@ -616,6 +616,14 @@ export function registerSync({ app, admin, installByKey, fail, newId, allow, cli
     const r = await q(`UPDATE service_keys SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL`, [c.req.param("id")]);
     return c.json({ ok: true, revoked: r.rowCount });
   });
+  // A new key for the same service: the old one stops working at once, and the service keeps its name, its id, its scopes, its signing
+  // key and the shops that opted in to it. (Revoking and issuing again would burn the name: names are unique for good.)
+  admin.post("/service-keys/:id/rotate", async (c) => {
+    const key = `svk_${crypto.randomBytes(32).toString("hex")}`;
+    const r = await q(`UPDATE service_keys SET key_hash = $2, last_used_at = NULL WHERE id = $1 AND revoked_at IS NULL RETURNING id, name, scopes`, [c.req.param("id"), sha(key)]);
+    if (!r.rowCount) throw fail(404, "No such service key, or it was revoked.");
+    return c.json({ id: r.rows[0].id, name: r.rows[0].name, scopes: r.rows[0].scopes, key, note: "This key is shown once. The old key no longer works. Put the new one in the service's secret settings." });
+  });
   admin.put("/service-keys/:id/public-key", async (c) => {
     const body = await c.req.json().catch(() => ({}));
     try {

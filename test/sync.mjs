@@ -141,6 +141,21 @@ try {
   expect(await adminCall(`/service-keys/${made.id}/public-key`, { method: "PUT", json: { publicKey: kp.publicKey.export({ type: "spki", format: "der" }).toString("base64") } }), 200, "public key");
   SIGN.kp = kp;
   SIGN.key = made.key;
+  // Rotating a key: the old one stops, the new one works, and the service keeps its name, id, signing key and opted-in shops.
+  const spare = expect(await adminCall("/service-keys", { json: { name: "rotating" } }), 200, "a service to rotate");
+  assert.equal((await call("/v2/shops", SVC(spare.key))).status, 200, "the first key works");
+  const rotated = expect(await adminCall(`/service-keys/${spare.id}/rotate`, { method: "POST" }), 200, "rotate");
+  assert.match(rotated.key, /^svk_[0-9a-f]{64}$/);
+  assert.notEqual(rotated.key, spare.key);
+  assert.equal(rotated.id, spare.id);
+  assert.equal(rotated.name, "rotating");
+  assert.equal((await call("/v2/shops", SVC(spare.key))).status, 401, "the old key stops at once");
+  assert.equal((await call("/v2/shops", SVC(rotated.key))).status, 200, "the new key works");
+  assert.equal((await db.query(`SELECT key_hash FROM service_keys WHERE id = $1`, [spare.id])).rows[0].key_hash, crypto.createHash("sha256").update(rotated.key).digest("hex"), "only the new hash is kept");
+  assert.equal((await adminCall("/service-keys", { json: { name: "rotating" } })).status, 409, "the name is still taken");
+  assert.equal((await call(`/v1/admin/service-keys/${spare.id}/rotate`, { key: "wrong", method: "POST" })).status, 401, "admin only");
+  expect(await adminCall(`/service-keys/${spare.id}`, { method: "DELETE" }), 200, "revoke it");
+  assert.equal((await adminCall(`/service-keys/${spare.id}/rotate`, { method: "POST" })).status, 404, "a revoked key can't be rotated");
   expect(await adminCall(`/service-keys/${limited.id}`, { method: "DELETE" }), 200, "revoke");
   assert.equal((await call("/v2/shops", SVC(limited.key))).status, 401, "a revoked key stops working");
   expect(await call("/v2/shops", MF), 200, "use the key once");
@@ -161,6 +176,22 @@ try {
   assert.equal(expect(await call("/v2/optin?service=makerfoundry", A), 200, "read optin").enabled, true);
   assert.equal((await call("/v2/shops", A)).status, 403, "a program can't list shops");
   console.log("  ok  opt-in: not listed and refused until a shop says so; per-shop caps; only a service lists");
+
+  // ----- two services (a test and a production identity) never see each other's shops -----
+  const testSvc = expect(await adminCall("/service-keys", { json: { name: "makerfoundry-test" } }), 200, "a test service");
+  const TS = SVC(testSvc.key);
+  await claim(X.installKey, "iso", "Test-only shop");
+  const idZ = await shopId("iso", X.installId);
+  const Z = SHOP(X.installKey, "iso");
+  const toShop = (svc, id) => call("/v2/files/put", { ...svc, json: { conversation: "iso-1", sha256: "c".repeat(64), size: 10, kind: "art", to: `shop:${id}` } });
+  assert.deepEqual((await call("/v2/shops", TS)).body.shops, [], "a service lists only the shops that opted in to ITS name");
+  assert.equal((await toShop(TS, idA)).body.code, "not_opted_in", "and can't reach a shop that opted in only to another service");
+  expect(await call("/v2/optin", { ...Z, method: "PUT", json: { service: "makerfoundry-test" } }), 200, "the test-only shop opts in to the test service alone");
+  assert.deepEqual((await call("/v2/shops", TS)).body.shops.map((x) => x.id), [`shop:${idZ}`], "the test service sees exactly that shop");
+  assert.ok(!(await call("/v2/shops", MF)).body.shops.some((x) => x.id === `shop:${idZ}`), "the production service doesn't see it");
+  assert.equal((await toShop(MF, idZ)).body.code, "not_opted_in", "and can't reach it");
+  assert.notEqual((await toShop(TS, idZ)).body.code, "not_opted_in", "while the test service can (this hub has no file storage here, so it stops later, at 503)");
+  console.log("  ok  two services: each lists and reaches only the shops that opted in to its own name");
 
   // ----- sending, holding for capabilities, receiving, acking -----
   expect(await svcHello(MF), 200, "service hello");
