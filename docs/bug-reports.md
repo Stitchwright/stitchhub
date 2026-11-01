@@ -40,6 +40,8 @@ emailed (`[LaserFoundry] Feature request: <title>`), never filed on GitHub, and 
 
 - Typed text goes into the issue only inside code fences, so it can't mention people, render images or links, or close
   its own formatting. The issue begins with a note that the text is untrusted.
+- The program's version, the one field outside the fences, keeps only letters, digits and `. + -` (the rest is dropped)
+  and is shown as inline code, so it can't mention, link or show a picture either.
 - The shop's name and reply address never go into an issue (the hub keeps them, and the admin page links to the issue).
   The two open-source programs and the hub's page are public: their form says so.
 - Limits: 5 reports an hour from one address and 100 an hour for the whole hub, of which 30 are emailed; a body over 16 KB is refused; a hidden form

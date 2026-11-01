@@ -571,7 +571,7 @@ first, then the row, so a failed delete is tried again at the next sweep. `npm r
 
 ## Hub sync v2: versions and a queue
 
-A version handshake and a durable, acknowledged queue between programs and services (design: [`docs/hub-sync-design.md`](docs/hub-sync-design.md), code: `src/sync.mjs`). Polling, no new infrastructure. Every `/v2` call after the hello carries `X-Client: <app>/<version>`; below the minimum for that app the answer is `426`. Callers are a program (install key plus `X-Shop-Ref`) or a service (a key the admin issues).
+A version handshake and a durable, acknowledged queue between programs and services (design: [`docs/hub-sync-design.md`](docs/hub-sync-design.md), code: `src/sync.mjs`). Polling, no new infrastructure. Every `/v2` call after the hello carries `X-Client: <app>/<version>`; below the minimum for that app the answer is `426`. Callers are a program (install key plus `X-Shop-Ref`; a member install only: one that joined with a partner code only, or whose account email is not verified yet, gets `403 not_member`, and its shops are not listed or sent to) or a service (a key the admin issues).
 
 | Call | Who | What |
 |---|---|---|
@@ -580,7 +580,7 @@ A version handshake and a durable, acknowledged queue between programs and servi
 | `PUT /v2/optin { service, enabled, maxOpen?, perMinute? }` | a shop's program | takes orders from a service (no row: not listed, orders refused) |
 | `GET /v2/shops` | a service | the shops that opted in to it (`ready`: its program understands `order.placed`) |
 | `POST /v2/messages` | program or service | an envelope `{ id, type, version, conversation, seq, to, created_at, expires_at?, body, sig? }` → `202`. A signed `order.placed` is delivered with `created_at` and `expires_at` exactly as sent (`expires_at` null when none was sent), so its signature checks against the keys `/v2/hello` publishes; every delivered message also has `hub_expires_at`, when the hub gives up on it |
-| `GET /v2/messages?after&limit&wait` | the recipient | the oldest unacknowledged messages; `POST /v2/messages/ack { ids }` after applying them |
+| `GET /v2/messages?after&limit&wait` | the recipient | the oldest unacknowledged messages and `next`, the cursor to poll with (it never passes a message still held back, behind an earlier `seq` or for an update, so a repeat is possible: de-duplicate by `id`); `POST /v2/messages/ack { ids }` after applying them |
 | `GET /v2/messages/status?ids` | the sender | `queued`, `held_capability`, `delivered`, `acked` or `expired` for each |
 | `POST/GET/DELETE /v1/admin/service-keys`, `GET /v1/admin/sync/summary` | the admin | issue (shown once), list, revoke; the queue by state and recipient |
 

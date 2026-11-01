@@ -1,7 +1,7 @@
 // Checks bug reports filed as GitHub issues (src/bugreports.mjs, and kind "bug" in src/feedback.mjs): the public
 // POST /v1/bug-report (no key) for the open-source programs, with a mock of the GitHub API standing in for GitHub; the
 // token sent, the repository each program goes to, the labels, what typed text can and can't do inside the issue
-// (code fences only, no mentions), the limit per address, the bot trap, GitHub failing, a hub with no token; and the
+// (code fences only, no mentions; the version only letters, digits and . + -), the limit per address, the bot trap, GitHub failing, a hub with no token; and the
 // install-key route, where StitchBench sends kind "bug", gets the issue's address back and the admin page links to it,
 // while the shop's name and reply address stay on the hub. Starts a hub of its own on a scratch database it creates and
 // drops (127.0.0.1:5433, stitchbench/stitchbench; or DATABASE_URL to use one you made).
@@ -113,7 +113,7 @@ try {
   assert.deepEqual(i1.labels, ["bug", "from-app"]);
   assert.match(i1.body, /untrusted text typed by that person/);
   assert.match(i1.body, /### Steps to reproduce\n`{3}text\n1\. Draw/);
-  assert.match(i1.body, /Program: StitchFoundry 0\.3\.1\. Source: bug report form\./);
+  assert.match(i1.body, /Program: StitchFoundry `0\.3\.1`\. Source: bug report form\./);
   // The text is inside a fence longer than the longest run of backticks typed, so it can't close it.
   const fenceOpen = /### What happened\n(`+)text\n/.exec(i1.body);
   assert.ok(fenceOpen && fenceOpen[1].length >= 6, "the fence is longer than the five backticks typed");
@@ -141,6 +141,12 @@ try {
   const trap = await ok(await call("/v1/bug-report", { json: { program: "stitchfoundry", what: "buy now", website: "http://spam.test" } }));
   assert.equal(trap.ok, true);
   assert.equal(filed.length, 2, "a filled-in trap field files nothing");
+  // The version is sent with no key and lands outside the fences: only letters, digits and . + - survive, shown as code.
+  await ok(await call("/v1/bug-report", { json: { program: "stitchfoundry", version: "1.0 @octocat ![x](http://evil.test/p.png) [y](http://evil.test)", what: "Version check" } }));
+  const vline = filed[2].body.split("\n").pop();
+  assert.equal(vline, "Program: StitchFoundry `1.0octocatxhttpevil.testp.pngyhttpevil.t`. Source: bug report form.", "the version can't mention, link or show a picture");
+  assert.ok(!/[@!\[\]()]/.test(vline));
+  filed.pop();
   const big = await call("/v1/bug-report", { json: { program: "stitchfoundry", what: "x".repeat(20_000) } });
   assert.equal(big.status, 413, "over 16 KB is refused");
   const page = await call("/report-a-bug");

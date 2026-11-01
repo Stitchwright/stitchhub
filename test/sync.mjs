@@ -1,8 +1,9 @@
 // Checks hub sync v2 (src/sync.mjs, docs/hub-sync-design.md): a hub of its own on a free port against a scratch database.
 // Covers: the handshake (public hello, minimum version and 426, the missing X-Client, Deprecation headers); service keys (issued
-// once, hashed, scopes, revoked, a public key); shops opting in (not listed and refused until they do, per-shop caps); sending
+// once, hashed, scopes, revoked, a public key); shops opting in (not listed and refused until they do, per-shop caps; members
+// only, not a pending or partner-code install); sending
 // (dedupe by id, an id reused for another message, wrong direction, replay window, size, unknown type and version); receiving (the
-// same message offered again until acked, the cursor, acks, the sender's status); ordering per conversation (out-of-order sends,
+// same message offered again until acked, the cursor, acks, the sender's status; the cursor never passing a held-back message); ordering per conversation (out-of-order sends,
 // conversations independent); capabilities (a message the recipient can't read is held and released by its next hello); expiry
 // (message.expired back to the sender, the reason, the body erased, the longest life clamped); queue overflow (new refused, old
 // kept) and the per-minute cap; a shop back after 3 days offline; retention (the body erased 30 days after the ack, the stub kept
@@ -177,6 +178,30 @@ try {
   assert.equal((await call("/v2/shops", A)).status, 403, "a program can't list shops");
   console.log("  ok  opt-in: not listed and refused until a shop says so; per-shop caps; only a service lists");
 
+  // ----- only members: an account whose email isn't verified yet (pending) or a partner-code install can't use v2 -----
+  const P = await reg("Install P");
+  await claim(P.installKey, "p1", "Unverified Shop");
+  const idP = await shopId("p1", P.installId);
+  const PS = SHOP(P.installKey, "p1");
+  for (const scope of ["pending", "partner"]) {
+    await db.query(`UPDATE installs SET scope = $2 WHERE id = $1`, [P.installId, scope]);
+    const r = await call("/v2/optin", { ...PS, method: "PUT", json: { service: "makerfoundry" } });
+    assert.equal(r.status, 403, `a ${scope} install can't opt in: ${JSON.stringify(r.body)}`);
+    assert.equal(r.body.code, "not_member");
+    assert.equal((await shopHello(PS)).status, 403, `a ${scope} install can't say hello`);
+    assert.equal((await call("/v2/optin?service=makerfoundry", PS)).status, 403, `or read its opt-in (${scope})`);
+  }
+  assert.equal((await db.query(`SELECT count(*)::int AS n FROM shop_service_optins WHERE shop_id = $1`, [idP])).rows[0].n, 0, "nothing was stored");
+  // Even with an opt-in and a hello on file (made while it was a member, say), a non-member's shop isn't listed or sent to.
+  await db.query(`INSERT INTO shop_service_optins (shop_id, service, enabled) VALUES ($1, 'makerfoundry', true)`, [idP]);
+  await db.query(`INSERT INTO sync_caps (principal, app, version, types) VALUES ($1, 'stitchshop', '1.8.0', $2)`, [`install:${P.installId}`, JSON.stringify({ "order.placed": [1] })]);
+  assert.ok(!expect(await call("/v2/shops", MF), 200, "shops").shops.some((x) => x.id === `shop:${idP}`), "a pending shop isn't listed as ready, or at all");
+  assert.equal((await send(MF, env(`shop:${idP}`, { conversation: "pend-1" }))).body.code, "unknown_recipient", "and orders to it are refused");
+  await db.query(`UPDATE installs SET scope = 'member' WHERE id = $1`, [P.installId]);
+  expect(await call("/v2/optin", { ...PS, method: "PUT", json: { service: "makerfoundry" } }), 200, "once a member, it opts in");
+  assert.ok(expect(await call("/v2/shops", MF), 200, "shops").shops.some((x) => x.id === `shop:${idP}`), "and is listed");
+  console.log("  ok  only members: a pending or partner-code install can't opt in, say hello or be listed or sent to");
+
   // ----- two services (a test and a production identity) never see each other's shops -----
   const testSvc = expect(await adminCall("/service-keys", { json: { name: "makerfoundry-test" } }), 200, "a test service");
   const TS = SVC(testSvc.key);
@@ -257,6 +282,46 @@ try {
   assert.equal((await send(MF, env(`shop:${idA}`, { type: "nonsense.type", conversation: "x", seq: 1 }))).body.code, "unknown_type");
   assert.equal((await send(MF, env(`shop:${idA}`, { version: 9, conversation: "x", seq: 1 }))).body.code, "unknown_version");
   console.log("  ok  capabilities: an old client holds a newer type until its next hello lists it; unknown type and version refused");
+
+  // ----- the cursor never passes a message still to come (a shop polling with it, as StitchBench and MakerFoundry do) -----
+  await claim(X.installKey, "a5", "Shop E");
+  const idE = await shopId("a5", X.installId);
+  const E = SHOP(X.installKey, "a5");
+  expect(await call("/v2/optin", { ...E, method: "PUT", json: { service: "makerfoundry" } }), 200, "opt in E");
+  const withAnswers = { "order.placed": [1], "proof.answer": [1], "message.expired": [1] };
+  expect(await shopHello(E, withAnswers), 200, "hello E");
+  const tag = (ms) => ms.map((m) => `${m.conversation}#${m.seq}`);
+  // The shop is offline while an order and its answer queue up, then another order: the answer waits behind the first order,
+  // and the second order comes back in the same page with a higher delivery number.
+  const c1a = env(`shop:${idE}`, { conversation: "cur-1", seq: 1 });
+  const c1b = env(`shop:${idE}`, { type: "proof.answer", conversation: "cur-1", seq: 2, body: { proof: 1, answer: "approved" } });
+  const c2a = env(`shop:${idE}`, { conversation: "cur-2", seq: 1 });
+  for (const e of [c1a, c1b, c2a]) expect(await send(MF, e), 202, "send while the shop is offline");
+  let cursor = "0";
+  const poll = async () => {
+    const page = expect(await get(E, `?after=${cursor}`), 200, "poll with the cursor");
+    if (page.messages.length) expect(await ack(E, page.messages.map((m) => m.id)), 200, "ack the page");
+    assert.ok(BigInt(page.next) >= BigInt(cursor), "the cursor never goes back");
+    cursor = page.next;
+    return page.messages;
+  };
+  assert.deepEqual(tag(await poll()), ["cur-1#1", "cur-2#1"], "the answer waits for the order before it");
+  assert.deepEqual(tag(await poll()), ["cur-1#2"], "and isn't skipped when the cursor moves on");
+  assert.deepEqual(tag(await poll()), [], "then nothing is left");
+  // A message held until the program understands its type, then a later one in another conversation: released by the next
+  // hello, the held one keeps its lower delivery number, and the cursor must not have passed it.
+  expect(await shopHello(E), 200, "an older program's hello (no proof.answer)");
+  const c2b = env(`shop:${idE}`, { type: "proof.answer", conversation: "cur-2", seq: 2, body: { proof: 1, answer: "approved" } });
+  const c3a = env(`shop:${idE}`, { conversation: "cur-3", seq: 1 });
+  expect(await send(MF, c2b), 202, "send a type the shop can't read yet");
+  assert.equal(await stateOf(MF, c2b.id), "held_capability");
+  expect(await send(MF, c3a), 202, "then another order");
+  assert.deepEqual(tag(await poll()), ["cur-3#1"], "the held one isn't handed out");
+  assert.equal(expect(await shopHello(E, withAnswers), 200, "the updated program's hello").released, 1);
+  assert.deepEqual(tag(await poll()), ["cur-2#2"], "released, it still arrives through the cursor");
+  assert.deepEqual(tag(await poll()), [], "and nothing is left");
+  assert.ok((await status(MF, [c1a, c1b, c2a, c2b, c3a].map((e) => e.id))).every((x) => x.state === "acked"), "every message reached the shop");
+  console.log("  ok  the cursor: never passes a message held behind its conversation or held for an update, so none is skipped");
 
   // ----- who may send what, and the rules of an envelope -----
   assert.equal((await send(A, env(`shop:${idB}`, { type: "order.status", conversation: "z", seq: 1, body: { status: "received" } }))).status, 403, "shop to shop isn't open");
