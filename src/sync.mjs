@@ -480,7 +480,7 @@ export function registerSync({ app, admin, installByKey, fail, newId, allow, cli
     if (!allow(`sync:put:${p.address ?? p.caps}`, 600)) throw new Refusal(429, "rate_limit", "Too many uploads this hour.");
     const kind = String(b.kind ?? "");
     if (!["art", "mockup"].includes(kind)) throw new Refusal(400, "bad_field", 'kind is "art" or "mockup".');
-    if (kind === "mockup" && p.kind === "service") throw new Refusal(400, "bad_field", "A service sends art; the shop sends mock-ups (proofs).");
+    // A mock-up is a picture: the shop's proof, or the customer's own preview that comes with an order (order.placed.preview), which the service uploads.
     if (kind === "art" && p.kind === "program") throw new Refusal(400, "bad_field", "Art comes from the service; the shop sends mock-ups.");
     const size = Number(b.size);
     const limit = kind === "art" ? MAX_ART_BYTES : MAX_PREVIEW_BYTES;
