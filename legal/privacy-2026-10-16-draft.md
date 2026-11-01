@@ -268,9 +268,11 @@ analytics or tracking cookies. The online shop keeps the cart in the page's addr
 ### 5.11 Our website and videos
 
 - **Our website** (stitchbench.app) is a set of pages with information and links: no accounts, no forms, no
-  advertising and no analytics or tracking cookies. [OWNER: confirm you add no analytics; if you do, say what here.]
-  Cloudflare, which hosts it, may keep ordinary request logs (including internet addresses) for a short time. [OWNER:
-  check Cloudflare's log settings and say how long.]
+  advertising and no analytics or tracking cookies. (Cloudflare's Web Analytics was turned off for the site on
+  1 November 2026.) Cloudflare, which hosts the site and delivers its pages, handles the ordinary details of each
+  request (internet address, the page asked for, the browser's name) and keeps request logs that we can look at in
+  its dashboard. We don't export or copy them. [OWNER: Cloudflare doesn't state how long its Free plan keeps these
+  logs; its dashboard shows up to the last 30 days. Confirm the wording.]
 - **Links to other sites.** The website links to YouTube, GitHub, the donation page and the hub. When you follow one,
   that site's own privacy policy applies, not this one.
 - **Our YouTube channel.** What you do on YouTube (watching, liking, subscribing, commenting) is handled by YouTube
@@ -313,8 +315,8 @@ We share only:
   - **Railway**: hosting and databases for the hub and the hosted service;
   - **Stripe**: payments in your online shop, only if you use the hosted service's Stripe account (Terms, section 13);
   - **GitHub**: bug reports, as issues (section 5.2b);
-  - **Cloudflare**: hosting our website;
-  - **[OWNER: mail provider]**: our account and password-reset emails;
+  - **Cloudflare**: hosting our website and delivering its pages, including its request logs (section 5.11);
+  - **Resend**: sending our account and password-reset emails;
   - **Anthropic**: only for the Assistant, only what section 5.7 lists, only when someone presses a button;
   - **Discord**: short announcements on the community channel (section 5.3).
 - **Donations** are handled by [DONATION PLATFORM], an independent company, which gets your card details itself. We
@@ -340,7 +342,7 @@ We share only:
 | Assistant counts on the hub (no text) | [OWNER: choose, e.g. 2 years] |
 | Your shop's data on the hosted service | While your shop is on the service. **A suspension never deletes it.** After you close the account: [OWNER: e.g. 90 days], then deleted |
 | Bug reports (issues on GitHub) | Until we close and delete them. A public one can be read or copied by anyone meanwhile. A report's copy on the hub (StitchBench and StitchShop) is kept like a Help button item |
-| Hosted database backups | [OWNER: Railway's backup schedule and retention] |
+| Hosted database backups | Railway backs up the hub's database every day and keeps each copy for 6 days [OWNER: confirm the hosted service's database has the same schedule] |
 | A move file | Not stored on the server when you make one: it streams straight to your download. One uploaded to the hosted service for an import is deleted from the server within 24 hours |
 | The old copy after a move | Read-only, kept until someone deletes it (allowed after 30 days) |
 | Your shop's data on Windows or self-hosted | You decide. The program never deletes consent records or opt-outs, and keeps sent messages and replies |
