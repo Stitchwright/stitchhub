@@ -104,11 +104,11 @@ enough, or should these terms require the hosting shop to sign something with ea
 The services cost us money to run (hosting, email, and our time). We pay for them with the income from our **YouTube
 channel** and with **donations** from people who find the programs useful. Not the shops that use them.
 
-- **YouTube.** We make videos about the programs and the work they are made for, at [YOUTUBE CHANNEL LINK]. The
+- **YouTube.** We make videos about the programs and the work they are made for, at https://www.youtube.com/@MakerFoundryApp. The
   channel, the videos and their comments are on YouTube and are covered by YouTube's own terms and privacy policy, not
   by these terms. Whatever the videos earn (advertising, memberships, sponsorships) is separate from the services. **The
   services show no advertising**, and nothing in them is sponsored content.
-- **Donations.** You can give a donation, once or every month, at [DONATE LINK], through [DONATION PLATFORM]. A
+- **Donations.** You can give a donation, once or every month, at https://buymeacoffee.com/bwattendorf, through Buy Me a Coffee. A
   donation is a **voluntary gift**, not a payment for the services, and it creates no contract:
   - it does **not** buy extra features, support or priority. A shop that gives nothing has exactly the same services as
     one that gives every month;
@@ -338,7 +338,7 @@ The services work with other companies' services: Railway (our hosting), Stripe 
 use it), Twilio and your mail provider (your messages), GitHub (bug reports), Discord
 (community chat), UPCitemdb (barcode lookups, the barcode number only), Tailscale or Cloudflare (if you set up a
 tunnel), and manufacturers' websites (manual downloads). Our website runs on Cloudflare, our videos on YouTube, and
-donations go through [DONATION PLATFORM]. Their
+donations go through Buy Me a Coffee. Their
 own terms apply to your use of them. We aren't responsible for them, for their prices, or for them being available.
 
 ## 19. Repair information

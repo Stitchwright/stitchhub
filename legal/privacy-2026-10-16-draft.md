@@ -30,7 +30,7 @@ shop serves.
 - **Your customers' contact details never go to the community.** Partner shops see only what a repair needs (first
   name and last initial, not phone or address).
 - **We take no payment from you, so we hold no card details.** The programs are free. If you give a donation, it goes
-  through [DONATION PLATFORM], which handles your card.
+  through Buy Me a Coffee, which handles your card.
 - **We don't sell information, and we don't show ads.** No advertising or tracking cookies.
 - **Bug reports go to GitHub.** If you press Report a bug, what you type is filed as an issue on GitHub. For the
   open-source programs it is public. Your shop's name and email are not put in it (section 5.2b).
@@ -188,9 +188,10 @@ exactly what it sends, to whom, and for how long, and we'll ask you to accept it
 
 - **The programs are free,** so we take no payment from you and hold no card details, bank details or billing address
   for you.
-- **Donations.** If you give a donation, [DONATION PLATFORM] takes it under its own terms and privacy policy. We receive
-  from it only what it passes on to us (for example the name or email you gave, the amount, and any message) [OWNER:
-  depends on the platform: say exactly what you receive]. We use that to thank you and for our own records, and we
+- **Donations.** If you give a donation, Buy Me a Coffee takes it under its own terms and privacy policy, with Stripe handling the payment. We receive
+  from it only what it passes on to us: the name or display name you gave, your email address, your message, the amount
+  and the date. On Buy Me a Coffee, a supporter's name and message show publicly unless the supporter changes that in
+  their own settings there. We use that to thank you and for our own records, and we
   don't share it. We never see your card number.
 - **Your online shop.** Stripe Checkout takes your customers' cards. Card numbers never reach the program or us. The
   order (the customer's name, email or phone, shipping address, items and amounts) is kept in your shop's data.
@@ -259,7 +260,7 @@ We share only:
   - **Cloudflare**: hosting our website;
   - **Resend**: our account and password-reset emails;
   - **Discord**: short announcements on the community channel (section 5.3).
-- **Donations** are handled by [DONATION PLATFORM], an independent company, which gets your card details itself. We
+- **Donations** are handled by Buy Me a Coffee, an independent company, which gets your card details itself. We
   don't pass it anything about your shop.
 - **With other shops**, only what you share on the hub (section 5.3), and with a partner shop only the partner
   messages (section 5.4).
