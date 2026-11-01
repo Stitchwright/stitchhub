@@ -281,9 +281,7 @@ analytics or tracking cookies. The online shop keeps the cart in the page's addr
 
 Your shop decides what to collect about its customers and staff and what to do with it. Your shop must give them any
 notice the law requires (for example a privacy notice on your website if you use online booking or the online shop),
-and answer their requests to see, correct or delete their information. [OWNER: the program can't yet delete or merge
-a customer record (decided, not built: HANDOFF section 4, L126). Until it can, a hosted shop asks us; say how a
-Windows shop does it.]
+and answer their requests to see, correct or delete their information. The program can't yet delete or merge a customer record. Until it can, a hosted shop asks us and we do it; a shop on its own PC or server can ask us how.
 
 ### 6.2 What we do with it on the hosted service
 
