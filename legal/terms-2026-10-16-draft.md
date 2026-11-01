@@ -10,7 +10,7 @@ _Rewritten for the free model (16 Oct 2026): the programs, the hub and the hoste
 and donations._
 
 These terms are the agreement between your business and us. Please read them. We've tried to write them in plain
-English. If something isn't clear, write to us at [CONTACT EMAIL] before you agree.
+English. If something isn't clear, write to us at bwattendorf@gmail.com before you agree.
 
 ---
 
@@ -56,7 +56,7 @@ You must be 18 or older to accept these terms. [LAWYER: confirm.]
   email the owner uses to sign in to the program.
 - Staff sign-ins inside the program are separate. You decide who gets one and what they can do, and you're responsible
   for what they do with it.
-- Keep your password private. Tell us at once at [CONTACT EMAIL] if you think someone else has used your account.
+- Keep your password private. Tell us at once at bwattendorf@gmail.com if you think someone else has used your account.
 - On the Windows program you can choose to **allow a password reset from your StitchHub account** (off unless you turn
   it on). If you turn it on, someone who controls your hub account can reset the owner's password on the shop PC. The
   new password is shown only on that PC's screen.
@@ -120,7 +120,7 @@ channel** and with **donations** from people who find the programs useful. Not t
     one that gives every month;
   - the platform takes your payment under its own terms, and we never see your card number;
   - donations are **not refundable**, except where the platform's rules or the law require it. If you gave by mistake,
-    write to [CONTACT EMAIL] and we'll try to put it right; [OWNER: confirm.]
+    write to bwattendorf@gmail.com and we'll try to put it right; [OWNER: confirm.]
   - a donation to us is **not a tax-deductible charitable contribution**. [OWNER/LAWYER: true while the project is
     run by a business and not a registered charity. Change this if that changes.]
 - **No pressure.** Nothing in the programs or the hub will lock or slow down because you haven't donated.
@@ -151,7 +151,7 @@ Because the services are free, nothing ends for want of payment. These are the w
 ## 8. Stopping, and refunds
 
 - **Stopping.** You can stop using the services at any time. There is nothing to cancel. To close your hub account or
-  your hosted company, write to [CONTACT EMAIL] (section 16). You can export your data whenever you want (section 15).
+  your hosted company, write to bwattendorf@gmail.com (section 16). You can export your data whenever you want (section 15).
 - **Refunds.** The services are free, so there is nothing to refund. Donations are covered in section 6.
 
 ## 9. Using the programs: what you may and may not do
@@ -335,7 +335,7 @@ against what shipped.]
 
 ## 16. Ending the agreement
 
-**You** can stop using the services at any time (section 8), and ask us at [CONTACT EMAIL] to delete your hub account
+**You** can stop using the services at any time (section 8), and ask us at bwattendorf@gmail.com to delete your hub account
 or your hosted company.
 
 **We** may suspend or end your use of the services if you break these terms in a serious way, use them illegally,
@@ -432,7 +432,7 @@ Small fixes (spelling, contact details) may apply straight away.
 
 These terms are governed by the laws of [STATE OF GOVERNING LAW] and of the United States.
 
-If you have a problem, please write to us first at [CONTACT EMAIL]; we'll try to sort it out within 30 days. If we
+If you have a problem, please write to us first at bwattendorf@gmail.com; we'll try to sort it out within 30 days. If we
 can't, a claim goes to the state or federal courts in [STATE OF GOVERNING LAW], except that either of us may use
 small-claims court for a claim that qualifies. [LAWYER: courts or arbitration? Venue (county)? A class-action waiver?
 Recommended for a small company: courts plus small claims, no arbitration clause, unless the lawyer advises
@@ -445,7 +445,7 @@ otherwise.]
   services, and we'll tell you.
 - If part of these terms can't be enforced, the rest still applies.
 - If we don't enforce something straight away, we can still enforce it later.
-- We send notices by email to the account's address. You send notices to [CONTACT EMAIL] and by post to 8 Maplewood Drive, Mapleville, RI 02839.
+- We send notices by email to the account's address. You send notices to bwattendorf@gmail.com and by post to 8 Maplewood Drive, Mapleville, RI 02839.
 - Neither of us is responsible for delays caused by things outside our reasonable control (power cuts, internet
   outages, providers' failures, natural disasters).
 
@@ -453,4 +453,4 @@ otherwise.]
 
 [OWNER LEGAL NAME]
 8 Maplewood Drive, Mapleville, RI 02839
-[CONTACT EMAIL]
+bwattendorf@gmail.com

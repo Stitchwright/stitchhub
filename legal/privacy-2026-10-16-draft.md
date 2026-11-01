@@ -15,7 +15,7 @@ about it. It covers StitchBench and StitchShop (the programs), StitchHub (the co
 
 ## 1. Who we are
 
-We are [OWNER LEGAL NAME] ("we", "us"), of 8 Maplewood Drive, Mapleville, RI 02839. Contact us about privacy at [CONTACT EMAIL].
+We are [OWNER LEGAL NAME] ("we", "us"), of 8 Maplewood Drive, Mapleville, RI 02839. Contact us about privacy at bwattendorf@gmail.com.
 
 "You" means the shop that uses our services, and the shop's owner and staff. "Your customers" means the people your
 shop serves.
@@ -348,7 +348,7 @@ We share only:
 
 ## 9. Deleting your information
 
-- **Your hub account.** Ask us at [CONTACT EMAIL]. We delete the account and detach its shops. What your shop shared with the community (notes, link and part edits, listings) stays, under your install's
+- **Your hub account.** Ask us at bwattendorf@gmail.com. We delete the account and detach its shops. What your shop shared with the community (notes, link and part edits, listings) stays, under your install's
   name, because other shops rely on it, unless you remove it first or ask us to remove it. [LAWYER: is keeping shared
   contributions after an account deletion acceptable, especially names of people in edit history? Consider replacing
   people's names with the shop's on deletion.]
@@ -395,7 +395,7 @@ You can:
 - turn off sharing of parts-used counts, remove what you shared, and choose what you offer;
 - turn the Assistant on or off, feature by feature, and decide whether first names are offered;
 - export everything (section 10), and ask us to delete your account or hosted company (section 9);
-- ask us what information we hold about you, at [CONTACT EMAIL]. We'll answer within [45] days and may need to check
+- ask us what information we hold about you, at bwattendorf@gmail.com. We'll answer within [45] days and may need to check
   it's really you.
 
 Depending on where you live, privacy laws may give you more rights. We'll honour them where they apply. [LAWYER:
@@ -422,4 +422,4 @@ terms" on the hub and in Settings → Account. [LAWYER: same question as the Ter
 
 [OWNER LEGAL NAME]
 8 Maplewood Drive, Mapleville, RI 02839
-[CONTACT EMAIL]
+bwattendorf@gmail.com
