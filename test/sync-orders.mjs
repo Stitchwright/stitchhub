@@ -351,6 +351,24 @@ try {
   expect(await place("o-after-full", idD), 202, "and the queue takes more once it caught up");
   console.log("  ok  a full queue refuses new orders, loses none, and takes more once the shop has caught up");
 
+  // ----- the customer's own picture comes with an order (order.placed.preview): the service uploads it as a mock-up, the shop fetches it -----
+  const pic = Buffer.from("customer preview picture bytes");
+  const picHash = sha256(pic);
+  const withPic = fixtureBody("o-pic");
+  withPic.preview = { size: pic.length, sha256: picHash, type: "image/png" };
+  const artPic = Buffer.from(`art for o-pic`);
+  withPic.lines[0].decorations[0].art = { file: "logo.dst", size: artPic.length, sha256: sha256(artPic) };
+  for (const [bytes, kind, type] of [[artPic, "art", undefined], [pic, "mockup", "image/png"]]) {
+    const u = expect(await put(M, { conversation: "o-pic", sha256: sha256(bytes), size: bytes.length, kind, to: `shop:${idB}`, ...(type ? { type } : {}) }), 200, `put ${kind}`);
+    assert.equal(await upload(u, bytes), 200);
+    expect(await call("/v2/files/done", { ...M, json: { conversation: "o-pic", sha256: sha256(bytes) } }), 200, `done ${kind}`);
+  }
+  expect(await send(M, placed(`shop:${idB}`, "o-pic", { body: withPic })), 202, "an order with a preview picture is accepted");
+  const gotPic = expect(await call("/v2/files/get", { ...B, json: { conversation: "o-pic", sha256: picHash } }), 200, "the shop fetches the preview");
+  assert.equal(sha256(Buffer.from(await (await fetch(gotPic.url)).arrayBuffer())), picHash, "the picture the shop gets is the picture the service uploaded");
+  refused(await put(B, { conversation: "o-pic", sha256: sha256(artPic), size: artPic.length, kind: "art" }), 400, "bad_field", "a shop still can't upload art");
+  console.log("  ok  the customer's preview picture travels with an order: the service uploads it, the shop fetches it");
+
   // ----- shipping by the piece, the pick-up address, and sales tax that is the marketplace's (decided 2026-10-31) -----
   const catalogMsg = { id: uuid(), type: "catalog", version: 1, conversation: "catalog", seq: 1, to: "service:makerfoundry", created_at: new Date().toISOString(), body: fixture("catalog.v1.valid.json") };
   expect(await send(A, catalogMsg), 202, "the full catalogue goes through");
